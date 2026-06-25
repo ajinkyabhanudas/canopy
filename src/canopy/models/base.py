@@ -44,8 +44,25 @@ class ModelClient(ABC):
 
     @abstractmethod
     def format_tool_result(self, tool_call_id: str, content: str) -> dict:
-        """Wrap a tool's output in whatever shape this vendor expects for
-        the next turn's message history."""
+        """Wrap a single tool's output in whatever shape this vendor expects.
+        Prefer format_tool_results for new call sites."""
+        ...
+
+    @abstractmethod
+    def format_tool_results(self, results: list[tuple[str, str]]) -> dict:
+        """Bundle all tool results from one model response into a single user message.
+
+        The Anthropic API (and most vendors) require all tool results that answer
+        a single assistant turn to arrive in one user message. Appending them as
+        separate messages creates consecutive user turns, which the API rejects.
+
+        Args:
+            results: Ordered list of (tool_call_id, content) pairs — one per
+                     tool call returned in the preceding assistant turn.
+
+        Returns:
+            A single message dict ready to append to the message history.
+        """
         ...
 
     @abstractmethod
