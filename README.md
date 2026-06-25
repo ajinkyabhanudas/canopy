@@ -110,8 +110,20 @@ pytest tests/ --cov=canopy --cov-report=term-missing
 pytest tests/test_query_loop.py -v
 ```
 
-Expected output: 54 passed, 1 skipped (live DB integration test, skipped
+Expected output: 104 passed, 1 skipped (live DB integration test, skipped
 when `PG_*` vars are absent).
+
+## Eval
+
+Run the 20-question ground-truth eval set against the live database:
+
+```bash
+python scripts/run_eval.py
+```
+
+Each question has a structural `check_fn` that validates SQL content and result
+shape without depending on exact row values. Exit code 0 if ≥85% pass (17/20).
+Requires `ANTHROPIC_API_KEY` and `PG_*` vars.
 
 ## Architecture
 
@@ -129,6 +141,14 @@ src/canopy/
 └── query/
     ├── executor.py    # execute_query(sql) — SELECT-only guard + DB execution
     └── loop.py        # run_query(question) — agentic loop, returns LoopResult
+
+tests/
+└── eval/
+    └── queries.py     # 20 EvalCase entries + check_fn predicates
+
+scripts/
+├── smoke_test.py      # Verify API key and model config
+└── run_eval.py        # Ground-truth eval runner (requires live DB + API key)
 ```
 
 ### Adding a new model backend
@@ -162,7 +182,7 @@ src/canopy/
 | SQL executor with SELECT-only guard | Done |
 | Agentic query loop | Done |
 | Parallel tool call handling | Done |
-| Ground-truth eval set (20 queries) | In progress |
+| Ground-truth eval set (20 queries) | Done |
 | Query history | Planned |
 | Gradio UI | Planned |
 | Interpretation layer | Future (post-v1) |
