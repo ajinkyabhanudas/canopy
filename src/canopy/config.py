@@ -23,9 +23,31 @@ class ModelConfig:
     model: str
 
 
+@dataclass(frozen=True)
+class DBConfig:
+    host: str
+    port: str
+    dbname: str
+    user: str
+    password: str
+
+    def is_configured(self) -> bool:
+        return all([self.host, self.port, self.dbname, self.user, self.password])
+
+
 def get_model_config() -> ModelConfig:
     return ModelConfig(
         backend=os.environ.get("MODEL_BACKEND", "anthropic"),
         api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
         model=os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
+    )
+
+
+def get_db_config() -> DBConfig:
+    return DBConfig(
+        host=os.environ.get("PG_HOST", ""),
+        port=os.environ.get("PG_PORT", "5432"),
+        dbname=os.environ.get("PG_DBNAME", ""),
+        user=os.environ.get("PG_USER", ""),
+        password=os.environ.get("PG_PASSWORD", ""),
     )

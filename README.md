@@ -34,7 +34,18 @@ pip install -e ".[dev]"
 cp .env.example .env
 ```
 
-Fill in `ANTHROPIC_API_KEY` in `.env`. Never commit `.env`.
+Edit `.env` and fill in the values below. Never commit `.env`.
+
+| Variable | Required | Description |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | Yes | Your Anthropic API key |
+| `ANTHROPIC_MODEL` | No | Model to use (default: `claude-sonnet-4-6`) |
+| `MODEL_BACKEND` | No | Backend to use — only `anthropic` exists today (default: `anthropic`) |
+| `PG_HOST` | Yes | PostgreSQL host |
+| `PG_PORT` | Yes | PostgreSQL port (usually `5432`) |
+| `PG_DBNAME` | Yes | Database name |
+| `PG_USER` | Yes | Database user (read-only recommended) |
+| `PG_PASSWORD` | Yes | Database password |
 
 ## Usage
 
