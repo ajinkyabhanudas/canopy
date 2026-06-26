@@ -37,12 +37,20 @@ def _run_query_handler(question: str) -> tuple:
         df = gr.Dataframe(value=rows or None, headers=result.columns)
         count = result.row_count
         count_md = f"**{count} row{'s' if count != 1 else ''} returned**"
+        t = result.timing
+        n_calls = t.get("llm_calls", 0)
+        timing_md = (
+            f"⏱ {t.get('total_s', 0):.1f}s total · "
+            f"LLM {t.get('llm_s', 0):.1f}s ({n_calls} call{'s' if n_calls != 1 else ''}) · "
+            f"DB {t.get('db_s', 0):.3f}s"
+        )
         return (
             result.sql or "",
             df,
             result.model_text,
             count_md,
             gr.Radio(choices=_history_choices()),
+            timing_md,
         )
     except Exception as exc:
         _log.error("query failed in UI: %s", exc, exc_info=True)
@@ -58,6 +66,7 @@ def _empty_result(message: str) -> tuple:
         message,
         "",
         gr.Radio(choices=_history_choices()),
+        "",
     )
 
 
@@ -96,11 +105,7 @@ def build_app() -> gr.Blocks:
             with gr.Column(scale=2):
                 with gr.Tabs():
                     with gr.Tab("Response"):
-                        response_box = gr.Textbox(
-                            label="",
-                            lines=14,
-                            interactive=False,
-                        )
+                        response_box = gr.Markdown("")
                     with gr.Tab("Results"):
                         row_count_md = gr.Markdown("")
                         results_table = gr.Dataframe(
@@ -114,8 +119,9 @@ def build_app() -> gr.Blocks:
                             language="sql",
                             interactive=False,
                         )
+                timing_md = gr.Markdown("", elem_classes=["timing-info"])
 
-        _OUTPUTS = [sql_box, results_table, response_box, row_count_md, history_radio]
+        _OUTPUTS = [sql_box, results_table, response_box, row_count_md, history_radio, timing_md]
 
         submit_btn.click(fn=_run_query_handler, inputs=[question_box], outputs=_OUTPUTS)
         question_box.submit(fn=_run_query_handler, inputs=[question_box], outputs=_OUTPUTS)
