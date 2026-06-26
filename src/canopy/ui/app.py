@@ -20,7 +20,8 @@ _PLACEHOLDER = (
     "in the last five years?"
 )
 
-# Type alias for the 6-tuple every handler output must match
+# Type alias for the 7-tuple every handler output must match
+# [sql_box, results_table, response_box, row_count_md, history_radio, timing_md, status_md]
 _Output = tuple
 
 
@@ -29,8 +30,8 @@ def _history_choices() -> list[str]:
     return [e["question"] for e in reversed(load_history(n=20))]
 
 
-def _empty_result(message: str) -> _Output:
-    """Return a blank 6-tuple with only the response message set."""
+def _empty_result(message: str, status: str = "") -> _Output:
+    """Return a blank 7-tuple with only the response message and optional status set."""
     return (
         "",
         gr.Dataframe(value=None),
@@ -38,6 +39,7 @@ def _empty_result(message: str) -> _Output:
         "",
         gr.Radio(choices=_history_choices()),
         "",
+        status,
     )
 
 
@@ -55,6 +57,8 @@ def _run_query_handler(question: str) -> Generator[_Output, None, None]:
     status_q: queue.Queue[str | None] = queue.Queue()
     result_holder: list = [None]
     error_holder: list[BaseException | None] = [None]
+    # Track the last intent text so it persists through subsequent status yields
+    intent_text: list[str] = [""]
 
     def _status_cb(msg: str) -> None:
         status_q.put(msg)
@@ -68,7 +72,15 @@ def _run_query_handler(question: str) -> Generator[_Output, None, None]:
             status_q.put(None)  # sentinel — signals main thread to stop waiting
 
     # Immediate feedback before the thread even starts
-    yield ("", gr.Dataframe(value=None), "_Thinking…_", "", gr.Radio(choices=_history_choices()), "")
+    yield (
+        "",
+        gr.Dataframe(value=None),
+        "_Thinking…_",
+        "",
+        gr.Radio(choices=_history_choices()),
+        "",
+        "⏳ Understanding your question…",
+    )
 
     thread = threading.Thread(target=_worker, daemon=True)
     thread.start()
@@ -77,13 +89,26 @@ def _run_query_handler(question: str) -> Generator[_Output, None, None]:
         msg = status_q.get()
         if msg is None:
             break
+        if msg.startswith("INTENT:"):
+            intent_text[0] = msg[7:].strip()
+            response_text = f"**I understood:** {intent_text[0]}\n\n_Searching the database…_"
+            status_text = "⏳ Searching the monitoring database…"
+        else:
+            # Keep intent visible in response_box if we have it, otherwise blank
+            response_text = (
+                f"**I understood:** {intent_text[0]}\n\n_Searching the database…_"
+                if intent_text[0]
+                else ""
+            )
+            status_text = f"⏳ {msg}"
         yield (
             "",
             gr.Dataframe(value=None),
-            f"⏳ {msg}",
+            response_text,
             "",
             gr.Radio(choices=_history_choices()),
             "",
+            status_text,
         )
 
     thread.join()
@@ -96,17 +121,22 @@ def _run_query_handler(question: str) -> Generator[_Output, None, None]:
                 exc.sql,
                 gr.Dataframe(value=None),
                 (
-                    "The model generated a query canopy cannot execute.\n\n"
-                    "Check the **SQL tab** to see what was generated.\n\n"
-                    f"_Reason: {exc}_"
+                    "I wasn't able to run that query safely.\n\n"
+                    "This sometimes happens with unusual question phrasing — "
+                    "try asking what's in the data rather than asking to change it.\n\n"
+                    "The generated query is shown in the **SQL tab** for reference."
                 ),
                 "",
                 gr.Radio(choices=_history_choices()),
                 "",
+                "",
             )
         else:
             _log.error("query failed in UI: %s", exc, exc_info=True)
-            yield _empty_result(f"Sorry, I couldn't process that question.\n\nDetails: {exc}")
+            yield _empty_result(
+                "Something went wrong while searching. "
+                "Please try again, or rephrase your question."
+            )
         return
 
     result = result_holder[0]
@@ -128,6 +158,7 @@ def _run_query_handler(question: str) -> Generator[_Output, None, None]:
         count_md,
         gr.Radio(choices=_history_choices()),
         timing_md,
+        "",  # clear status_md on success
     )
 
 
@@ -164,6 +195,8 @@ def build_app() -> gr.Blocks:
 
             # ── Right panel ────────────────────────────────────────────────────
             with gr.Column(scale=2):
+                # Status bar — always visible regardless of which tab is active
+                status_md = gr.Markdown("", elem_id="canopy-status")
                 with gr.Tabs():
                     with gr.Tab("Response"):
                         response_box = gr.Markdown("")
@@ -182,7 +215,10 @@ def build_app() -> gr.Blocks:
                         )
                 timing_md = gr.Markdown("", elem_classes=["timing-info"])
 
-        _OUTPUTS = [sql_box, results_table, response_box, row_count_md, history_radio, timing_md]
+        _OUTPUTS = [
+            sql_box, results_table, response_box, row_count_md,
+            history_radio, timing_md, status_md,
+        ]
 
         submit_btn.click(
             fn=_run_query_handler, inputs=[question_box], outputs=_OUTPUTS, streaming=True
