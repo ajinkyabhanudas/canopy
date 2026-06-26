@@ -9,6 +9,7 @@ description = "Natural language query tool for a bioacoustic species-monitoring 
 requires-python = ">=3.11"
 dependencies = [
     "anthropic>=0.40",
+    "gradio>=4.0",
     "python-dotenv>=1.0",
     "psycopg2-binary>=2.9",
 ]

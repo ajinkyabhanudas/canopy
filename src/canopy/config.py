@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -21,6 +22,7 @@ class ModelConfig:
     backend: str
     api_key: str
     model: str
+    timeout: float
 
 
 @dataclass(frozen=True)
@@ -40,7 +42,17 @@ def get_model_config() -> ModelConfig:
         backend=os.environ.get("MODEL_BACKEND", "anthropic"),
         api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
         model=os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
+        timeout=float(os.environ.get("ANTHROPIC_TIMEOUT", "60")),
     )
+
+
+def get_data_dir() -> Path:
+    """Return the directory used for persistent local data (history, cache).
+
+    Override with CANOPY_DATA_DIR for Docker / cloud deployments.
+    Mount a persistent volume at that path to survive container restarts.
+    """
+    return Path(os.environ.get("CANOPY_DATA_DIR", Path.home() / ".canopy"))
 
 
 def get_db_config() -> DBConfig:

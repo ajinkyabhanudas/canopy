@@ -20,7 +20,7 @@ DEFAULT_MAX_TOKENS = 4096
 class AnthropicClient(ModelClient):
     def __init__(self) -> None:
         cfg = get_model_config()
-        self._client = anthropic.Anthropic(api_key=cfg.api_key)
+        self._client = anthropic.Anthropic(api_key=cfg.api_key, timeout=cfg.timeout)
         self._model = cfg.model
 
     def generate(

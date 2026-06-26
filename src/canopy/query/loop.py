@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
+_log = logging.getLogger("canopy")
+
+from canopy.history import append_history
 from canopy.models import get_model_client
 from canopy.query.executor import QueryResult, execute_query
 from canopy.schema import build_system_prompt
@@ -63,6 +67,7 @@ def run_query(question: str) -> LoopResult:
         RuntimeError: If the model keeps calling tools beyond MAX_ITERATIONS.
         ValueError: If the model generates a non-SELECT SQL statement.
     """
+    _log.info("run_query started: %r", question)
     model = get_model_client()
     system_prompt = build_system_prompt()
     messages: list[dict] = [{"role": "user", "content": question}]
@@ -71,7 +76,7 @@ def run_query(question: str) -> LoopResult:
     last_query_result: QueryResult | None = None
     response = None
 
-    for _ in range(MAX_ITERATIONS):
+    for iteration in range(MAX_ITERATIONS):
         response = model.generate(
             system_prompt=system_prompt,
             messages=messages,
@@ -80,6 +85,7 @@ def run_query(question: str) -> LoopResult:
         messages.append(model.format_assistant_turn(response))
 
         if response.stop_reason == "end_turn":
+            _log.debug("loop ended at iteration %d", iteration + 1)
             break
 
         # stop_reason == "tool_use": execute every tool call, bundle into one message
@@ -88,13 +94,14 @@ def run_query(question: str) -> LoopResult:
         tool_results: list[tuple[str, str]] = []
         for tool_call in response.tool_calls:
             last_sql = tool_call.arguments["sql"]
+            _log.debug("executing sql: %s", last_sql)
             last_query_result = execute_query(last_sql)
             tool_results.append((tool_call.id, _format_result(last_query_result)))
         messages.append(model.format_tool_results(tool_results))
     else:
         raise RuntimeError("Query loop exceeded maximum iterations")
 
-    return LoopResult(
+    result = LoopResult(
         question=question,
         sql=last_sql,
         columns=last_query_result.columns if last_query_result else [],
@@ -102,6 +109,12 @@ def run_query(question: str) -> LoopResult:
         row_count=last_query_result.row_count if last_query_result else 0,
         model_text=response.text or "",
     )
+    try:
+        append_history(result)
+    except Exception as exc:
+        _log.debug("history write failed: %s", exc)
+    _log.info("run_query complete: %d rows returned", result.row_count)
+    return result
 
 
 def _format_result(result: QueryResult) -> str:
