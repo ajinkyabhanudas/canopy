@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from canopy.query.executor import QueryResult, execute_query
+from canopy.query.executor import QueryResult, SQLGuardError, execute_query
 
 # ---------------------------------------------------------------------------
 # Shared fixture
@@ -54,16 +54,25 @@ def mock_conn():
 )
 def test_non_select_raises(sql, monkeypatch, mock_conn):
     monkeypatch.setattr("canopy.query.executor.get_connection", lambda: mock_conn)
-    with pytest.raises(ValueError, match="Only SELECT queries are permitted"):
+    with pytest.raises(SQLGuardError, match="Only SELECT queries are permitted"):
         execute_query(sql)
 
 
 def test_non_select_does_not_open_connection(monkeypatch, mock_conn):
     """The guard fires before get_connection() is called."""
     monkeypatch.setattr("canopy.query.executor.get_connection", lambda: mock_conn)
-    with pytest.raises(ValueError):
+    with pytest.raises(SQLGuardError):
         execute_query("DROP TABLE species")
     mock_conn.cursor.assert_not_called()
+
+
+def test_guard_error_carries_sql(monkeypatch, mock_conn):
+    """SQLGuardError.sql holds the rejected query for UI surfacing."""
+    monkeypatch.setattr("canopy.query.executor.get_connection", lambda: mock_conn)
+    bad_sql = "DROP TABLE species"
+    with pytest.raises(SQLGuardError) as exc_info:
+        execute_query(bad_sql)
+    assert exc_info.value.sql == bad_sql
 
 
 # ---------------------------------------------------------------------------
@@ -81,6 +90,10 @@ def test_non_select_does_not_open_connection(monkeypatch, mock_conn):
         "\t\nSELECT id FROM species",
         "WITH cte AS (SELECT 1) SELECT * FROM cte",
         "with cte AS (SELECT id FROM species) SELECT * FROM cte",
+        "-- find new bird species\nSELECT * FROM species",
+        "-- note\nWITH cte AS (SELECT 1) SELECT * FROM cte",
+        "/* block comment */\nSELECT 1",
+        "/* multi\n   line */\nSELECT id FROM species",
     ],
 )
 def test_select_passes_guard(sql, monkeypatch, mock_conn):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from canopy.history import append_history
@@ -50,7 +51,10 @@ class LoopResult:
     timing: dict = field(default_factory=dict)
 
 
-def run_query(question: str) -> LoopResult:
+def run_query(
+    question: str,
+    status_cb: Callable[[str], None] | None = None,
+) -> LoopResult:
     """Translate a natural language question into SQL, execute it, and return the result.
 
     Runs an agentic loop: the model is asked the question with access to the
@@ -82,6 +86,8 @@ def run_query(question: str) -> LoopResult:
     db_times: list[float] = []
 
     for iteration in range(MAX_ITERATIONS):
+        if status_cb:
+            status_cb(f"Calling model (attempt {iteration + 1} of up to {MAX_ITERATIONS})…")
         t_llm = time.perf_counter()
         response = model.generate(
             system_prompt=system_prompt,
@@ -102,10 +108,17 @@ def run_query(question: str) -> LoopResult:
         tool_results: list[tuple[str, str]] = []
         for tool_call in response.tool_calls:
             last_sql = tool_call.arguments["sql"]
+            if status_cb:
+                status_cb("SQL generated — executing against the database…")
             t_db = time.perf_counter()
             last_query_result = execute_query(last_sql)
             db_times.append(time.perf_counter() - t_db)
             _log.debug("db execute: %.3fs — %s", db_times[-1], last_sql[:120])
+            if status_cb:
+                status_cb(
+                    f"Query returned {last_query_result.row_count} row"
+                    f"{'s' if last_query_result.row_count != 1 else ''} — refining response…"
+                )
             tool_results.append((tool_call.id, _format_result(last_query_result)))
         messages.append(model.format_tool_results(tool_results))
     else:
