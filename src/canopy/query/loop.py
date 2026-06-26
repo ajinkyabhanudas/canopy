@@ -5,12 +5,12 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-_log = logging.getLogger("canopy")
-
 from canopy.history import append_history
 from canopy.models import get_model_client
 from canopy.query.executor import QueryResult, execute_query
 from canopy.schema import build_system_prompt
+
+_log = logging.getLogger("canopy")
 
 MAX_ITERATIONS = 5
 

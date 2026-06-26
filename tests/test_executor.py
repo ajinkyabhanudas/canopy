@@ -6,12 +6,11 @@ get_connection() is monkeypatched throughout so these run in any environment.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 import pytest
 
 from canopy.query.executor import QueryResult, execute_query
-
 
 # ---------------------------------------------------------------------------
 # Shared fixture

@@ -292,7 +292,7 @@ EVAL_CASES: list[EvalCase] = [
     EvalCase(
         question="Which species have been validated at any recording site?",
         check_fn=_q1_species_validated_at_any_site,
-        description="Returns species with validated_true detections; scientific_name column present, row_count > 0",
+        description="Returns species with validated_true detections; scientific_name column present, row_count > 0",  # noqa: E501
     ),
     EvalCase(
         question="List all validated species alongside the site names where they were detected",
@@ -308,7 +308,7 @@ EVAL_CASES: list[EvalCase] = [
     EvalCase(
         question="How many validated detections were recorded in each year?",
         check_fn=_q4_annual_detection_counts,
-        description="Groups by year using EXTRACT or DATE_TRUNC; count column present, row_count > 0",
+        description="Groups by year using EXTRACT or DATE_TRUNC; count column present, row_count > 0",  # noqa: E501
     ),
     EvalCase(
         question="Which species were detected between 2022 and 2024?",
@@ -362,7 +362,7 @@ EVAL_CASES: list[EvalCase] = [
     EvalCase(
         question="Which species from the species catalog have zero validated detections?",
         check_fn=_q14_species_zero_validated,
-        description="Anti-join pattern (NOT IN / LEFT JOIN / NOT EXISTS) to find undetected species",
+        description="Anti-join pattern (NOT IN / LEFT JOIN / NOT EXISTS) to find undetected species",  # noqa: E501
     ),
     # --- Category 7: Gap analysis ---
     EvalCase(
@@ -377,12 +377,12 @@ EVAL_CASES: list[EvalCase] = [
     ),
     # --- Category 8: Declined / guardrail questions ---
     EvalCase(
-        question="Is the giant antpitta population increasing or decreasing based on the detection data?",
+        question="Is the giant antpitta population increasing or decreasing based on the detection data?",  # noqa: E501
         check_fn=_q17_population_trend_declined,
         description="Model should include guardrail language about trend inference limits",
     ),
     EvalCase(
-        question="What is the IUCN Red List conservation status of the species detected at our sites?",
+        question="What is the IUCN Red List conservation status of the species detected at our sites?",  # noqa: E501
         check_fn=_q18_iucn_flagged_not_in_db,
         description="Model should flag that IUCN data is not stored in this database",
     ),
@@ -392,7 +392,7 @@ EVAL_CASES: list[EvalCase] = [
         description="Model should decline extinction-risk inference with guardrail language",
     ),
     EvalCase(
-        question="Should we prioritize conservation resources at our highest-detection sites based on this data alone?",
+        question="Should we prioritize conservation resources at our highest-detection sites based on this data alone?",  # noqa: E501
         check_fn=_q20_conservation_priority_declined,
         description="Model should decline conservation priority recommendation",
     ),

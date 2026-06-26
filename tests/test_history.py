@@ -2,14 +2,12 @@
 
 import json
 from datetime import datetime, timezone
-from pathlib import Path
 
 import pytest
 
 import canopy.history as history_mod
 from canopy.history import append_history, clear_history, load_history
 from canopy.query.loop import LoopResult
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

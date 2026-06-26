@@ -14,8 +14,6 @@ from tests.eval.queries import (
     EVAL_CASES,
     EvalCase,
     _col_has,
-    _sql_has,
-    _text_has,
     _q1_species_validated_at_any_site,
     _q4_annual_detection_counts,
     _q7_status_breakdown,
@@ -24,8 +22,9 @@ from tests.eval.queries import (
     _q17_population_trend_declined,
     _q18_iucn_flagged_not_in_db,
     _q20_conservation_priority_declined,
+    _sql_has,
+    _text_has,
 )
-
 
 # ---------------------------------------------------------------------------
 # Factory — build mock LoopResult instances

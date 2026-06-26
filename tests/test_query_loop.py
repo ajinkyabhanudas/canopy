@@ -8,13 +8,12 @@ loop and the executor, using only a mocked DB connection underneath.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 import pytest
 
 from canopy.models.base import ModelResponse, ToolCall
-from canopy.query.loop import LoopResult, MAX_ITERATIONS, run_query
-
+from canopy.query.loop import MAX_ITERATIONS, run_query
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
