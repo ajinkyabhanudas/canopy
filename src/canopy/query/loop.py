@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from canopy.cache import lookup_cache, write_cache
 from canopy.history import append_history
 from canopy.models import get_model_client
 from canopy.query.executor import QueryResult, execute_query
@@ -75,6 +76,14 @@ def run_query(
         ValueError: If the model generates a non-SELECT SQL statement.
     """
     _log.info("run_query started: %r", question)
+
+    cached = lookup_cache(question)
+    if cached is not None:
+        if status_cb:
+            status_cb("CACHE_HIT")
+        _log.info("cache hit for question: %r", question[:60])
+        return cached
+
     t_total = time.perf_counter()
     model = get_model_client()
     system_prompt = build_system_prompt()
@@ -149,6 +158,10 @@ def run_query(
         model_text=response.text or "",
         timing=timing,
     )
+    try:
+        write_cache(result)
+    except Exception as exc:
+        _log.warning("cache write failed: %s", exc)
     try:
         append_history(result)
     except Exception as exc:

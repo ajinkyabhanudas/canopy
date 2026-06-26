@@ -20,6 +20,13 @@ from canopy.query.loop import MAX_ITERATIONS, run_query
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _bypass_cache(monkeypatch):
+    """Prevent real cache reads/writes from interfering with loop unit tests."""
+    monkeypatch.setattr("canopy.query.loop.lookup_cache", lambda q: None)
+    monkeypatch.setattr("canopy.query.loop.write_cache", lambda r: None)
+
+
 @pytest.fixture
 def mock_conn():
     """Mock psycopg2 connection that returns one column and one row."""
@@ -343,6 +350,52 @@ def test_tool_use_with_empty_tool_calls_raises(monkeypatch, mock_model):
 
     with pytest.raises(ValueError, match="no tool calls"):
         run_query("Broken model response.")
+
+
+# ---------------------------------------------------------------------------
+# Cache integration
+# ---------------------------------------------------------------------------
+
+
+def test_cache_hit_skips_llm_call(monkeypatch, mock_model, tmp_path):
+    """If lookup_cache returns a result, the model should never be called."""
+    from canopy.query.loop import LoopResult
+
+    cached = LoopResult(
+        question="How many detections?",
+        sql="SELECT COUNT(*) FROM detections",
+        columns=["count"],
+        rows=[(42,)],
+        row_count=42,
+        model_text="There are 42 detections.",
+        timing={"cache_hit": True, "cached_at": "2026-06-26T00:00:00+00:00"},
+    )
+    monkeypatch.setattr("canopy.query.loop.lookup_cache", lambda q: cached)
+    monkeypatch.setattr("canopy.query.loop.get_model_client", lambda: mock_model)
+
+    result = run_query("How many detections?")
+
+    mock_model.generate.assert_not_called()
+    assert result.row_count == 42
+    assert result.timing.get("cache_hit") is True
+
+
+def test_cache_miss_writes_result(monkeypatch, mock_model, mock_conn):
+    """On a cache miss, the result should be written to cache after the query."""
+    written: list = []
+    monkeypatch.setattr("canopy.query.loop.lookup_cache", lambda q: None)
+    monkeypatch.setattr("canopy.query.loop.write_cache", lambda r: written.append(r))
+    monkeypatch.setattr("canopy.query.loop.get_model_client", lambda: mock_model)
+    monkeypatch.setattr("canopy.query.executor.get_connection", lambda: mock_conn)
+    mock_model.generate.side_effect = [
+        _tool_response("SELECT 1"),
+        _text_response("Done."),
+    ]
+
+    run_query("A fresh question.")
+
+    assert len(written) == 1
+    assert written[0].model_text == "Done."
 
 
 # ---------------------------------------------------------------------------

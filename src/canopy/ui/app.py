@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+from datetime import datetime, timezone
 from typing import Generator
 
 import gradio as gr
@@ -89,6 +90,17 @@ def _run_query_handler(question: str) -> Generator[_Output, None, None]:
         msg = status_q.get()
         if msg is None:
             break
+        if msg == "CACHE_HIT":
+            yield (
+                "",
+                gr.Dataframe(value=None),
+                "_Loading from cache…_",
+                "",
+                gr.Radio(choices=_history_choices()),
+                "",
+                "✓ Loading from cache…",
+            )
+            continue
         if msg.startswith("INTENT:"):
             intent_text[0] = msg[7:].strip()
             response_text = f"**I understood:** {intent_text[0]}\n\n_Searching the database…_"
@@ -145,12 +157,17 @@ def _run_query_handler(question: str) -> Generator[_Output, None, None]:
     count = result.row_count
     count_md = f"**{count} row{'s' if count != 1 else ''} returned**"
     t = result.timing
-    n_calls = t.get("llm_calls", 0)
-    timing_md = (
-        f"⏱ {t.get('total_s', 0):.1f}s total · "
-        f"LLM {t.get('llm_s', 0):.1f}s ({n_calls} call{'s' if n_calls != 1 else ''}) · "
-        f"DB {t.get('db_s', 0):.3f}s"
-    )
+    if t.get("cache_hit"):
+        cached_at = datetime.fromisoformat(t["cached_at"])
+        age_h = int((datetime.now(timezone.utc) - cached_at).total_seconds() // 3600)
+        timing_md = f"⚡ Cached result · {age_h}h ago" if age_h else "⚡ Cached result · just now"
+    else:
+        n_calls = t.get("llm_calls", 0)
+        timing_md = (
+            f"⏱ {t.get('total_s', 0):.1f}s total · "
+            f"LLM {t.get('llm_s', 0):.1f}s ({n_calls} call{'s' if n_calls != 1 else ''}) · "
+            f"DB {t.get('db_s', 0):.3f}s"
+        )
     yield (
         result.sql or "",
         df,

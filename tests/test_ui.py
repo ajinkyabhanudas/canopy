@@ -210,6 +210,35 @@ def test_handler_sql_guard_error_shows_sql(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Cache hit UX
+# ---------------------------------------------------------------------------
+
+
+def test_handler_cache_hit_shows_cached_status(monkeypatch):
+    """When run_query sends CACHE_HIT, UI should show a cache-specific status."""
+    cached_result = _make_result(
+        timing={"cache_hit": True, "cached_at": "2026-06-26T10:00:00+00:00"}
+    )
+
+    def _return_cached(q, status_cb=None):
+        if status_cb:
+            status_cb("CACHE_HIT")
+        return cached_result
+
+    monkeypatch.setattr(ui_mod, "run_query", _return_cached)
+    monkeypatch.setattr(ui_mod, "load_history", lambda n=20: [])
+
+    yields = _all_yields("How many detections?")
+    # One of the intermediate yields should mention cache
+    statuses = [y[6] for y in yields]
+    assert any("cache" in s.lower() or "Cache" in s for s in statuses)
+
+    # Final yield timing_md should show cached indicator
+    final = yields[-1]
+    assert "⚡" in final[5] or "Cached" in final[5]
+
+
+# ---------------------------------------------------------------------------
 # _clear_handler
 # ---------------------------------------------------------------------------
 
