@@ -221,10 +221,10 @@ def build_app() -> gr.Blocks:
         ]
 
         submit_btn.click(
-            fn=_run_query_handler, inputs=[question_box], outputs=_OUTPUTS, streaming=True
+            fn=_run_query_handler, inputs=[question_box], outputs=_OUTPUTS
         )
         question_box.submit(
-            fn=_run_query_handler, inputs=[question_box], outputs=_OUTPUTS, streaming=True
+            fn=_run_query_handler, inputs=[question_box], outputs=_OUTPUTS
         )
         history_radio.change(
             fn=lambda q: q or "",
