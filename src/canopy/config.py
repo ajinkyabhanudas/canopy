@@ -51,8 +51,17 @@ def get_data_dir() -> Path:
 
     Override with CANOPY_DATA_DIR for Docker / cloud deployments.
     Mount a persistent volume at that path to survive container restarts.
+    Falls back to ~/.canopy if the configured path cannot be created (e.g. when
+    CANOPY_DATA_DIR=/data is set in a local .env but the Docker volume is absent).
     """
-    return Path(os.environ.get("CANOPY_DATA_DIR", Path.home() / ".canopy"))
+    configured = Path(os.environ.get("CANOPY_DATA_DIR", Path.home() / ".canopy"))
+    try:
+        configured.mkdir(parents=True, exist_ok=True)
+        return configured
+    except (PermissionError, OSError):
+        fallback = Path.home() / ".canopy"
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback
 
 
 def get_db_config() -> DBConfig:
