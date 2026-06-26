@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 
 from canopy.history import append_history
 from canopy.models import get_model_client
@@ -46,6 +47,7 @@ class LoopResult:
     rows: list[tuple]
     row_count: int
     model_text: str
+    timing: dict = field(default_factory=dict)
 
 
 def run_query(question: str) -> LoopResult:
@@ -68,6 +70,7 @@ def run_query(question: str) -> LoopResult:
         ValueError: If the model generates a non-SELECT SQL statement.
     """
     _log.info("run_query started: %r", question)
+    t_total = time.perf_counter()
     model = get_model_client()
     system_prompt = build_system_prompt()
     messages: list[dict] = [{"role": "user", "content": question}]
@@ -75,13 +78,18 @@ def run_query(question: str) -> LoopResult:
     last_sql: str | None = None
     last_query_result: QueryResult | None = None
     response = None
+    llm_times: list[float] = []
+    db_times: list[float] = []
 
     for iteration in range(MAX_ITERATIONS):
+        t_llm = time.perf_counter()
         response = model.generate(
             system_prompt=system_prompt,
             messages=messages,
             tools=[EXECUTE_SQL_TOOL],
         )
+        llm_times.append(time.perf_counter() - t_llm)
+        _log.debug("llm call %d: %.2fs", iteration + 1, llm_times[-1])
         messages.append(model.format_assistant_turn(response))
 
         if response.stop_reason == "end_turn":
@@ -94,12 +102,29 @@ def run_query(question: str) -> LoopResult:
         tool_results: list[tuple[str, str]] = []
         for tool_call in response.tool_calls:
             last_sql = tool_call.arguments["sql"]
-            _log.debug("executing sql: %s", last_sql)
+            t_db = time.perf_counter()
             last_query_result = execute_query(last_sql)
+            db_times.append(time.perf_counter() - t_db)
+            _log.debug("db execute: %.3fs — %s", db_times[-1], last_sql[:120])
             tool_results.append((tool_call.id, _format_result(last_query_result)))
         messages.append(model.format_tool_results(tool_results))
     else:
         raise RuntimeError("Query loop exceeded maximum iterations")
+
+    total_s = time.perf_counter() - t_total
+    timing = {
+        "total_s": round(total_s, 2),
+        "llm_s": round(sum(llm_times), 2),
+        "llm_calls": len(llm_times),
+        "db_s": round(sum(db_times), 3),
+        "db_calls": len(db_times),
+    }
+    _log.info(
+        "run_query complete: %d rows in %.1fs (llm %.1fs × %d calls, db %.3fs × %d calls)",
+        last_query_result.row_count if last_query_result else 0,
+        total_s, timing["llm_s"], timing["llm_calls"],
+        timing["db_s"], timing["db_calls"],
+    )
 
     result = LoopResult(
         question=question,
@@ -108,6 +133,7 @@ def run_query(question: str) -> LoopResult:
         rows=last_query_result.rows if last_query_result else [],
         row_count=last_query_result.row_count if last_query_result else 0,
         model_text=response.text or "",
+        timing=timing,
     )
     try:
         append_history(result)
