@@ -50,6 +50,26 @@ def test_db_config_is_configured_false_when_empty(monkeypatch):
     assert get_db_config().is_configured() is False
 
 
+def test_connection_is_set_readonly(monkeypatch):
+    """get_connection() must set readonly=True on the connection (belt-and-suspenders)."""
+    from unittest.mock import MagicMock, patch
+
+    monkeypatch.setenv("PG_HOST", "localhost")
+    monkeypatch.setenv("PG_PORT", "5432")
+    monkeypatch.setenv("PG_DBNAME", "testdb")
+    monkeypatch.setenv("PG_USER", "user")
+    monkeypatch.setenv("PG_PASSWORD", "pass")
+
+    mock_conn = MagicMock()
+    with patch("canopy.db.connection.psycopg2.connect", return_value=mock_conn):
+        from canopy.db.connection import get_connection
+
+        conn = get_connection()
+
+    mock_conn.set_session.assert_called_once_with(readonly=True)
+    assert conn is mock_conn
+
+
 def test_db_config_is_configured_true_when_all_set(monkeypatch):
     monkeypatch.setenv("PG_HOST", "localhost")
     monkeypatch.setenv("PG_PORT", "5432")

@@ -32,10 +32,12 @@ def get_connection() -> psycopg2.extensions.connection:
         ]
         raise ValueError(f"Missing required environment variables: {missing}")
 
-    return psycopg2.connect(
+    conn = psycopg2.connect(
         host=cfg.host,
         port=cfg.port,
         dbname=cfg.dbname,
         user=cfg.user,
         password=cfg.password,
     )
+    conn.set_session(readonly=True)
+    return conn

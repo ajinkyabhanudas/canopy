@@ -36,6 +36,7 @@ EXECUTE_SQL_TOOL: dict = {
 }
 
 _ROW_DISPLAY_LIMIT = 200
+_SENSITIVE_COLUMNS = frozenset({"latitude", "longitude"})
 
 
 @dataclass(frozen=True)
@@ -87,7 +88,7 @@ def run_query(
 
     for iteration in range(MAX_ITERATIONS):
         if status_cb:
-            status_cb(f"Calling model (attempt {iteration + 1} of up to {MAX_ITERATIONS})…")
+            status_cb("Understanding your question…" if iteration == 0 else "Refining the search…")
         t_llm = time.perf_counter()
         response = model.generate(
             system_prompt=system_prompt,
@@ -96,6 +97,8 @@ def run_query(
         )
         llm_times.append(time.perf_counter() - t_llm)
         _log.debug("llm call %d: %.2fs", iteration + 1, llm_times[-1])
+        if iteration == 0 and response.text and status_cb:
+            status_cb(f"INTENT:{response.text.strip()}")
         messages.append(model.format_assistant_turn(response))
 
         if response.stop_reason == "end_turn":
@@ -109,16 +112,14 @@ def run_query(
         for tool_call in response.tool_calls:
             last_sql = tool_call.arguments["sql"]
             if status_cb:
-                status_cb("SQL generated — executing against the database…")
+                status_cb("Searching the monitoring database…")
             t_db = time.perf_counter()
             last_query_result = execute_query(last_sql)
             db_times.append(time.perf_counter() - t_db)
             _log.debug("db execute: %.3fs — %s", db_times[-1], last_sql[:120])
             if status_cb:
-                status_cb(
-                    f"Query returned {last_query_result.row_count} row"
-                    f"{'s' if last_query_result.row_count != 1 else ''} — refining response…"
-                )
+                n = last_query_result.row_count
+                status_cb(f"Found {n} detection{'s' if n != 1 else ''} — writing your answer…")
             tool_results.append((tool_call.id, _format_result(last_query_result)))
         messages.append(model.format_tool_results(tool_results))
     else:
@@ -151,19 +152,22 @@ def run_query(
     try:
         append_history(result)
     except Exception as exc:
-        _log.debug("history write failed: %s", exc)
+        _log.warning("history write failed (check CANOPY_DATA_DIR): %s", exc)
     _log.info("run_query complete: %d rows returned", result.row_count)
     return result
 
 
 def _format_result(result: QueryResult) -> str:
-    """Format a QueryResult as a readable string for the tool result message."""
+    """Format a QueryResult for the model, stripping sensitive columns."""
+    safe_idx = [i for i, c in enumerate(result.columns) if c not in _SENSITIVE_COLUMNS]
+    safe_cols = [result.columns[i] for i in safe_idx]
+    safe_rows = [tuple(row[i] for i in safe_idx) for row in result.rows[:_ROW_DISPLAY_LIMIT]]
     lines = [
-        f"Columns: {', '.join(result.columns)}",
+        f"Columns: {', '.join(safe_cols)}",
         f"Row count: {result.row_count}",
         "Rows:",
     ]
-    for row in result.rows[:_ROW_DISPLAY_LIMIT]:
+    for row in safe_rows:
         lines.append(f"  {row}")
     if result.row_count > _ROW_DISPLAY_LIMIT:
         lines.append(f"  ... ({result.row_count - _ROW_DISPLAY_LIMIT} more rows truncated)")

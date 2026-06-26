@@ -184,6 +184,37 @@ def test_format_result_truncates_at_200_rows(monkeypatch, mock_model, mock_conn)
     assert "50 more rows truncated" in result_str
 
 
+def test_format_result_strips_sensitive_columns(monkeypatch, mock_model, mock_conn):
+    """lat/lon columns must not appear in the string sent back to the model."""
+    mock_conn.cursor.return_value.description = [
+        ("scientific_name",), ("site",), ("latitude",), ("longitude",)
+    ]
+    mock_conn.cursor.return_value.fetchall.return_value = [
+        ("Grallaria gigantea", "Buenaventura", -1.23, -78.45)
+    ]
+    mock_model.generate.side_effect = [
+        _tool_response(  # noqa: E501
+            "SELECT s.scientific_name, si.name AS site, d.latitude, d.longitude "
+            "FROM detections d JOIN species s ON d.species_id = s.id "
+            "JOIN sites si ON d.site_id = si.id LIMIT 1"
+        ),
+        _text_response("Found species at site."),
+    ]
+    monkeypatch.setattr("canopy.query.loop.get_model_client", lambda: mock_model)
+    monkeypatch.setattr("canopy.query.executor.get_connection", lambda: mock_conn)
+
+    run_query("Which species at which site?")
+
+    _, result_str = mock_model.format_tool_results.call_args[0][0][0]
+    assert "latitude" not in result_str
+    assert "longitude" not in result_str
+    assert "-1.23" not in result_str
+    assert "-78.45" not in result_str
+    # Non-sensitive columns still present
+    assert "scientific_name" in result_str
+    assert "site" in result_str
+
+
 def test_format_result_empty_rows(monkeypatch, mock_model, mock_conn):
     mock_conn.cursor.return_value.description = [("id",)]
     mock_conn.cursor.return_value.fetchall.return_value = []

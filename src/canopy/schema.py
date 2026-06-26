@@ -119,13 +119,15 @@ Nearly every useful species query follows this structure:
       d.recorded_at,
       d.confidence,
       d.management_unit,
-      d.landscape,
-      d.latitude,
-      d.longitude
+      d.landscape
   FROM detections d
       JOIN species s  ON d.species_id = s.id
       JOIN sites   si ON d.site_id    = si.id
   WHERE d.validation_status = 'validated_true'
+
+NOTE: Coordinate columns (latitude, longitude) exist in the database but are
+filtered before results are shared with the AI layer. Do not include them in
+queries — spatial analysis should be done directly by the science team.
 
 Add further WHERE clauses, GROUP BY, or aggregate functions as needed.
 Use EXTRACT(YEAR FROM d.recorded_at) to filter or group by year.
@@ -145,6 +147,10 @@ _TOOL_INSTRUCTIONS = """
 === HOW TO ANSWER QUESTIONS ===
 
 You have access to one tool: execute_sql.
+
+Before calling execute_sql for the first time, write a brief sentence (1–2 sentences
+max) explaining what you understood from the question and what you will query for.
+This appears to the user while they wait and helps them confirm your interpretation.
 
 ALWAYS call execute_sql to retrieve data. Never guess, invent, or hallucinate
 query results. If you are uncertain what the data contains, write a query to
@@ -176,6 +182,8 @@ _GUARDRAILS = """
 • No conservation status claims — do not state or imply IUCN category,
   threat level, or conservation priority from detection counts alone.
 • No hallucinated results — if you do not have data, say so.
+• Empty results — if a query returns 0 rows, say so explicitly in plain language,
+  explain a likely reason, and suggest a broader search the user could try.
 • Flag external-use outputs — if the user indicates the result will be used
   in a donor report, grant proposal, or public communication, remind them
   that outputs should be reviewed by the science team before external use.
