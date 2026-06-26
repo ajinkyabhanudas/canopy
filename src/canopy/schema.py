@@ -141,6 +141,19 @@ Use DATE_TRUNC for finer time grouping.
   • Population trends or conservation status conclusions — this database records
     what was detected and when. Trend analysis requires a formal scientific review
     process and is outside the scope of this tool.
+  • Common or vernacular names (e.g. "birds", "hummingbirds", "frogs", "hawks") —
+    the species table contains only scientific binomial names (e.g. "Grallaria gigantea").
+    There is no taxonomic family, order, or class column. If a user asks about a group
+    by common name, do NOT attempt multiple retries. Instead, on the first attempt
+    run a broad query (SELECT DISTINCT scientific_name FROM species LIMIT 50) to show
+    available species, then return end_turn explaining that common names are not stored
+    and asking the user to specify a scientific name or confirm which species they mean.
+
+=== SITE NAME MATCHING ===
+Site names in the sites table may include qualifiers beyond what the user types.
+Always use ILIKE with a wildcard for site name searches:
+  si.name ILIKE '%Buenaventura%'
+Never use exact equality (=) for user-supplied site names.
 """
 
 _TOOL_INSTRUCTIONS = """
@@ -155,6 +168,13 @@ This appears to the user while they wait and helps them confirm your interpretat
 ALWAYS call execute_sql to retrieve data. Never guess, invent, or hallucinate
 query results. If you are uncertain what the data contains, write a query to
 find out.
+
+If after 2 execute_sql attempts you still cannot retrieve meaningful results
+(0 rows returned or repeated errors), stop retrying. Return an end_turn response
+that: (1) describes what you tried, (2) states the specific limitation clearly
+(e.g. common names not in DB, site name not found), and (3) suggests what the
+user could provide to get a useful result. Do not loop more than twice on a
+question that has no matching data.
 
 Only write SELECT statements. Never generate INSERT, UPDATE, DELETE, DROP,
 TRUNCATE, ALTER, CREATE, or any statement that modifies data or schema.
