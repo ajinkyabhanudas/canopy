@@ -1,66 +1,101 @@
 # canopy
 
 A natural language query tool for Jocotoco's bioacoustic species-monitoring
-database. Ask a question in plain English (or Spanish), canopy translates it
-into a SQL query, executes it read-only against the dataset, and returns the
-raw results alongside the SQL that was run.
+database. Ask a question in plain English, canopy translates it into a SQL
+query, executes it read-only against the database, and returns a plain-English
+answer alongside the SQL for inspection.
 
 ## What it does
 
-- Accepts a natural language question about species detections, sites,
+- Accepts a natural language question about species detections, recording sites,
   validation records, and related metadata.
 - Uses Claude to generate a PostgreSQL SELECT query — never guesses results.
-- Executes the query read-only and returns the data with the SQL visible for
-  inspection (Pedro's transparency requirement).
-- Never infers population trends or conservation status — that requires a
-  formal scientific review process, not an automated inference.
-- Vendor-neutral model interface: swapping the underlying LLM means adding
-  one adapter file, not rewriting the tool.
+- Executes read-only and returns the data with the SQL visible for inspection.
+- Persists query history to disk (last 20 queries surfaced in the UI sidebar).
+- Never infers population trends or conservation status — that requires a formal
+  scientific review process, not automated inference.
+- Vendor-neutral model interface: swapping the LLM means adding one adapter file.
 
 ## Requirements
 
-- Python 3.11+
+- Python 3.11+ (local) or Docker (recommended for deployment)
 - An Anthropic API key
 - PostgreSQL credentials for the VAJocotoco database
 
-## Install
+---
+
+## Quickstart — Docker (recommended)
+
+### 1. Build the image
 
 ```bash
-pip install -e ".[dev]"
+docker build -t canopy:dev .
 ```
 
-## Setup
+### 2. Configure
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` and fill in the values below. Never commit `.env`.
+Edit `.env` and fill in all required values. Never commit `.env`.
 
 | Variable | Required | Description |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | Yes | Your Anthropic API key |
-| `ANTHROPIC_MODEL` | No | Model to use (default: `claude-sonnet-4-6`) |
-| `MODEL_BACKEND` | No | Backend to use — only `anthropic` exists today (default: `anthropic`) |
+| `ANTHROPIC_API_KEY` | Yes | Anthropic API key |
+| `ANTHROPIC_MODEL` | No | Model ID (default: `claude-sonnet-4-6`) |
+| `MODEL_BACKEND` | No | Backend (default: `anthropic`) |
 | `PG_HOST` | Yes | PostgreSQL host |
 | `PG_PORT` | Yes | PostgreSQL port (usually `5432`) |
 | `PG_DBNAME` | Yes | Database name |
-| `PG_USER` | Yes | Database user (read-only recommended) |
+| `PG_USER` | Yes | Database user (read-only) |
 | `PG_PASSWORD` | Yes | Database password |
+| `ANTHROPIC_TIMEOUT` | No | API timeout in seconds (default: `60`) |
+| `CANOPY_DATA_DIR` | No | History file location (default: `/data` in Docker) |
 
-## Manual checks
+### 3. Run
 
-### 1. Verify the API key works
+```bash
+./scripts/docker_run.sh
+```
 
-Makes one real billable API call to confirm credentials and model are configured:
+Open **http://localhost:7860** in a browser.
+
+> **Why not `--env-file`?** Docker's `--env-file` passes surrounding quotes
+> literally. `docker_run.sh` sources `.env` via shell so quotes are stripped
+> correctly before the container starts.
+
+### 4. Stop
+
+```bash
+docker stop $(docker ps -q --filter "ancestor=canopy:dev")
+```
+
+---
+
+## Quickstart — Local (no Docker)
+
+```bash
+pip install -e ".[dev]"
+cp .env.example .env   # fill in values
+python scripts/run_ui.py
+```
+
+Open **http://localhost:7860**.
+
+---
+
+## Manual checks (CLI, no UI)
+
+### Verify the API key
+
+One billable call to confirm credentials and model are configured:
 
 ```bash
 python scripts/smoke_test.py
 ```
 
-### 2. Verify the database connection
-
-Runs a `SELECT 1` against PostgreSQL (requires `PG_*` vars in `.env`):
+### Verify the database connection
 
 ```bash
 python -c "
@@ -73,104 +108,102 @@ conn.close()
 "
 ```
 
-### 3. Run a natural language query
-
-End-to-end test of the full loop — model call → SQL generation → DB execution:
+### Run a query from the command line
 
 ```bash
 python -c "
 from canopy.query import run_query
 result = run_query('What species have been validated at any site?')
 print('SQL:', result.sql)
-print('Rows returned:', result.row_count)
-print('Columns:', result.columns)
+print('Rows:', result.row_count)
 print()
 print(result.model_text)
 "
 ```
 
-### 4. Inspect the system prompt
-
-Prints the full prompt the model receives on every call:
+### Inspect the system prompt
 
 ```bash
 python -c "from canopy.schema import build_system_prompt; print(build_system_prompt())"
 ```
 
+---
+
 ## Tests
 
 ```bash
-# All tests (unit only — no DB or API key needed)
-pytest tests/
-
-# With coverage
+# All unit tests (no DB or API key needed)
 pytest tests/ --cov=canopy --cov-report=term-missing
 
-# Single module
-pytest tests/test_query_loop.py -v
+# Linting
+ruff check src/ tests/
 ```
 
-Expected output: 104 passed, 1 skipped (live DB integration test, skipped
-when `PG_*` vars are absent).
+Expected: **131 passed, 1 skipped**, 87% coverage.
 
-## Eval
+The skipped test is a live DB integration test — it runs automatically when
+`PG_*` vars are present.
 
-Run the 20-question ground-truth eval set against the live database:
+## Ground-truth eval
+
+Runs 20 questions against the live database and validates SQL structure and
+result shape:
 
 ```bash
 python scripts/run_eval.py
 ```
 
-Each question has a structural `check_fn` that validates SQL content and result
-shape without depending on exact row values. Exit code 0 if ≥85% pass (17/20).
-Requires `ANTHROPIC_API_KEY` and `PG_*` vars.
+Pass threshold: ≥85% (17/20). Requires `ANTHROPIC_API_KEY` and `PG_*` vars.
+
+---
 
 ## Architecture
 
 ```
 src/canopy/
-├── schema.py          # DB schema + system prompt (SCHEMA_CONTEXT constant,
-│                      # build_system_prompt())
-├── config.py          # All env var loading (ModelConfig, DBConfig)
+├── config.py          # Env var loading — ModelConfig, DBConfig, get_data_dir()
+├── schema.py          # DB schema constant + build_system_prompt()
+├── history.py         # append_history, load_history, clear_history (JSONL)
 ├── models/
 │   ├── base.py        # ModelClient ABC — vendor-neutral interface
-│   ├── anthropic.py   # Claude adapter (the only backend today)
-│   └── registry.py    # get_model_client() — reads MODEL_BACKEND env var
+│   ├── anthropic.py   # Claude adapter (only backend today)
+│   └── registry.py    # get_model_client() — reads MODEL_BACKEND
 ├── db/
-│   └── connection.py  # get_connection() — raw psycopg2, read-only
-└── query/
-    ├── executor.py    # execute_query(sql) — SELECT-only guard + DB execution
-    └── loop.py        # run_query(question) — agentic loop, returns LoopResult
+│   └── connection.py  # get_connection() — psycopg2, read-only
+├── query/
+│   ├── executor.py    # execute_query() — SELECT-only guard + execution
+│   └── loop.py        # run_query() — agentic loop, returns LoopResult
+└── ui/
+    └── app.py         # build_app() — Gradio two-panel UI
+
+scripts/
+├── docker_run.sh      # Docker launcher (handles .env quote stripping)
+├── run_ui.py          # Local UI launcher
+├── smoke_test.py      # API key / model config check
+└── run_eval.py        # Ground-truth eval runner
 
 tests/
 └── eval/
     └── queries.py     # 20 EvalCase entries + check_fn predicates
 
-scripts/
-├── smoke_test.py      # Verify API key and model config
-└── run_eval.py        # Ground-truth eval runner (requires live DB + API key)
+Dockerfile             # python:3.11-slim, non-root user, /data volume
 ```
-
-### Adding a new model backend
-
-1. Create `src/canopy/models/<provider>.py` implementing `ModelClient`
-   (three methods: `generate`, `format_tool_result`, `format_tool_results`,
-   `format_assistant_turn`).
-2. Register it in `src/canopy/models/registry.py`.
-3. Set `MODEL_BACKEND=<provider>` in `.env`. Nothing else changes.
 
 ### Key design decisions
 
 - **SELECT-only guard** — `execute_query()` rejects any non-SELECT statement
-  before opening a DB connection. Belt-and-suspenders over the LLM guardrail.
-- **Parallel tool calls** — if Claude returns multiple tool_use blocks in one
-  response, all are executed sequentially and their results are bundled into a
-  single user message (Anthropic API requirement). Sequential execution is
-  intentional for v1; threading is not needed at this data volume.
-- **System prompt is a constant** — `SCHEMA_CONTEXT` is a module-level string,
-  not computed at runtime. `build_system_prompt()` is a function so runtime
-  context (e.g. language preference) can be injected later without touching
-  the schema constant.
+  before touching the DB. Belt-and-suspenders over the LLM guardrail.
+- **Parallel tool calls** — if Claude returns multiple `tool_use` blocks,
+  all are executed and their results are bundled into a single user message
+  (Anthropic API requirement).
+- **System prompt is a constant** — `SCHEMA_CONTEXT` is a module-level string.
+  `build_system_prompt()` is a function so runtime context (language preference,
+  etc.) can be injected later without touching the schema constant.
+- **Docker-safe history** — query history is written to `CANOPY_DATA_DIR`
+  (default `/data` in the container, mounted as a named volume) so it survives
+  container restarts.
+
+---
 
 ## Status
 
@@ -183,7 +216,8 @@ scripts/
 | Agentic query loop | Done |
 | Parallel tool call handling | Done |
 | Ground-truth eval set (20 queries) | Done |
-| Query history | Planned |
-| Gradio UI | Planned |
-| Interpretation layer | Future (post-v1) |
-| IUCN API integration | Future (post-v1) |
+| Query history (JSONL, Docker-safe) | Done |
+| Production hardening (logging, timeout, Dockerfile) | Done |
+| Gradio UI | Done |
+| Structured interpretation output | In progress |
+| IUCN API integration | Deferred (needs API key) |
