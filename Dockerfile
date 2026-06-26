@@ -2,10 +2,14 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install dependencies in a separate layer so source changes don't bust the cache
+# Install deps in a separate layer so source changes don't bust the pip cache.
+# Stub src/canopy/__init__.py lets setuptools resolve editable install metadata
+# without the full source tree — this layer only rebuilds if pyproject.toml changes.
 COPY pyproject.toml ./
+RUN mkdir -p src/canopy && touch src/canopy/__init__.py
 RUN pip install --no-cache-dir -e ".[dev]"
 
+# Overwrite stub with real source (editable install picks it up via the .pth file)
 COPY src/ ./src/
 COPY scripts/ ./scripts/
 
