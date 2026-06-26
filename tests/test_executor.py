@@ -79,6 +79,8 @@ def test_non_select_does_not_open_connection(monkeypatch, mock_conn):
         "Select 1",
         "   SELECT id FROM species",
         "\t\nSELECT id FROM species",
+        "WITH cte AS (SELECT 1) SELECT * FROM cte",
+        "with cte AS (SELECT id FROM species) SELECT * FROM cte",
     ],
 )
 def test_select_passes_guard(sql, monkeypatch, mock_conn):

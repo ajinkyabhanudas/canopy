@@ -33,7 +33,8 @@ def execute_query(sql: str) -> QueryResult:
     if not stripped:
         raise ValueError("Only SELECT queries are permitted")
     first_token = stripped.split()[0].casefold()
-    if first_token != "select":
+    # Allow CTEs: WITH ... AS (...) SELECT ...
+    if first_token not in ("select", "with"):
         raise ValueError("Only SELECT queries are permitted")
 
     conn = get_connection()
