@@ -16,10 +16,7 @@ from canopy.query.loop import run_query
 
 _log = logging.getLogger("canopy.ui")
 
-_PLACEHOLDER = (
-    "e.g. Which bird species have been detected at Buenaventura "
-    "in the last five years?"
-)
+_PLACEHOLDER = "e.g. How many validated detections were recorded at each site in 2023?"
 
 # Type alias for the 7-tuple every handler output must match
 # [sql_box, results_table, response_box, row_count_md, history_radio, timing_md, status_md]
@@ -238,10 +235,12 @@ def build_app() -> gr.Blocks:
         ]
 
         submit_btn.click(
-            fn=_run_query_handler, inputs=[question_box], outputs=_OUTPUTS
+            fn=_run_query_handler, inputs=[question_box], outputs=_OUTPUTS,
+            concurrency_limit=1,
         )
         question_box.submit(
-            fn=_run_query_handler, inputs=[question_box], outputs=_OUTPUTS
+            fn=_run_query_handler, inputs=[question_box], outputs=_OUTPUTS,
+            concurrency_limit=1,
         )
         history_radio.change(
             fn=lambda q: q or "",
