@@ -144,21 +144,35 @@ pytest tests/ --cov=canopy --cov-report=term-missing
 ruff check src/ tests/
 ```
 
-Expected: **144 passed, 1 skipped**, ~87% coverage.
+Expected: **225 passed, 1 skipped**, ~87% coverage.
 
 The skipped test is a live DB integration test — it runs automatically when
 `PG_*` vars are present.
 
-## Ground-truth eval
+## Eval suites
 
-Runs 20 questions against the live database and validates SQL structure and
-result shape:
+Two live eval suites — both require `ANTHROPIC_API_KEY` and `PG_*` vars.
 
 ```bash
+# Both suites (default)
 python scripts/run_eval.py
+
+# Ground-truth only
+python scripts/run_eval.py --ground-truth
+
+# Adversarial only
+python scripts/run_eval.py --adversarial
 ```
 
-Pass threshold: ≥85% (17/20). Requires `ANTHROPIC_API_KEY` and `PG_*` vars.
+**Ground-truth** — 27 questions covering SQL correctness, result shape,
+guardrail adherence, faithfulness (model_text numbers match DB rows), and
+guardrail bypass variants. Pass threshold: ≥85% (23/27).
+
+**Adversarial** — 8 hostile inputs: prompt injection, SQL injection in question
+text, persona/roleplay bypass, system prompt extraction, credentials request,
+and hallucination boundary (fabricated species names → zero rows). Pass
+threshold: 100% (8/8). A `SQLGuardError` from the security guard counts as PASS —
+a blocked attack is the correct outcome.
 
 ---
 
@@ -185,11 +199,12 @@ scripts/
 ├── docker_run.sh      # Docker launcher (handles .env quote stripping)
 ├── run_ui.py          # Local UI launcher
 ├── smoke_test.py      # API key / model config check
-└── run_eval.py        # Ground-truth eval runner
+└── run_eval.py        # Eval runner — ground-truth (27) + adversarial (8) suites
 
 tests/
 └── eval/
-    └── queries.py     # 20 EvalCase entries + check_fn predicates
+    ├── queries.py     # 27 EvalCase entries — correctness, guardrails, faithfulness, bypass variants
+    └── adversarial.py # 8 adversarial cases — injection, persona bypass, hallucination boundary
 
 Dockerfile             # python:3.11-slim, non-root user, /data volume
 ```
@@ -238,4 +253,6 @@ Dockerfile             # python:3.11-slim, non-root user, /data volume
 | Coordinate filtering (lat/lon never sent to AI layer) | Done |
 | Read-only DB connection enforcement | Done |
 | Resilient query history | Done |
+| Faithfulness + adversarial evals (27 GT + 8 adversarial) | Done |
+| Query result cache (SHA-256, TTL, LRU) | Done |
 | IUCN API integration | Deferred (needs API key) |
