@@ -10,10 +10,15 @@ answer alongside the SQL for inspection.
 - Accepts a natural language question about species detections, recording sites,
   validation records, and related metadata.
 - Uses Claude to generate a PostgreSQL SELECT query — never guesses results.
-- Executes read-only and returns the data with the SQL visible for inspection.
+- Executes read-only against PostgreSQL and returns a plain-English answer
+  alongside the data table and SQL for inspection.
+- Shows live progress while the query runs — what the model understood, which
+  stage the pipeline is at, how many records were found.
 - Persists query history to disk (last 20 queries surfaced in the UI sidebar).
 - Never infers population trends or conservation status — that requires a formal
   scientific review process, not automated inference.
+- Precise species coordinates are filtered before any data reaches the AI layer,
+  keeping sensitive biodiversity locations out of the model context.
 - Vendor-neutral model interface: swapping the LLM means adding one adapter file.
 
 ## Requirements
@@ -51,7 +56,7 @@ Edit `.env` and fill in all required values. Never commit `.env`.
 | `PG_USER` | Yes | Database user (read-only) |
 | `PG_PASSWORD` | Yes | Database password |
 | `ANTHROPIC_TIMEOUT` | No | API timeout in seconds (default: `60`) |
-| `CANOPY_DATA_DIR` | No | History file location (default: `/data` in Docker) |
+| `CANOPY_DATA_DIR` | No | History file location — Docker only, do not set locally |
 
 ### 3. Run
 
@@ -139,7 +144,7 @@ pytest tests/ --cov=canopy --cov-report=term-missing
 ruff check src/ tests/
 ```
 
-Expected: **134 passed, 1 skipped**, 87% coverage.
+Expected: **144 passed, 1 skipped**, ~87% coverage.
 
 The skipped test is a live DB integration test — it runs automatically when
 `PG_*` vars are present.
@@ -191,17 +196,27 @@ Dockerfile             # python:3.11-slim, non-root user, /data volume
 
 ### Key design decisions
 
-- **SELECT-only guard** — `execute_query()` rejects any non-SELECT statement
-  before touching the DB. Belt-and-suspenders over the LLM guardrail.
+- **SELECT-only guard + read-only connection** — `execute_query()` rejects
+  non-SELECT statements before touching the DB. The psycopg2 connection is also
+  opened with `readonly=True` as belt-and-suspenders.
+- **Coordinate filtering** — `latitude` and `longitude` are stripped from query
+  results before they reach the model. The user's UI sees the full dataset; the
+  AI layer never does. Complies with the principle of not granting agents direct
+  access to sensitive biodiversity records.
+- **Progressive feedback** — the UI streams live status above the output tabs
+  (always visible regardless of which tab is active). The model states what it
+  understood from the question before executing SQL, so users can catch
+  misinterpretations before waiting 90 seconds.
 - **Parallel tool calls** — if Claude returns multiple `tool_use` blocks,
   all are executed and their results are bundled into a single user message
   (Anthropic API requirement).
 - **System prompt is a constant** — `SCHEMA_CONTEXT` is a module-level string.
   `build_system_prompt()` is a function so runtime context (language preference,
   etc.) can be injected later without touching the schema constant.
-- **Docker-safe history** — query history is written to `CANOPY_DATA_DIR`
-  (default `/data` in the container, mounted as a named volume) so it survives
-  container restarts.
+- **Resilient history** — query history is written to `CANOPY_DATA_DIR` in
+  Docker (mounted as a named volume) and falls back to `~/.canopy` locally.
+  If the configured path can't be created (e.g. `/data` set in a local `.env`),
+  the app falls back gracefully rather than silently losing history.
 
 ---
 
@@ -218,6 +233,9 @@ Dockerfile             # python:3.11-slim, non-root user, /data volume
 | Ground-truth eval set (20 queries) | Done |
 | Query history (JSONL, Docker-safe) | Done |
 | Production hardening (logging, timeout, Dockerfile) | Done |
-| Gradio UI | Done |
-| Structured interpretation output | Next |
+| Gradio UI with streaming progress | Done |
+| Live intent explanation (model states its understanding) | Done |
+| Coordinate filtering (lat/lon never sent to AI layer) | Done |
+| Read-only DB connection enforcement | Done |
+| Resilient query history | Done |
 | IUCN API integration | Deferred (needs API key) |
