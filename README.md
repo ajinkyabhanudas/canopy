@@ -139,7 +139,7 @@ pytest tests/ --cov=canopy --cov-report=term-missing
 ruff check src/ tests/
 ```
 
-Expected: **131 passed, 1 skipped**, 87% coverage.
+Expected: **134 passed, 1 skipped**, 87% coverage.
 
 The skipped test is a live DB integration test — it runs automatically when
 `PG_*` vars are present.
@@ -219,5 +219,5 @@ Dockerfile             # python:3.11-slim, non-root user, /data volume
 | Query history (JSONL, Docker-safe) | Done |
 | Production hardening (logging, timeout, Dockerfile) | Done |
 | Gradio UI | Done |
-| Structured interpretation output | In progress |
+| Structured interpretation output | Next |
 | IUCN API integration | Deferred (needs API key) |
