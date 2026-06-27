@@ -26,25 +26,51 @@ _IDLE_PROMPT = (
 )
 
 _CSS = """
-/* Status bar — system message container */
-#canopy-status {
-    background-color: #f4faf4;
-    border-left: 3px solid #4a7c59;
-    padding: 8px 14px;
-    border-radius: 0 4px 4px 0;
-    font-size: 0.9em;
-    color: #2d4a37;
-    min-height: 0;
+/* Lock to light mode — paired with JS that removes .dark class */
+html, html.dark {
+    color-scheme: light;
 }
 
-/* Timing footer — supporting info, not competing with the answer */
-.timing-info p {
-    font-size: 0.78em !important;
-    color: #777 !important;
-    margin-top: 6px !important;
+/* Status bar — typographic only, no box */
+#canopy-status {
+    font-size: 0.82em;
+    color: #6b7280;
+    padding: 0 0 6px 0;
+    min-height: 0;
     letter-spacing: 0.01em;
 }
+#canopy-status p { margin: 0; }
+
+/* Timing footer */
+.timing-info p {
+    font-size: 0.78em !important;
+    color: #9ca3af !important;
+    margin-top: 4px !important;
+    letter-spacing: 0.01em;
+}
+
+/* Answer tab — filled bullets + breathing room */
+.tabitem ul {
+    list-style-type: disc;
+    padding-left: 1.4em;
+    margin-top: 4px;
+}
+.tabitem ul li {
+    margin-bottom: 5px;
+    line-height: 1.65;
+}
+.tabitem p {
+    line-height: 1.65;
+    margin-bottom: 0.7em;
+}
 """
+
+_JS = (
+    "() => { "
+    "document.documentElement.classList.remove('dark'); "
+    "document.documentElement.style.colorScheme = 'light'; "
+    "}"
+)
 
 # Type alias for the 7-tuple every handler output must match
 # [sql_box, results_table, response_box, row_count_md, history_radio, timing_md, status_md]
@@ -169,18 +195,19 @@ def _run_query_handler(question: str) -> Generator[_Output, None, None]:
                     "I wasn't able to run that query safely.\n\n"
                     "This sometimes happens with unusual question phrasing — "
                     "try asking what's in the data rather than asking to change it.\n\n"
-                    "The generated query is shown in the **SQL tab** for reference."
+                    "The generated query is shown in the **Database query tab** for reference."
                 ),
                 "",
                 gr.Radio(choices=_history_choices()),
                 "",
-                "",
+                "⚠ Could not complete that query — see the Answer tab",
             )
         else:
             _log.error("query failed in UI: %s", exc, exc_info=True)
             yield _empty_result(
                 "Something went wrong while searching. "
-                "Please try again, or rephrase your question."
+                "Please try again, or rephrase your question.",
+                status="⚠ Could not complete that query",
             )
         return
 
@@ -191,7 +218,7 @@ def _run_query_handler(question: str) -> Generator[_Output, None, None]:
     count_md = f"**{count} row{'s' if count != 1 else ''} returned**"
     t = result.timing
     if t.get("cache_hit"):
-        timing_md = "⚡ From your recent queries"
+        timing_md = "⚡ From your recent queries · instant"
         sql_display = result.sql or ""
     else:
         total = t.get("total_s", 0)
@@ -224,7 +251,7 @@ def _clear_handler() -> tuple:
 
 def build_app() -> gr.Blocks:
     """Build and return the Gradio Blocks application."""
-    with gr.Blocks(title="Canopy", css=_CSS) as app:
+    with gr.Blocks(title="Canopy", css=_CSS, js=_JS) as app:
         gr.Markdown(
             "# 🌿 Canopy\n"
             "Ask questions about Jocotoco's species monitoring data in plain English."

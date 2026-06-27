@@ -188,7 +188,7 @@ def test_handler_run_query_raises(monkeypatch):
     assert "went wrong" in response or "try again" in response.lower()
     assert "DB is down" not in response
     assert timing == ""
-    assert status == ""
+    assert "⚠" in status
 
 
 def test_handler_sql_guard_error_shows_sql(monkeypatch):
@@ -202,12 +202,12 @@ def test_handler_sql_guard_error_shows_sql(monkeypatch):
     monkeypatch.setattr(ui_mod, "load_history", lambda n=20: [])
     sql, df, response, count_md, _, timing, status = _run("drop something")
     assert sql == bad_sql
-    assert "SQL tab" in response
+    assert "Database query tab" in response
     # Internal exception text must not be exposed
     assert "SQLGuardError" not in response
     assert "ValueError" not in response
     assert timing == ""
-    assert status == ""
+    assert "⚠" in status
 
 
 # ---------------------------------------------------------------------------
