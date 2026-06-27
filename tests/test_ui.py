@@ -82,8 +82,8 @@ def test_handler_first_yield_is_loading(monkeypatch):
     first, *_ = _all_yields("How many detections?")
     assert len(first) == 7
     _, _, response, _, _, _, status_md = first
-    assert "Thinking" in response or "thinking" in response.lower()
-    assert "⏳" in status_md or "Understanding" in status_md
+    assert "Reading" in response or "reading" in response.lower()
+    assert "Reading" in status_md or "reading" in status_md.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +232,7 @@ def test_handler_cache_hit_shows_cached_status(monkeypatch):
     yields = _all_yields("How many detections?")
     # One of the intermediate yields should mention cache
     statuses = [y[6] for y in yields]
-    assert any("cache" in s.lower() or "Cache" in s for s in statuses)
+    assert any("previous" in s.lower() or "cache" in s.lower() for s in statuses)
 
     # Final yield timing_md should show cached indicator
     final = yields[-1]

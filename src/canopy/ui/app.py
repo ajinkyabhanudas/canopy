@@ -17,14 +17,33 @@ _log = logging.getLogger("canopy.ui")
 
 _PLACEHOLDER = "e.g. How many confirmed species were detected at each reserve in 2023?"
 
-_IDLE_PROMPT = """\
-Ask a question to get started.
+_IDLE_PROMPT = (
+    "Ask a question about species monitoring data.\n\n"
+    "→ How many confirmed species were detected at each reserve in 2023?  \n"
+    "→ Which sites had the most activity last year?  \n"
+    "→ Show me all Jocotoco Antpitta detections since 2022.  \n"
+    "→ How many detections are awaiting human review at each site?"
+)
 
-**Try asking:**
-- "How many confirmed species were detected at each reserve in 2023?"
-- "Which sites had the most activity last year?"
-- "Show me all Jocotoco Antpitta detections since 2022."
-- "How many AI detections are awaiting human review at each site?"
+_CSS = """
+/* Status bar — system message container */
+#canopy-status {
+    background-color: #f4faf4;
+    border-left: 3px solid #4a7c59;
+    padding: 8px 14px;
+    border-radius: 0 4px 4px 0;
+    font-size: 0.9em;
+    color: #2d4a37;
+    min-height: 0;
+}
+
+/* Timing footer — supporting info, not competing with the answer */
+.timing-info p {
+    font-size: 0.78em !important;
+    color: #777 !important;
+    margin-top: 6px !important;
+    letter-spacing: 0.01em;
+}
 """
 
 # Type alias for the 7-tuple every handler output must match
@@ -90,11 +109,11 @@ def _run_query_handler(question: str) -> Generator[_Output, None, None]:
     yield (
         "",
         gr.Dataframe(value=None),
-        "_Thinking…_",
+        "Reading your question…",
         "",
         gr.Radio(choices=pre_query_choices),
         "",
-        "⏳ Understanding your question…",
+        "Reading your question…",
     )
 
     thread = threading.Thread(target=_worker, daemon=True)
@@ -108,25 +127,25 @@ def _run_query_handler(question: str) -> Generator[_Output, None, None]:
             yield (
                 "",
                 gr.Dataframe(value=None),
-                "_Loading from cache…_",
+                "Loading your previous result…",
                 "",
                 gr.Radio(choices=pre_query_choices),
                 "",
-                "✓ Loading from cache…",
+                "Loading your previous result…",
             )
             continue
         if msg.startswith("INTENT:"):
             intent_text[0] = msg[7:].strip()
-            response_text = f"**I understood:** {intent_text[0]}\n\n_Searching the database…_"
-            status_text = "⏳ Searching the monitoring database…"
+            response_text = f"**I understood:** {intent_text[0]}\n\nSearching the database…"
+            status_text = "Searching the monitoring database…"
         else:
             # Keep intent visible in response_box if we have it, otherwise blank
             response_text = (
-                f"**I understood:** {intent_text[0]}\n\n_Searching the database…_"
+                f"**I understood:** {intent_text[0]}\n\nSearching the database…"
                 if intent_text[0]
                 else ""
             )
-            status_text = f"⏳ {msg}"
+            status_text = msg
         yield (
             "",
             gr.Dataframe(value=None),
@@ -172,7 +191,7 @@ def _run_query_handler(question: str) -> Generator[_Output, None, None]:
     count_md = f"**{count} row{'s' if count != 1 else ''} returned**"
     t = result.timing
     if t.get("cache_hit"):
-        timing_md = "⚡ Loaded from your recent queries"
+        timing_md = "⚡ From your recent queries"
         sql_display = result.sql or ""
     else:
         total = t.get("total_s", 0)
@@ -205,7 +224,7 @@ def _clear_handler() -> tuple:
 
 def build_app() -> gr.Blocks:
     """Build and return the Gradio Blocks application."""
-    with gr.Blocks(title="Canopy") as app:
+    with gr.Blocks(title="Canopy", css=_CSS) as app:
         gr.Markdown(
             "# 🌿 Canopy\n"
             "Ask questions about Jocotoco's species monitoring data in plain English."
