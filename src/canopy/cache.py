@@ -11,10 +11,18 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from canopy._json import Encoder
+
 if TYPE_CHECKING:
     from canopy.query.loop import LoopResult
 
 _log = logging.getLogger("canopy.cache")
+
+# Matches ISO-8601 date or datetime strings produced by _Encoder so that
+# datetime-typed row values survive the cache round-trip as datetime objects.
+_ISO_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?)?$"
+)
 
 _DEFAULT_TTL_HOURS = 24
 _MAX_ENTRIES = 200
@@ -48,8 +56,18 @@ def _write_cache_dict(data: dict) -> None:
     path = _cache_file()
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2))
+    tmp.write_text(json.dumps(data, indent=2, cls=Encoder))
     tmp.rename(path)
+
+
+def _maybe_datetime(v: object) -> object:
+    """Reconstruct datetime objects that were serialised as ISO-8601 strings."""
+    if isinstance(v, str) and _ISO_RE.match(v):
+        try:
+            return datetime.fromisoformat(v)
+        except ValueError:
+            pass
+    return v
 
 
 def lookup_cache(question: str) -> LoopResult | None:
@@ -72,7 +90,7 @@ def lookup_cache(question: str) -> LoopResult | None:
         question=entry["question"],
         sql=entry["sql"],
         columns=entry["columns"],
-        rows=[tuple(row) for row in entry["rows"]],
+        rows=[tuple(_maybe_datetime(v) for v in row) for row in entry["rows"]],
         row_count=entry["row_count"],
         model_text=entry["model_text"],
         timing={"cache_hit": True, "cached_at": entry["created_at"]},

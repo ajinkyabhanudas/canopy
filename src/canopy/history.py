@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from canopy._json import Encoder
+
 if TYPE_CHECKING:
     from canopy.query.loop import LoopResult
 
@@ -34,7 +36,7 @@ def append_history(result: LoopResult) -> None:
         "model_text": result.model_text,
     }
     with path.open("a") as f:
-        f.write(json.dumps(entry) + "\n")
+        f.write(json.dumps(entry, cls=Encoder) + "\n")
 
 
 def load_history(n: int = 20) -> list[dict]:

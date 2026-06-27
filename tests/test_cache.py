@@ -291,3 +291,30 @@ def test_clear_noop_when_no_file(tmp_path, monkeypatch):
     cache_path = tmp_path / "cache.json"
     monkeypatch.setattr("canopy.cache._cache_file", lambda: cache_path)
     clear_cache()  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# datetime round-trip — cache hit preserves type
+# ---------------------------------------------------------------------------
+
+
+def test_datetime_roundtrip_via_cache(tmp_path, monkeypatch):
+    """datetime row values must come back as datetime objects on cache hit, not str."""
+    cache_path = tmp_path / "cache.json"
+    monkeypatch.setattr("canopy.cache._cache_file", lambda: cache_path)
+
+    dt_value = datetime(2023, 6, 15, 10, 30, 0, tzinfo=timezone.utc)
+    r = _result(
+        columns=["recorded_at", "scientific_name"],
+        rows=[(dt_value, "Grallaria gigantea")],
+        row_count=1,
+    )
+    write_cache(r)
+    result = lookup_cache(r.question)
+    assert result is not None
+    row = result.rows[0]
+    assert isinstance(row[0], datetime), (
+        f"Expected datetime on cache hit, got {type(row[0])}: {row[0]!r}"
+    )
+    assert row[0] == dt_value
+    assert row[1] == "Grallaria gigantea"  # non-datetime values unchanged
