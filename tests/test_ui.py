@@ -105,7 +105,7 @@ def test_handler_valid_question(monkeypatch):
     monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: _make_result())
     monkeypatch.setattr(ui_mod, "load_history", lambda n=20: [])
     sql, df, response, count_md, radio, timing, status = _run("How many detections?")
-    assert sql == "SELECT COUNT(*) FROM detections"
+    assert sql.startswith("SELECT COUNT(*) FROM detections")
     assert response == "There are 5 detections."
     assert "5" in count_md
     assert status == ""  # cleared on success
@@ -114,10 +114,11 @@ def test_handler_valid_question(monkeypatch):
 def test_handler_timing_line(monkeypatch):
     monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: _make_result())
     monkeypatch.setattr(ui_mod, "load_history", lambda n=20: [])
-    _, _, _, _, _, timing, _ = _run("q")
-    assert "1.2s total" in timing
-    assert "LLM" in timing
-    assert "DB" in timing
+    sql, _, _, _, _, timing, _ = _run("q")
+    assert "Answer ready in" in timing
+    # dev metrics moved to sql comment
+    assert "LLM" in sql
+    assert "DB" in sql
 
 
 def test_handler_singular_row_count(monkeypatch):
@@ -254,5 +255,5 @@ def test_clear_handler_calls_clear_history(monkeypatch):
 def test_clear_handler_empties_question(monkeypatch):
     monkeypatch.setattr(ui_mod, "clear_history", lambda: None)
     monkeypatch.setattr(ui_mod, "load_history", lambda n=20: [])
-    radio, question = ui_mod._clear_handler()
+    radio, question, response = ui_mod._clear_handler()
     assert question == ""

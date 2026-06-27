@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import queue
 import threading
-from datetime import datetime, timezone
 from typing import Generator
 
 import gradio as gr
@@ -16,7 +15,17 @@ from canopy.query.loop import run_query
 
 _log = logging.getLogger("canopy.ui")
 
-_PLACEHOLDER = "e.g. How many validated detections were recorded at each site in 2023?"
+_PLACEHOLDER = "e.g. How many confirmed species were detected at each reserve in 2023?"
+
+_IDLE_PROMPT = """\
+Ask a question to get started.
+
+**Try asking:**
+- "How many confirmed species were detected at each reserve in 2023?"
+- "Which sites had the most activity last year?"
+- "Show me all Jocotoco Antpitta detections since 2022."
+- "How many AI detections are awaiting human review at each site?"
+"""
 
 # Type alias for the 7-tuple every handler output must match
 # [sql_box, results_table, response_box, row_count_md, history_radio, timing_md, status_md]
@@ -30,12 +39,16 @@ def _history_choices() -> list[str]:
 
 def _empty_result(message: str, status: str = "") -> _Output:
     """Return a blank 7-tuple with only the response message and optional status set."""
+    try:
+        choices = _history_choices()
+    except Exception:
+        choices = []
     return (
         "",
         gr.Dataframe(value=None),
         message,
         "",
-        gr.Radio(choices=_history_choices()),
+        gr.Radio(choices=choices),
         "",
         status,
     )
@@ -69,13 +82,17 @@ def _run_query_handler(question: str) -> Generator[_Output, None, None]:
         finally:
             status_q.put(None)  # sentinel — signals main thread to stop waiting
 
+    # Snapshot history once — it doesn't change while the query runs.
+    # The final yield (after append_history) calls _history_choices() fresh.
+    pre_query_choices = _history_choices()
+
     # Immediate feedback before the thread even starts
     yield (
         "",
         gr.Dataframe(value=None),
         "_Thinking…_",
         "",
-        gr.Radio(choices=_history_choices()),
+        gr.Radio(choices=pre_query_choices),
         "",
         "⏳ Understanding your question…",
     )
@@ -93,7 +110,7 @@ def _run_query_handler(question: str) -> Generator[_Output, None, None]:
                 gr.Dataframe(value=None),
                 "_Loading from cache…_",
                 "",
-                gr.Radio(choices=_history_choices()),
+                gr.Radio(choices=pre_query_choices),
                 "",
                 "✓ Loading from cache…",
             )
@@ -115,7 +132,7 @@ def _run_query_handler(question: str) -> Generator[_Output, None, None]:
             gr.Dataframe(value=None),
             response_text,
             "",
-            gr.Radio(choices=_history_choices()),
+            gr.Radio(choices=pre_query_choices),
             "",
             status_text,
         )
@@ -155,22 +172,27 @@ def _run_query_handler(question: str) -> Generator[_Output, None, None]:
     count_md = f"**{count} row{'s' if count != 1 else ''} returned**"
     t = result.timing
     if t.get("cache_hit"):
-        cached_at = datetime.fromisoformat(t["cached_at"])
-        age_h = int((datetime.now(timezone.utc) - cached_at).total_seconds() // 3600)
-        timing_md = f"⚡ Cached result · {age_h}h ago" if age_h else "⚡ Cached result · just now"
+        timing_md = "⚡ Loaded from your recent queries"
+        sql_display = result.sql or ""
     else:
+        total = t.get("total_s", 0)
+        timing_md = f"Answer ready in {total:.0f}s"
         n_calls = t.get("llm_calls", 0)
-        timing_md = (
-            f"⏱ {t.get('total_s', 0):.1f}s total · "
-            f"LLM {t.get('llm_s', 0):.1f}s ({n_calls} call{'s' if n_calls != 1 else ''}) · "
-            f"DB {t.get('db_s', 0):.3f}s"
-        )
+        if result.sql:
+            dev_comment = (
+                f"\n-- {total:.1f}s total · "
+                f"LLM {t.get('llm_s', 0):.1f}s ({n_calls} call{'s' if n_calls != 1 else ''}) · "
+                f"DB {t.get('db_s', 0):.3f}s"
+            )
+            sql_display = result.sql + dev_comment
+        else:
+            sql_display = ""
     yield (
-        result.sql or "",
+        sql_display,
         df,
         result.model_text,
         count_md,
-        gr.Radio(choices=_history_choices()),
+        gr.Radio(choices=_history_choices(), value=None),
         timing_md,
         "",  # clear status_md on success
     )
@@ -178,7 +200,7 @@ def _run_query_handler(question: str) -> Generator[_Output, None, None]:
 
 def _clear_handler() -> tuple:
     clear_history()
-    return gr.Radio(choices=[]), ""
+    return gr.Radio(choices=[]), "", _IDLE_PROMPT
 
 
 def build_app() -> gr.Blocks:
@@ -212,16 +234,16 @@ def build_app() -> gr.Blocks:
                 # Status bar — always visible regardless of which tab is active
                 status_md = gr.Markdown("", elem_id="canopy-status")
                 with gr.Tabs():
-                    with gr.Tab("Response"):
-                        response_box = gr.Markdown("")
-                    with gr.Tab("Results"):
+                    with gr.Tab("Answer"):
+                        response_box = gr.Markdown(_IDLE_PROMPT)
+                    with gr.Tab("Full data table"):
                         row_count_md = gr.Markdown("")
                         results_table = gr.Dataframe(
                             label="",
                             wrap=True,
                             interactive=False,
                         )
-                    with gr.Tab("SQL"):
+                    with gr.Tab("Database query"):
                         sql_box = gr.Code(
                             label="",
                             language="sql",
@@ -246,7 +268,11 @@ def build_app() -> gr.Blocks:
             fn=lambda q: q or "",
             inputs=[history_radio],
             outputs=[question_box],
+        ).then(
+            fn=_run_query_handler,
+            inputs=[question_box],
+            outputs=_OUTPUTS,
         )
-        clear_btn.click(fn=_clear_handler, outputs=[history_radio, question_box])
+        clear_btn.click(fn=_clear_handler, outputs=[history_radio, question_box, response_box])
 
     return app
