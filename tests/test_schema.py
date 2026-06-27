@@ -11,7 +11,7 @@ class TestSchemaContext:
             assert table in SCHEMA_CONTEXT, f"SCHEMA_CONTEXT missing table: {table}"
 
     def test_contains_all_validation_statuses(self):
-        for status in ("validated_true", "validated_false", "unvalidated"):
+        for status in ("approved", "pending"):
             assert status in SCHEMA_CONTEXT, (
                 f"SCHEMA_CONTEXT missing validation status: {status}"
             )

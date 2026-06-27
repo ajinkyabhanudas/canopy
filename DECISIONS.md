@@ -31,7 +31,7 @@
 | S1 | Architecture boundary | Model generates SQL; PostgreSQL executes it | ✅ Sound |
 | S2 | Mutation prevention | Dual-layer: regex guard + read-only session | ✅ Sound |
 | S3 | Coordinate privacy | Lat/lon stripped before model sees results | ⚠️ Caveat |
-| S4 | Validation-status default | Always filter `validated_true` in system prompt | ⚠️ Caveat |
+| S4 | Validation-status default | Always filter `approved` in system prompt | ⚠️ Caveat |
 
 ### 🏗️ Core Architecture
 
@@ -173,26 +173,38 @@ _SENSITIVE_COLUMNS = frozenset({"latitude", "longitude"})
 
 > **Files:** `src/canopy/schema.py` — `_GUARDRAILS`
 
-**Decision:** The system prompt instructs the model to always filter `validation_status = 'validated_true'` unless the user explicitly asks for unvalidated or rejected records.
+**Decision:** The system prompt instructs the model to always filter `validation_status = 'approved'` unless the user explicitly asks for pending or unvalidated records.
 
-**Why:** The monitoring database contains detections at three validation states: validated true, validated false (rejected), and unvalidated (pending review). Including unvalidated or rejected records in conservation queries would produce misleading counts that could affect real decisions about species populations.
+**Why:** The monitoring database contains detections in two validation states: `approved` (human expert confirmed) and `pending` (AI detection awaiting human review). Including pending records in conservation queries would produce misleading counts that do not represent confirmed species observations.
+
+**Actual DB values (verified 2026-06-27 via direct query):**
+
+| Status | Count | Meaning |
+|---|---|---|
+| `pending` | 22,757 | AI detection awaiting human validation |
+| `approved` | 14,060 | Human expert confirmed genuine detection |
+
+There is no explicit rejection status in the current dataset. Detections not approved remain `pending` indefinitely.
+
+> ⚠️ **Schema drift incident (2026-06-27):** The original `schema.py` documented `validated_true`, `validated_false`, and `unvalidated` — values that do not exist in the database. This was discovered during Playwright UI testing when the model self-flagged "a technical discrepancy was found." Queries filtering on `validated_true` returned 0 rows despite 14,060 approved detections existing. Fixed by updating `schema.py` to use `approved`/`pending`. Root cause: the schema constant was written from design documentation rather than verified against the live database.
 
 **Alternatives considered:**
 
 | Alternative | Why rejected |
 |---|---|
 | No default filter | Requires every user to know validation states exist and specify them explicitly. Non-technical users will not. Rejected: default-safe is essential. |
-| Hard-inject `WHERE validation_status = 'validated_true'` at executor level | Hides the filter from the model. The model's answer may not match what was queried, producing confusing discrepancies. Also prevents legitimate queries about unvalidated data. |
+| Hard-inject `WHERE validation_status = 'approved'` at executor level | Hides the filter from the model. The model's answer may not match what was queried, producing confusing discrepancies. Also prevents legitimate queries about pending data. |
 | Separate endpoints for validated/all data | Forces users to choose before they understand the question. Rejected: wrong UX for a natural-language interface. |
 
 **Consequences:**
 - Non-technical users get scientifically correct answers by default.
-- The model can handle exceptions ("show me unvalidated detections for review") because the instruction is conditional, not absolute.
+- The model can handle exceptions ("show me pending detections for review") because the instruction is conditional, not absolute.
 - **This is soft enforcement (a prompt instruction), not hard enforcement (a SQL constraint).** The model could theoretically omit the filter.
+- **Schema drift risk remains** — if the DB validation status values change, `schema.py` must be updated manually. The correct long-term fix is a CI test that queries `information_schema` and asserts the documented values match actual DB values. See also **D1**.
 
 > **Audit verdict — ⚠️ Caveat**
 >
-> The soft enforcement is the right design choice (see "hard inject" rejection above). But there is no test that verifies the model actually follows this instruction in practice. The ground-truth eval set (`tests/eval/`) should include at least one case: "How many detections are there?" → result must include `validation_status = 'validated_true'` in the generated SQL. Without this, the guarantee is aspirational, not verified.
+> The soft enforcement is the right design choice (see "hard inject" rejection above). But there is no test that verifies the model actually follows this instruction in practice. The ground-truth eval set (`tests/eval/`) should include at least one case: "How many detections are there?" → result must include `validation_status = 'approved'` in the generated SQL. Without this, the guarantee is aspirational, not verified.
 >
 > **Recommended fix:** Add an eval case that checks the SQL for the presence of the validation filter on ambiguous queries. Flag in CI if the filter is absent.
 
