@@ -53,8 +53,8 @@ def _make_result(
 # ---------------------------------------------------------------------------
 
 
-def test_eval_cases_has_exactly_27_entries():
-    assert len(EVAL_CASES) == 27
+def test_eval_cases_has_exactly_30_entries():
+    assert len(EVAL_CASES) == 30
 
 
 def test_all_questions_are_nonempty_strings():
