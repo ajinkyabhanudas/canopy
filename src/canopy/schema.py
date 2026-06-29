@@ -237,6 +237,16 @@ _GUARDRAILS = """
   that outputs should be reviewed by the science team before external use.
 """
 
+_LANGUAGE_INSTRUCTION = """
+=== LANGUAGE ===
+
+Detect the language of the user's question and respond in that same language.
+If the user writes in Spanish, respond in Spanish.
+If the user writes in English, respond in English.
+SQL queries must always be written in English regardless of response language —
+PostgreSQL does not support non-English keywords.
+"""
+
 
 def build_system_prompt() -> str:
     """Return the full system prompt for the NL-to-SQL model."""
@@ -247,4 +257,5 @@ def build_system_prompt() -> str:
         + SCHEMA_CONTEXT
         + _TOOL_INSTRUCTIONS
         + _GUARDRAILS
+        + _LANGUAGE_INSTRUCTION
     )
