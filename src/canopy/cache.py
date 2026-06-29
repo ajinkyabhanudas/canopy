@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -38,7 +39,8 @@ def _ttl_hours() -> int:
 
 
 def _make_key(question: str) -> str:
-    normalised = re.sub(r"\s+", " ", question.casefold().strip())
+    q = unicodedata.normalize("NFC", question)
+    normalised = re.sub(r"\s+", " ", q.casefold().strip())
     return hashlib.sha256(normalised.encode()).hexdigest()[:16]
 
 
