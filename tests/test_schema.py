@@ -78,3 +78,21 @@ class TestBuildSystemPrompt:
         """SCHEMA_CONTEXT must be a string constant, not a callable."""
         assert isinstance(schema.SCHEMA_CONTEXT, str)
         assert not callable(schema.SCHEMA_CONTEXT)
+
+    def test_language_instruction_present(self):
+        prompt = build_system_prompt()
+        assert "LANGUAGE" in prompt
+
+    def test_sql_stays_english_stated(self):
+        prompt = build_system_prompt()
+        assert "SQL" in prompt and "English" in prompt
+
+    def test_language_section_covers_spanish(self):
+        prompt = build_system_prompt()
+        assert "Spanish" in prompt
+
+    def test_language_instruction_is_unconditional(self):
+        """build_system_prompt() takes no lang parameter — instruction is always present."""
+        import inspect
+        sig = inspect.signature(build_system_prompt)
+        assert len(sig.parameters) == 0
