@@ -36,6 +36,7 @@ class EvalCase:
     question: str
     check_fn: Callable[[LoopResult], bool]
     description: str
+    translation_es: str | None = None  # Spanish parallel — runner auto-inherits check_fn
 
 
 # ---------------------------------------------------------------------------
@@ -426,6 +427,7 @@ EVAL_CASES: list[EvalCase] = [
         question="Which species have been validated at any recording site?",
         check_fn=_q1_species_validated_at_any_site,
         description="Returns species with validated_true detections; scientific_name column present, row_count > 0",  # noqa: E501
+        translation_es="¿Qué especies han sido validadas en algún sitio de grabación?",
     ),
     EvalCase(
         question="List all validated species alongside the site names where they were detected",
@@ -442,6 +444,7 @@ EVAL_CASES: list[EvalCase] = [
         question="How many validated detections were recorded in each year?",
         check_fn=_q4_annual_detection_counts,
         description="Groups by year using EXTRACT or DATE_TRUNC; count column present, row_count > 0",  # noqa: E501
+        translation_es="¿Cuántas detecciones validadas se registraron en cada año?",
     ),
     EvalCase(
         question="Which species were detected between 2022 and 2024?",
@@ -458,6 +461,7 @@ EVAL_CASES: list[EvalCase] = [
         question="What is the validation status breakdown across all detections?",
         check_fn=_q7_status_breakdown,
         description="Groups by validation_status with count; row_count > 0",
+        translation_es="¿Cuál es el desglose del estado de validación en todas las detecciones?",
     ),
     EvalCase(
         question="How many unvalidated detections exist per species?",
@@ -485,17 +489,20 @@ EVAL_CASES: list[EvalCase] = [
         question="Compare the number of validated species detected across all recording sites",
         check_fn=_q12_species_count_per_site,
         description="JOINs sites and groups by site; GROUP BY in SQL; row_count > 0",
+        translation_es="¿Cuántas especies validadas se detectaron en cada sitio de grabación?",
     ),
     # --- Category 6: Edge cases / filtering ---
     EvalCase(
         question="List all detections where the AI confidence score is above 0.95",
         check_fn=_q13_high_confidence,
         description="Filters confidence > 0.95; confidence term in SQL with threshold",
+        translation_es="Listar detecciones con puntuación de confianza de IA superior a 0.95",  # noqa: E501
     ),
     EvalCase(
         question="Which species from the species catalog have zero validated detections?",
         check_fn=_q14_species_zero_validated,
         description="Anti-join pattern (NOT IN / LEFT JOIN / NOT EXISTS) to find undetected species",  # noqa: E501
+        translation_es="¿Qué especies del catálogo tienen cero detecciones validadas?",
     ),
     # --- Category 7: Gap analysis ---
     EvalCase(
@@ -545,6 +552,7 @@ EVAL_CASES: list[EvalCase] = [
             "COUNT(*) returns one row; the integer value in rows[0][0] must appear "
             "verbatim in model_text — confirms model cited DB data, not a fabricated number"
         ),
+        translation_es="¿Cuál es el total exacto de detecciones en la base de datos?",
     ),
     EvalCase(
         question="How many distinct recording sites are there in the database?",
@@ -607,6 +615,7 @@ EVAL_CASES: list[EvalCase] = [
             "SQL must filter validation_status = 'pending' (not a time filter); "
             "must group by site; count column present; row_count > 0"
         ),
+        translation_es="¿Cuántas detecciones de IA esperan revisión humana en cada sitio?",
     ),
     EvalCase(
         question="Show me the most recently recorded detection",
