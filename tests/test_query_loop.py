@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from canopy.i18n import t
 from canopy.models.base import ModelResponse, ToolCall
 from canopy.query.loop import MAX_ITERATIONS, run_query
 
@@ -411,3 +412,83 @@ def test_loop_result_is_immutable(monkeypatch, mock_model):
 
     with pytest.raises(Exception):  # FrozenInstanceError
         result.model_text = "hacked"  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Status callbacks — locale-aware
+# ---------------------------------------------------------------------------
+
+
+def test_status_cb_first_iteration_emits_understanding(monkeypatch, mock_model, mock_conn):
+    mock_model.generate.side_effect = [
+        _tool_response("SELECT 1"),
+        _text_response("Done."),
+    ]
+    monkeypatch.setattr("canopy.query.loop.get_model_client", lambda: mock_model)
+    monkeypatch.setattr("canopy.query.executor.get_connection", lambda: mock_conn)
+
+    statuses: list[str] = []
+    run_query("How many detections?", status_cb=statuses.append)
+
+    assert t("status_understanding") in statuses
+
+
+def test_status_cb_subsequent_iteration_emits_refining(monkeypatch, mock_model, mock_conn):
+    mock_model.generate.side_effect = [
+        _tool_response("SELECT 1", call_id="tc1"),
+        _tool_response("SELECT 2", call_id="tc2"),
+        _text_response("Done."),
+    ]
+    monkeypatch.setattr("canopy.query.loop.get_model_client", lambda: mock_model)
+    monkeypatch.setattr("canopy.query.executor.get_connection", lambda: mock_conn)
+
+    statuses: list[str] = []
+    run_query("Two rounds.", status_cb=statuses.append)
+
+    assert t("status_refining") in statuses
+
+
+def test_status_cb_searching_db_emitted_on_tool_call(monkeypatch, mock_model, mock_conn):
+    mock_model.generate.side_effect = [
+        _tool_response("SELECT 1"),
+        _text_response("Done."),
+    ]
+    monkeypatch.setattr("canopy.query.loop.get_model_client", lambda: mock_model)
+    monkeypatch.setattr("canopy.query.executor.get_connection", lambda: mock_conn)
+
+    statuses: list[str] = []
+    run_query("A question.", status_cb=statuses.append)
+
+    assert t("status_searching_db") in statuses
+
+
+def test_status_cb_detection_count_uses_plural(monkeypatch, mock_model, mock_conn):
+    mock_conn.cursor.return_value.description = [("n",)]
+    mock_conn.cursor.return_value.fetchall.return_value = [(i,) for i in range(5)]
+    mock_model.generate.side_effect = [
+        _tool_response("SELECT n FROM t"),
+        _text_response("Done."),
+    ]
+    monkeypatch.setattr("canopy.query.loop.get_model_client", lambda: mock_model)
+    monkeypatch.setattr("canopy.query.executor.get_connection", lambda: mock_conn)
+
+    statuses: list[str] = []
+    run_query("Five rows.", status_cb=statuses.append)
+
+    assert t("found_detections_plural", n=5) in statuses
+
+
+def test_status_cb_detection_count_uses_singular(monkeypatch, mock_model, mock_conn):
+    mock_conn.cursor.return_value.description = [("n",)]
+    mock_conn.cursor.return_value.fetchall.return_value = [(1,)]
+    mock_model.generate.side_effect = [
+        _tool_response("SELECT n FROM t"),
+        _text_response("Done."),
+    ]
+    monkeypatch.setattr("canopy.query.loop.get_model_client", lambda: mock_model)
+    monkeypatch.setattr("canopy.query.executor.get_connection", lambda: mock_conn)
+
+    statuses: list[str] = []
+    run_query("One row.", status_cb=statuses.append)
+
+    assert t("found_detections_singular", n=1) in statuses
