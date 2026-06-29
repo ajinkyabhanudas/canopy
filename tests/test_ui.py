@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import canopy.ui.app as ui_mod
+from canopy.i18n import t
 from canopy.query.executor import SQLGuardError
 from canopy.query.loop import LoopResult
 
@@ -76,14 +77,14 @@ def test_empty_result_with_status():
 
 
 def test_handler_first_yield_is_loading(monkeypatch):
-    """User should see 'Thinking' immediately before any model call."""
+    """User should see loading state immediately before any model call."""
     monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: _make_result())
     monkeypatch.setattr(ui_mod, "load_history", lambda n=20: [])
     first, *_ = _all_yields("How many detections?")
     assert len(first) == 7
     _, _, response, _, _, _, status_md = first
-    assert "Reading" in response or "reading" in response.lower()
-    assert "Reading" in status_md or "reading" in status_md.lower()
+    assert t("status_reading") in response
+    assert t("status_reading") in status_md
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +97,7 @@ def test_handler_empty_question(monkeypatch):
     sql, df, response, count_md, radio, timing, status = _run("   ")
     assert sql == ""
     assert count_md == ""
-    assert "Please enter a question" in response
+    assert t("error_empty_question") in response
     assert timing == ""
     assert status == ""
 
@@ -115,7 +116,7 @@ def test_handler_timing_line(monkeypatch):
     monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: _make_result())
     monkeypatch.setattr(ui_mod, "load_history", lambda n=20: [])
     sql, _, _, _, _, timing, _ = _run("q")
-    assert "Answer ready in" in timing
+    assert t("timing_live", total=1.0)[:14] in timing
     # dev metrics moved to sql comment
     assert "LLM" in sql
     assert "DB" in sql
@@ -127,7 +128,7 @@ def test_handler_singular_row_count(monkeypatch):
     )
     monkeypatch.setattr(ui_mod, "load_history", lambda n=20: [])
     _, _, _, count_md, _, _, _ = _run("q")
-    assert "1 row returned" in count_md
+    assert t("count_row_singular", n=1) in count_md
     assert "rows" not in count_md
 
 
@@ -139,7 +140,7 @@ def test_handler_plural_row_count(monkeypatch):
     )
     monkeypatch.setattr(ui_mod, "load_history", lambda n=20: [])
     _, _, _, count_md, _, _, _ = _run("q")
-    assert "3 rows returned" in count_md
+    assert t("count_row_plural", n=3) in count_md
 
 
 def test_handler_rows_converted_to_lists(monkeypatch):
@@ -185,7 +186,7 @@ def test_handler_run_query_raises(monkeypatch):
     assert sql == ""
     assert count_md == ""
     # Human-readable — no internal exception text exposed to user
-    assert "went wrong" in response or "try again" in response.lower()
+    assert t("error_generic_response") in response
     assert "DB is down" not in response
     assert timing == ""
     assert "⚠" in status
@@ -202,7 +203,7 @@ def test_handler_sql_guard_error_shows_sql(monkeypatch):
     monkeypatch.setattr(ui_mod, "load_history", lambda n=20: [])
     sql, df, response, count_md, _, timing, status = _run("drop something")
     assert sql == bad_sql
-    assert "Database query tab" in response
+    assert "Database query" in response
     # Internal exception text must not be exposed
     assert "SQLGuardError" not in response
     assert "ValueError" not in response
