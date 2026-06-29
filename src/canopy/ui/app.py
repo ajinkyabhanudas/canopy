@@ -23,15 +23,10 @@ _PLACEHOLDER = t("placeholder")
 _IDLE_PROMPT = t("idle_prompt")
 
 _CSS = """
-/* Lock to light mode — paired with JS that removes .dark class */
-html, html.dark {
-    color-scheme: light;
-}
-
 /* Status bar — typographic only, no box */
 #canopy-status {
     font-size: 0.82em;
-    color: #6b7280;
+    color: var(--body-text-color-subdued);
     padding: 0 0 6px 0;
     min-height: 0;
     letter-spacing: 0.01em;
@@ -41,7 +36,7 @@ html, html.dark {
 /* Timing footer */
 .timing-info p {
     font-size: 0.78em !important;
-    color: #9ca3af !important;
+    color: var(--body-text-color-subdued) !important;
     margin-top: 4px !important;
     letter-spacing: 0.01em;
 }
@@ -61,22 +56,6 @@ html, html.dark {
     margin-bottom: 0.7em;
 }
 """
-
-_JS = (
-    "() => { "
-    "const rm = () => { "
-    "document.documentElement.classList.remove('dark'); "
-    "document.documentElement.style.colorScheme = 'light'; "
-    "}; "
-    "rm(); "
-    # MutationObserver catches Gradio re-adding .dark after our one-shot removal.
-    # This fires whenever the html element's class attribute changes.
-    "new MutationObserver(rm).observe("
-    "document.documentElement, "
-    "{ attributes: true, attributeFilter: ['class'] }"
-    "); "
-    "}"
-)
 
 # Type alias for the 7-tuple every handler output must match
 # [sql_box, results_table, response_box, row_count_md, history_radio, timing_md, status_md]
@@ -252,7 +231,7 @@ def _clear_handler() -> tuple:
 
 def build_app() -> gr.Blocks:
     """Build and return the Gradio Blocks application."""
-    with gr.Blocks(title="Canopy", css=_CSS, js=_JS) as app:
+    with gr.Blocks(title="Canopy", css=_CSS) as app:
         gr.Markdown(f"# 🌿 Canopy\n{t('app_subtitle')}")
 
         with gr.Row():
