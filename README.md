@@ -33,6 +33,38 @@ SQL (shown in "Database query" tab):
 
 ---
 
+## Screenshots
+
+**Idle state** — question input, recent query history, example prompts
+
+![Canopy idle state](docs/screenshots/01-idle.png)
+
+**English query** — exact count with faithfulness check (number in answer must match DB row)
+
+![English count query answer](docs/screenshots/02-english-count-answer.png)
+
+**SQL tab** — every answer shows the generated query for inspection
+
+![SQL tab for count query](docs/screenshots/03-english-count-sql.png)
+
+**English multi-table query** — validated species per site in 2023, ranked
+
+![English sites query answer](docs/screenshots/04-english-sites-answer.png)
+
+**Spanish query** — same system, question in Spanish, response in Spanish, SQL always English
+
+![Spanish species query answer](docs/screenshots/05-spanish-species-answer.png)
+
+**Spanish query — live-count result** — pending AI detections awaiting human review, per site
+
+![Spanish pending detections answer](docs/screenshots/06-spanish-pending-answer.png)
+
+**Full data table** — raw rows alongside the answer for any result
+
+![Data table for pending detections](docs/screenshots/07-spanish-pending-table.png)
+
+---
+
 ## What it does
 
 - Accepts natural language questions in **English or Spanish** — responds in
