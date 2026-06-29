@@ -122,6 +122,8 @@ Responses are cached for 24 hours, keyed on question text. Queries whose correct
 | B6 | datetime columns returned as str on cache hit (type mismatch vs live query) | Fixed — `_maybe_datetime` reconstructs ISO strings in row values on cache read |
 | B7 | `_empty_result` called `_history_choices()` in error path — double-fault if data dir unavailable | Fixed — silent fallback to empty list |
 | B8 | `_history_choices()` called 3–4× per query on every intermediate status yield | Fixed — snapshot once before query loop, refresh only on final yield |
+| B9 | `/data` volume owned by root — `canopy` user gets EACCES on every cache/history write in Docker | Fixed — Dockerfile now `chown canopy:canopy /data` before `USER canopy` so the volume initialises with correct ownership |
+| B10 | Dark theme persists in real browser despite CSS `color-scheme: light` — Gradio re-adds `.dark` after one-shot JS removal | Fixed — replaced one-shot `classList.remove('dark')` with a `MutationObserver` that fires on every class-attribute change |
 
 ---
 
