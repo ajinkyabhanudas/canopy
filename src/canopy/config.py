@@ -72,3 +72,11 @@ def get_db_config() -> DBConfig:
         user=os.environ.get("PG_USER", ""),
         password=os.environ.get("PG_PASSWORD", ""),
     )
+
+
+def get_ui_lang() -> str:
+    """Return the UI locale from CANOPY_UI_LANG (default: 'en').
+
+    Supported: 'en', 'es'. Unknown values fall back to 'en' at set_locale().
+    """
+    return os.environ.get("CANOPY_UI_LANG", "en").lower().strip()
