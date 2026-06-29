@@ -47,6 +47,29 @@ def test_make_key_different_questions_differ():
     assert _make_key("Which birds?") != _make_key("Which mammals?")
 
 
+def test_make_key_nfc_and_nfd_same_key():
+    """Same accented text in NFC vs NFD composition must produce the same cache key.
+
+    Without NFC normalisation, a user whose keyboard emits NFD-composed accents
+    (base letter + combining diacritic) and one who emits precomposed NFC characters
+    would get a cache miss even though they typed the same question.
+    """
+    import unicodedata
+    nfc = unicodedata.normalize("NFC", "¿Cuántas detecciones?")
+    nfd = unicodedata.normalize("NFD", "¿Cuántas detecciones?")
+    assert nfc != nfd, "NFC and NFD must differ in raw bytes to make this test meaningful"
+    assert _make_key(nfc) == _make_key(nfd)
+
+
+def test_make_key_spanish_and_english_different_keys():
+    """Spanish and English semantic equivalents hash to different keys — by design.
+
+    LoopResult.model_text is language-specific. Sharing a cache entry would serve
+    an English-language answer to a Spanish-asking user. Separate entries is correct.
+    """
+    assert _make_key("How many detections?") != _make_key("¿Cuántas detecciones?")
+
+
 def test_make_key_returns_16_hex_chars():
     key = _make_key("any question")
     assert len(key) == 16
