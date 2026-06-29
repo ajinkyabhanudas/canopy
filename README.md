@@ -179,6 +179,19 @@ ruff check src/ tests/
 
 Expected: **284 passed**, ~87% coverage.
 
+## Docker smoke test
+
+Validates runtime behaviour that unit tests cannot catch (volume permissions,
+Gradio API version warnings, startup errors). Requires Docker and curl.
+
+```bash
+./scripts/smoke_test_docker.sh
+```
+
+Checks: HTTP 200 on `/`, `/data` writable by the non-root user, no unexpected
+`UserWarning` in startup logs. Exits 0 if all pass. Use `--skip-build` to reuse
+a previously built `canopy:smoke` image.
+
 ## Eval suites
 
 Three live eval suites — all require `ANTHROPIC_API_KEY` and `PG_*` vars.
