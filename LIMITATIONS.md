@@ -123,7 +123,7 @@ Responses are cached for 24 hours, keyed on question text. Queries whose correct
 | B7 | `_empty_result` called `_history_choices()` in error path — double-fault if data dir unavailable | Fixed — silent fallback to empty list |
 | B8 | `_history_choices()` called 3–4× per query on every intermediate status yield | Fixed — snapshot once before query loop, refresh only on final yield |
 | B9 | `/data` volume owned by root — `canopy` user gets EACCES on every cache/history write in Docker | Fixed — Dockerfile now `chown canopy:canopy /data` before `USER canopy` so the volume initialises with correct ownership |
-| B10 | Dark theme persists in real browser despite CSS `color-scheme: light` — Gradio re-adds `.dark` after one-shot JS removal | Fixed — replaced one-shot `classList.remove('dark')` with a `MutationObserver` that fires on every class-attribute change |
+| B10 | App was hardcoded to light mode via CSS + JS, ignoring the user's system preference | Fixed — removed light-mode lock entirely; app now follows system dark/light setting. Hardcoded hex colors replaced with `--body-text-color-subdued` Gradio variable so both modes render correctly |
 
 ---
 
