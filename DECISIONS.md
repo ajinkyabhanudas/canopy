@@ -648,26 +648,27 @@ Second, hallucination tests depend on the DB not having the test entity. "Fictus
 - **Non-root:** If the container is compromised, a non-root process has a smaller blast radius than a root process. This is a standard container security baseline.
 - **Persistent volume:** History and cache must survive container restarts. A VOLUME at `/data` decouples persistent state from the container image lifecycle.
 
-**Dockerfile pattern:**
+**Dockerfile pattern (volume ownership handled in the build layer):**
 ```dockerfile
-RUN useradd -m canopy
+RUN useradd -m canopy && mkdir -p /data && chown canopy:canopy /data
 USER canopy
 ENV CANOPY_DATA_DIR=/data
 VOLUME ["/data"]
 ```
 
+The `chown` must happen before the `USER` switch: Docker initialises a named volume
+from the image layer at that path, so the ownership set in the `RUN` layer propagates
+into any freshly-mounted volume. Declaring `VOLUME` after `USER canopy` without the
+prior `chown` would create the volume as root:root and deny writes to the non-root process.
+
 **Consequences:**
-- **Volume ownership caveat:** Docker volumes are owned by root by default. The `canopy` user cannot write to a freshly mounted `/data` volume without an ownership fix. The run script or an entrypoint must handle this:
-  ```bash
-  # In entrypoint.sh (runs briefly as root before exec-ing as canopy):
-  chown -R canopy:canopy /data
-  exec gosu canopy "$@"
-  ```
-  If this is not handled, the app will silently fall back to `~/.canopy` (inside the container, non-persistent) rather than the mounted volume — queries will work but history and cache will be lost on restart.
+- **Non-root blast radius:** A compromised container process runs without root privileges.
+- **Persistent volume:** History and cache survive container restarts via the `/data` VOLUME.
+- **Volume ownership** is handled entirely within the image build — no entrypoint.sh or host-side `chown` is required. The `make smoke` check 2 validates this on every Docker build.
 
 > **Audit verdict — ✅ Sound**
 >
-> The design is correct. The volume ownership issue is a known operational gotcha that should be handled in the run script or entrypoint. Document it explicitly in the deployment runbook or the `docker_run.sh` script comments so it is not rediscovered each deployment.
+> The design is correct and the volume ownership issue has been resolved in the Dockerfile directly (2026-06-27). The previous caveat about entrypoint.sh is no longer applicable.
 
 ---
 
