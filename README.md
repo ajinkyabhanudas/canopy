@@ -1,5 +1,12 @@
 # canopy
 
+[![CI](https://github.com/ajinkyabhanudas/canopy/actions/workflows/ci.yml/badge.svg)](https://github.com/ajinkyabhanudas/canopy/actions/workflows/ci.yml)
+[![Coverage](https://codecov.io/gh/ajinkyabhanudas/canopy/branch/main/graph/badge.svg)](https://codecov.io/gh/ajinkyabhanudas/canopy)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776ab?logo=python&logoColor=white)](https://docs.python.org/3.11/)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![Docker](https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white)](Dockerfile)
+[![DB: read-only](https://img.shields.io/badge/database-read--only-brightgreen)](DECISIONS.md)
+
 A natural language query tool for Jocotoco's bioacoustic species-monitoring
 database. Ask a question in plain English (or Spanish), canopy translates it
 into a SQL query, executes it read-only against the database, and returns a
