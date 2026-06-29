@@ -13,8 +13,9 @@ RUN pip install --no-cache-dir -e ".[dev]"
 COPY src/ ./src/
 COPY scripts/ ./scripts/
 
-# Non-root user — never run as root in production
-RUN useradd -m canopy
+# Non-root user — /data must be chowned before USER switch so the volume
+# inherits canopy ownership when Docker initialises it on first run.
+RUN useradd -m canopy && mkdir -p /data && chown canopy:canopy /data
 USER canopy
 
 # Persistent data volume — mount at this path to survive container restarts

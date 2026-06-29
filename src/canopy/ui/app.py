@@ -64,8 +64,17 @@ html, html.dark {
 
 _JS = (
     "() => { "
+    "const rm = () => { "
     "document.documentElement.classList.remove('dark'); "
     "document.documentElement.style.colorScheme = 'light'; "
+    "}; "
+    "rm(); "
+    # MutationObserver catches Gradio re-adding .dark after our one-shot removal.
+    # This fires whenever the html element's class attribute changes.
+    "new MutationObserver(rm).observe("
+    "document.documentElement, "
+    "{ attributes: true, attributeFilter: ['class'] }"
+    "); "
     "}"
 )
 
