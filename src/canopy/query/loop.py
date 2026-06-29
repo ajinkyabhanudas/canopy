@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 
 from canopy.cache import lookup_cache, write_cache
 from canopy.history import append_history
+from canopy.i18n import t
 from canopy.models import get_model_client
 from canopy.query.executor import QueryResult, execute_query
 from canopy.schema import build_system_prompt
@@ -97,7 +98,7 @@ def run_query(
 
     for iteration in range(MAX_ITERATIONS):
         if status_cb:
-            status_cb("Understanding your question…" if iteration == 0 else "Refining the search…")
+            status_cb(t("status_understanding") if iteration == 0 else t("status_refining"))
         t_llm = time.perf_counter()
         response = model.generate(
             system_prompt=system_prompt,
@@ -121,14 +122,15 @@ def run_query(
         for tool_call in response.tool_calls:
             last_sql = tool_call.arguments["sql"]
             if status_cb:
-                status_cb("Searching the monitoring database…")
+                status_cb(t("status_searching_db"))
             t_db = time.perf_counter()
             last_query_result = execute_query(last_sql)
             db_times.append(time.perf_counter() - t_db)
             _log.debug("db execute: %.3fs — %s", db_times[-1], last_sql[:120])
             if status_cb:
                 n = last_query_result.row_count
-                status_cb(f"Found {n} detection{'s' if n != 1 else ''} — writing your answer…")
+                key = "found_detections_singular" if n == 1 else "found_detections_plural"
+                status_cb(t(key, n=n))
             tool_results.append((tool_call.id, _format_result(last_query_result)))
         messages.append(model.format_tool_results(tool_results))
     else:
