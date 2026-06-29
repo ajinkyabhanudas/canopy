@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from canopy.i18n import get_lang, set_locale, t, _load_catalog
+from canopy.i18n import _load_catalog, get_lang, set_locale, t
 from canopy.locales import en, es
-
 
 # ---------------------------------------------------------------------------
 # Fixture: restore locale state after any test that mutates it
