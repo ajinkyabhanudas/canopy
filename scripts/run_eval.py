@@ -45,10 +45,54 @@ from tests.eval.queries import EVAL_CASES  # noqa: E402
 
 _GT_THRESHOLD = 0.85
 _ADV_THRESHOLD = 1.00
+_ES_THRESHOLD = 1.00
+
+# Characters unique to Spanish — presence in model_text is a reliable proxy for
+# "model responded in Spanish" without requiring a language-detection library.
+_SPANISH_CHARS = frozenset("áéíóúñÁÉÍÓÚÑ¿¡")
 
 
 def _truncate(text: str, n: int = 100) -> str:
     return text if len(text) <= n else text[: n - 1] + "…"
+
+
+def _build_es_cases(cases: list) -> list:
+    """Return one EvalCase per case that has translation_es set.
+
+    The inherited check_fn validates SQL structure (always English).
+    A language soft-check is appended: model_text is expected to contain at
+    least one Spanish-specific character. Absence logs a warning — it is not
+    a hard failure because the SQL-correctness check is the primary signal.
+    """
+    from tests.eval.queries import EvalCase
+
+    es_cases = []
+    for case in cases:
+        if not case.translation_es:
+            continue
+        original_check = case.check_fn
+
+        def _make_check(orig, q_es):
+            def _check(r):
+                ok = orig(r)
+                has_spanish = any(c in r.model_text for c in _SPANISH_CHARS)
+                if not has_spanish:
+                    print(
+                        f"        [WARN]  response may not be in Spanish "
+                        f"(no Spanish chars in model_text for: {_truncate(q_es, 60)})"
+                    )
+                return ok
+
+            return _check
+
+        es_cases.append(
+            EvalCase(
+                question=case.translation_es,
+                check_fn=_make_check(original_check, case.translation_es),
+                description=f"[ES] {case.description}",
+            )
+        )
+    return es_cases
 
 
 def _run_suite(
@@ -127,12 +171,23 @@ def main() -> None:
     args = set(sys.argv[1:])
     run_gt = "--adversarial" not in args or "--ground-truth" in args
     run_adv = "--ground-truth" not in args or "--adversarial" in args
+    run_es = "--spanish" in args
 
     results: list[bool] = []
 
     if run_gt:
         ok = _run_suite(EVAL_CASES, "Q", "Ground-truth eval", _GT_THRESHOLD)
         results.append(ok)
+
+    if run_es:
+        es_cases = _build_es_cases(EVAL_CASES)
+        if es_cases:
+            ok = _run_suite(
+                es_cases, "ES",
+                f"Spanish eval ({len(es_cases)} GT variants)",
+                _ES_THRESHOLD,
+            )
+            results.append(ok)
 
     if run_adv:
         ok = _run_suite(
