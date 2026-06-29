@@ -22,7 +22,7 @@ set_locale(get_ui_lang())
 _PLACEHOLDER = t("placeholder")
 _IDLE_PROMPT = t("idle_prompt")
 
-_CSS = """
+CSS = """
 /* Status bar — typographic only, no box */
 #canopy-status {
     font-size: 0.82em;
@@ -231,7 +231,7 @@ def _clear_handler() -> tuple:
 
 def build_app() -> gr.Blocks:
     """Build and return the Gradio Blocks application."""
-    with gr.Blocks(title="Canopy", css=_CSS) as app:
+    with gr.Blocks(title="Canopy") as app:
         gr.Markdown(f"# 🌿 Canopy\n{t('app_subtitle')}")
 
         with gr.Row():
@@ -287,7 +287,7 @@ def build_app() -> gr.Blocks:
             fn=_run_query_handler, inputs=[question_box], outputs=_OUTPUTS,
             concurrency_limit=1,
         )
-        history_radio.change(
+        history_radio.input(
             fn=lambda q: q or "",
             inputs=[history_radio],
             outputs=[question_box],
