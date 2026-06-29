@@ -2,7 +2,7 @@
 
 STRINGS: dict[str, str] = {
     # UI static labels
-    "app_subtitle":   "Haga preguntas sobre los datos de monitoreo de Jocotoco en lenguaje natural.",
+    "app_subtitle":   "Consulta los datos de monitoreo de Jocotoco en lenguaje natural.",
     "question_label": "Haga una pregunta",
     "placeholder":    "p. ej. ¿Cuántas especies confirmadas se detectaron en cada reserva en 2023?",
     "run_btn":        "Ejecutar consulta",

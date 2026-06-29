@@ -62,13 +62,7 @@ SQL (shown in "Database query" tab):
 
 ## Quickstart — Docker (recommended)
 
-### 1. Build the image
-
-```bash
-docker build -t canopy:dev .
-```
-
-### 2. Configure
+### 1. Configure
 
 ```bash
 cp .env.example .env
@@ -91,10 +85,10 @@ Edit `.env` and fill in all required values. Never commit `.env`.
 | `CANOPY_CACHE_TTL_HOURS` | No | Cache TTL in hours (default: `24`) |
 | `CANOPY_UI_LANG` | No | UI label language: `en` (default) or `es` (Spanish). Model responses always auto-detect from question language — this only controls UI labels. |
 
-### 3. Run
+### 2. Build and run
 
 ```bash
-./scripts/docker_run.sh
+make run
 ```
 
 Open **http://localhost:7860** in a browser.
@@ -103,7 +97,7 @@ Open **http://localhost:7860** in a browser.
 > literally. `docker_run.sh` sources `.env` via shell so quotes are stripped
 > correctly before the container starts.
 
-### 4. Stop
+### 3. Stop
 
 ```bash
 docker stop $(docker ps -q --filter "ancestor=canopy:dev")
@@ -116,24 +110,39 @@ docker stop $(docker ps -q --filter "ancestor=canopy:dev")
 ```bash
 pip install -e ".[dev]"
 cp .env.example .env   # fill in values
-python scripts/run_ui.py
+make ui
 ```
 
 Open **http://localhost:7860**.
 
 ---
 
-## Manual checks (CLI, no UI)
+## Developer commands
 
-### Verify the API key
+All common tasks are available via `make`. Run `make` (no target) to see the full list.
 
-One billable call to confirm credentials and model are configured:
+| Command | What it does |
+|---|---|
+| `make check` | Lint + unit tests — run before every commit |
+| `make lint` | `ruff check src/ tests/ scripts/` |
+| `make test` | `pytest tests/ -q` |
+| `make ui` | Start the app locally (needs `.env`) |
+| `make build` | Build Docker image (`canopy:dev`) |
+| `make run` | Build and run in Docker (needs `.env`) |
+| `make smoke` | Docker smoke test — validates runtime behaviour unit tests can't catch |
+| `make eval` | Ground-truth + adversarial eval (needs live DB + API key) |
+| `make eval-es` | Spanish language variant eval |
+| `make clean` | Remove build artefacts and caches |
+
+### Manual checks (CLI, no UI)
+
+#### Verify the API key
 
 ```bash
 python scripts/smoke_test.py
 ```
 
-### Verify the database connection
+#### Verify the database connection
 
 ```bash
 python -c "
@@ -146,7 +155,7 @@ conn.close()
 "
 ```
 
-### Run a query from the command line
+#### Run a query from the command line
 
 ```bash
 python -c "
@@ -159,7 +168,7 @@ print(result.model_text)
 "
 ```
 
-### Inspect the system prompt
+#### Inspect the system prompt
 
 ```bash
 python -c "from canopy.schema import build_system_prompt; print(build_system_prompt())"
@@ -170,27 +179,15 @@ python -c "from canopy.schema import build_system_prompt; print(build_system_pro
 ## Tests
 
 ```bash
-# All unit tests (no DB or API key needed)
-pytest tests/ --cov=canopy --cov-report=term-missing
-
-# Linting
-ruff check src/ tests/
+make check          # lint + unit tests
+make test           # unit tests only
+make smoke          # Docker runtime validation (requires Docker)
 ```
 
-Expected: **284 passed**, ~87% coverage.
+Expected unit test result: **284 passed**, ~87% coverage.
 
-## Docker smoke test
-
-Validates runtime behaviour that unit tests cannot catch (volume permissions,
-Gradio API version warnings, startup errors). Requires Docker and curl.
-
-```bash
-./scripts/smoke_test_docker.sh
-```
-
-Checks: HTTP 200 on `/`, `/data` writable by the non-root user, no unexpected
-`UserWarning` in startup logs. Exits 0 if all pass. Use `--skip-build` to reuse
-a previously built `canopy:smoke` image.
+The smoke test validates what `pytest` cannot: Docker volume permissions, Gradio
+startup warnings, and HTTP availability. Run it after any Dockerfile or Gradio change.
 
 ## Eval suites
 
