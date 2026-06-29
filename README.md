@@ -1,21 +1,49 @@
 # canopy
 
 A natural language query tool for Jocotoco's bioacoustic species-monitoring
-database. Ask a question in plain English, canopy translates it into a SQL
-query, executes it read-only against the database, and returns a plain-English
-answer alongside the SQL for inspection.
+database. Ask a question in plain English (or Spanish), canopy translates it
+into a SQL query, executes it read-only against the database, and returns a
+plain-language answer alongside the SQL for inspection.
+
+## Example
+
+```
+Q: How many confirmed species were detected at each reserve in 2023?
+
+Answer:
+  In 2023, confirmed species were detected across 14 recording sites.
+
+  Key findings:
+  • Buenaventura led with 63 confirmed species.
+  • El Pambilar recorded 41 species.
+  • La Hesperia recorded 38 species.
+
+  ⚠️ Data notes: Figures show detections with validation_status = 'approved'.
+  For external reports, ask the science team to verify these figures.
+
+SQL (shown in "Database query" tab):
+  SELECT si.name AS site, COUNT(DISTINCT d.species_id) AS species_count
+  FROM detections d
+    JOIN sites si ON d.site_id = si.id
+  WHERE d.validation_status = 'approved'
+    AND EXTRACT(YEAR FROM d.recorded_at) = 2023
+  GROUP BY si.name
+  ORDER BY species_count DESC
+```
+
+---
 
 ## What it does
 
-- Accepts a natural language question about species detections, recording sites,
-  validation records (`approved` / `pending`), and related metadata.
+- Accepts natural language questions in **English or Spanish** — responds in
+  whichever language you write in, without any configuration.
 - Uses Claude to generate a PostgreSQL SELECT query — never guesses results.
-- Executes read-only against PostgreSQL and returns a structured plain-English answer
+- Executes read-only against PostgreSQL and returns a structured answer
   (headline → key findings → data notes) alongside the data table and SQL.
-- Caches results for 24 hours by question text (SHA-256 key, LRU-evicted at 200 entries)
-  so repeated queries return instantly without an LLM or DB call.
-- Shows live progress while the query runs — what the model understood, which
-  stage the pipeline is at, how many records were found.
+- Caches results for 24 hours by question text so repeated queries return
+  instantly without an LLM or DB call.
+- Streams live progress while the query runs — what the model understood, which
+  pipeline stage is active, how many records were found.
 - Persists query history to disk (last 20 queries surfaced in the UI sidebar);
   clicking a history item auto-runs the query from cache.
 - Never infers population trends or conservation status — that requires a formal
@@ -61,6 +89,7 @@ Edit `.env` and fill in all required values. Never commit `.env`.
 | `ANTHROPIC_TIMEOUT` | No | API timeout in seconds (default: `60`) |
 | `CANOPY_DATA_DIR` | No | History + cache file location — Docker only, do not set locally |
 | `CANOPY_CACHE_TTL_HOURS` | No | Cache TTL in hours (default: `24`) |
+| `CANOPY_UI_LANG` | No | UI label language: `en` (default) or `es` (Spanish). Model responses always auto-detect from question language — this only controls UI labels. |
 
 ### 3. Run
 
@@ -148,17 +177,14 @@ pytest tests/ --cov=canopy --cov-report=term-missing
 ruff check src/ tests/
 ```
 
-Expected: **229 passed, 1 skipped**, ~87% coverage.
-
-The skipped test is a live DB integration test — it runs automatically when
-`PG_*` vars are present.
+Expected: **284 passed**, ~87% coverage.
 
 ## Eval suites
 
-Two live eval suites — both require `ANTHROPIC_API_KEY` and `PG_*` vars.
+Three live eval suites — all require `ANTHROPIC_API_KEY` and `PG_*` vars.
 
 ```bash
-# Both suites (default)
+# Ground-truth + adversarial (default)
 python scripts/run_eval.py
 
 # Ground-truth only
@@ -166,11 +192,21 @@ python scripts/run_eval.py --ground-truth
 
 # Adversarial only
 python scripts/run_eval.py --adversarial
+
+# Spanish language variants (8 GT cases in Spanish)
+python scripts/run_eval.py --spanish
+
+# Full: ground-truth + Spanish + adversarial
+python scripts/run_eval.py --spanish
 ```
 
 **Ground-truth** — 30 questions covering SQL correctness, result shape,
 guardrail adherence, faithfulness (model_text numbers match DB rows),
 guardrail bypass variants, and time-relative / live-count queries. Pass threshold: ≥85% (26/30).
+
+**Spanish variants** — 8 parallel cases in Spanish. Same SQL structure checks
+as their English equivalents (SQL is always English regardless of question
+language). Soft check: model_text must contain Spanish-specific characters.
 
 **Adversarial** — 8 hostile inputs: prompt injection, SQL injection in question
 text, persona/roleplay bypass, system prompt extraction, credentials request,
@@ -184,11 +220,15 @@ a blocked attack is the correct outcome.
 
 ```
 src/canopy/
-├── config.py          # Env var loading — ModelConfig, DBConfig, get_data_dir()
-├── schema.py          # DB schema constant + build_system_prompt()
+├── config.py          # Env var loading — ModelConfig, DBConfig, get_data_dir(), get_ui_lang()
+├── schema.py          # DB schema constant + build_system_prompt() (language instruction included)
+├── i18n.py            # set_locale(), t() — UI string localisation singleton
+├── locales/
+│   ├── en.py          # English string catalog (23 keys — source of truth)
+│   └── es.py          # Spanish string catalog
 ├── _json.py           # Shared JSON encoder (Decimal, datetime) for cache + history
 ├── history.py         # append_history, load_history, clear_history (JSONL)
-├── cache.py           # lookup_cache, write_cache — SHA-256 key, 24h TTL, LRU evict
+├── cache.py           # lookup_cache, write_cache — SHA-256+NFC key, 24h TTL, LRU evict
 ├── models/
 │   ├── base.py        # ModelClient ABC — vendor-neutral interface
 │   ├── anthropic.py   # Claude adapter (only backend today)
@@ -199,7 +239,7 @@ src/canopy/
 │   ├── executor.py    # execute_query() — SELECT-only guard + execution
 │   └── loop.py        # run_query() — agentic loop, returns LoopResult
 └── ui/
-    └── app.py         # build_app() — Gradio two-panel UI
+    └── app.py         # build_app() — Gradio two-panel UI (all strings via t())
 
 scripts/
 ├── docker_run.sh      # Docker launcher (handles .env quote stripping)
@@ -210,7 +250,7 @@ scripts/
 tests/
 ├── conftest.py        # autouse fixture — redirects CANOPY_DATA_DIR to tmp_path per test
 └── eval/
-    ├── queries.py     # 30 EvalCase entries — correctness, guardrails, faithfulness, bypass variants, time-relative
+    ├── queries.py     # 30 EvalCase entries (8 with Spanish translation_es); correctness, guardrails, faithfulness
     └── adversarial.py # 8 adversarial cases — injection, persona bypass, hallucination boundary
 
 Dockerfile             # python:3.11-slim, non-root user, /data volume
@@ -266,6 +306,8 @@ behaviour boundaries.
 | Coordinate filtering (lat/lon never sent to AI layer) | Done |
 | Read-only DB connection enforcement | Done |
 | Resilient query history | Done |
-| Faithfulness + adversarial evals (27 GT + 8 adversarial) | Done |
-| Query result cache (SHA-256, TTL, LRU) | Done |
+| Faithfulness + adversarial evals (30 GT + 8 adversarial) | Done |
+| Query result cache (SHA-256+NFC, TTL, LRU) | Done |
+| Spanish language support (auto-detect responses + UI labels) | Done |
+| Spanish eval suite (8 GT parallel cases) | Done |
 | IUCN API integration | Deferred (needs API key) |

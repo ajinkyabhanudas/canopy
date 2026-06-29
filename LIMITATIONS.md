@@ -134,3 +134,5 @@ Responses are cached for 24 hours, keyed on question text. Queries whose correct
 | No eval case that verifies missing-year gaps are noted explicitly | Low | Step 9 of build plan |
 | No eval case for live-count queries (pending, most-recent) | Medium | Added Q28–Q30 in queries.py |
 | Cache staleness for time-relative queries untested in Playwright protocol | Medium | Added Test 9 in playwright-protocol.md |
+| Spanish eval coverage | Closed | 8 Spanish parallel cases added to queries.py (run with `--spanish`); SQL structure checks inherited; language soft-check via Spanish character presence |
+| Cache miss on Spanish accent variants (NFC vs NFD composition) | Closed | unicodedata.normalize("NFC") added to `_make_key()` |

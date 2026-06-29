@@ -395,10 +395,11 @@ class ModelClient(ABC):
 
 **Normalisation:**
 ```python
-normalised = re.sub(r'\s+', ' ', question.casefold().strip())
+q = unicodedata.normalize("NFC", question)       # added: Spanish accent variant safety
+normalised = re.sub(r'\s+', ' ', q.casefold().strip())
 key = hashlib.sha256(normalised.encode()).hexdigest()[:16]
 ```
-"Which birds?" and `"  which birds?  "` → same cache key. "Which birds?" and "Which mammals?" → different keys.
+"Which birds?" and `"  which birds?  "` → same cache key. "Which birds?" and "Which mammals?" → different keys. "¿Cuántas?" typed NFC vs NFD composition → same key. "¿Cuántas?" (Spanish) and "How many?" (English) → different keys, by design: `LoopResult.model_text` is language-specific; sharing a cache entry would serve an English-language answer to a Spanish asker.
 
 **Alternatives considered:**
 
