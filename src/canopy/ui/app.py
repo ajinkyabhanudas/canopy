@@ -9,21 +9,18 @@ from typing import Generator
 
 import gradio as gr
 
+from canopy.config import get_ui_lang
 from canopy.history import clear_history, load_history
+from canopy.i18n import set_locale, t
 from canopy.query.executor import SQLGuardError
 from canopy.query.loop import run_query
 
 _log = logging.getLogger("canopy.ui")
 
-_PLACEHOLDER = "e.g. How many confirmed species were detected at each reserve in 2023?"
+set_locale(get_ui_lang())
 
-_IDLE_PROMPT = (
-    "Ask a question about species monitoring data.\n\n"
-    "→ How many confirmed species were detected at each reserve in 2023?  \n"
-    "→ Which sites had the most activity last year?  \n"
-    "→ Show me all Jocotoco Antpitta detections since 2022.  \n"
-    "→ How many detections are awaiting human review at each site?"
-)
+_PLACEHOLDER = t("placeholder")
+_IDLE_PROMPT = t("idle_prompt")
 
 _CSS = """
 /* Lock to light mode — paired with JS that removes .dark class */
@@ -107,7 +104,7 @@ def _run_query_handler(question: str) -> Generator[_Output, None, None]:
     """
     question = question.strip()
     if not question:
-        yield _empty_result("Please enter a question.")
+        yield _empty_result(t("error_empty_question"))
         return
 
     status_q: queue.Queue[str | None] = queue.Queue()
@@ -135,11 +132,11 @@ def _run_query_handler(question: str) -> Generator[_Output, None, None]:
     yield (
         "",
         gr.Dataframe(value=None),
-        "Reading your question…",
+        t("status_reading"),
         "",
         gr.Radio(choices=pre_query_choices),
         "",
-        "Reading your question…",
+        t("status_reading"),
     )
 
     thread = threading.Thread(target=_worker, daemon=True)
@@ -153,21 +150,21 @@ def _run_query_handler(question: str) -> Generator[_Output, None, None]:
             yield (
                 "",
                 gr.Dataframe(value=None),
-                "Loading your previous result…",
+                t("status_cache_hit"),
                 "",
                 gr.Radio(choices=pre_query_choices),
                 "",
-                "Loading your previous result…",
+                t("status_cache_hit"),
             )
             continue
         if msg.startswith("INTENT:"):
             intent_text[0] = msg[7:].strip()
-            response_text = f"**I understood:** {intent_text[0]}\n\nSearching the database…"
-            status_text = "Searching the monitoring database…"
+            response_text = t("status_understood", intent=intent_text[0])
+            status_text = t("status_searching_db")
         else:
             # Keep intent visible in response_box if we have it, otherwise blank
             response_text = (
-                f"**I understood:** {intent_text[0]}\n\nSearching the database…"
+                t("status_understood", intent=intent_text[0])
                 if intent_text[0]
                 else ""
             )
@@ -191,23 +188,17 @@ def _run_query_handler(question: str) -> Generator[_Output, None, None]:
             yield (
                 exc.sql,
                 gr.Dataframe(value=None),
-                (
-                    "I wasn't able to run that query safely.\n\n"
-                    "This sometimes happens with unusual question phrasing — "
-                    "try asking what's in the data rather than asking to change it.\n\n"
-                    "The generated query is shown in the **Database query tab** for reference."
-                ),
+                t("error_guard_response"),
                 "",
                 gr.Radio(choices=_history_choices()),
                 "",
-                "⚠ Could not complete that query — see the Answer tab",
+                t("error_guard_status"),
             )
         else:
             _log.error("query failed in UI: %s", exc, exc_info=True)
             yield _empty_result(
-                "Something went wrong while searching. "
-                "Please try again, or rephrase your question.",
-                status="⚠ Could not complete that query",
+                t("error_generic_response"),
+                status=t("error_generic_status"),
             )
         return
 
@@ -215,20 +206,21 @@ def _run_query_handler(question: str) -> Generator[_Output, None, None]:
     rows = [list(row) for row in result.rows]
     df = gr.Dataframe(value=rows or None, headers=result.columns)
     count = result.row_count
-    count_md = f"**{count} row{'s' if count != 1 else ''} returned**"
-    t = result.timing
-    if t.get("cache_hit"):
-        timing_md = "⚡ From your recent queries · instant"
+    count_md = t("count_row_singular", n=count) if count == 1 else t("count_row_plural", n=count)
+    timing = result.timing
+    if timing.get("cache_hit"):
+        timing_md = t("timing_cached")
         sql_display = result.sql or ""
     else:
-        total = t.get("total_s", 0)
-        timing_md = f"Answer ready in {total:.0f}s"
-        n_calls = t.get("llm_calls", 0)
+        total = timing.get("total_s", 0)
+        timing_md = t("timing_live", total=total)
+        n_calls = timing.get("llm_calls", 0)
         if result.sql:
+            call_s = "calls" if n_calls != 1 else "call"
             dev_comment = (
                 f"\n-- {total:.1f}s total · "
-                f"LLM {t.get('llm_s', 0):.1f}s ({n_calls} call{'s' if n_calls != 1 else ''}) · "
-                f"DB {t.get('db_s', 0):.3f}s"
+                f"LLM {timing.get('llm_s', 0):.1f}s ({n_calls} {call_s}) · "
+                f"DB {timing.get('db_s', 0):.3f}s"
             )
             sql_display = result.sql + dev_comment
         else:
@@ -252,44 +244,41 @@ def _clear_handler() -> tuple:
 def build_app() -> gr.Blocks:
     """Build and return the Gradio Blocks application."""
     with gr.Blocks(title="Canopy", css=_CSS, js=_JS) as app:
-        gr.Markdown(
-            "# 🌿 Canopy\n"
-            "Ask questions about Jocotoco's species monitoring data in plain English."
-        )
+        gr.Markdown(f"# 🌿 Canopy\n{t('app_subtitle')}")
 
         with gr.Row():
             # ── Left panel ─────────────────────────────────────────────────────
             with gr.Column(scale=1, min_width=280):
                 question_box = gr.Textbox(
-                    label="Ask a question",
+                    label=t("question_label"),
                     placeholder=_PLACEHOLDER,
                     lines=3,
                 )
-                submit_btn = gr.Button("Run Query", variant="primary", size="lg")
+                submit_btn = gr.Button(t("run_btn"), variant="primary", size="lg")
 
-                gr.Markdown("### Recent queries")
+                gr.Markdown(t("recent_queries"))
                 history_radio = gr.Radio(
                     choices=_history_choices(),
                     label="",
                     container=False,
                 )
-                clear_btn = gr.Button("Clear history", size="sm", variant="secondary")
+                clear_btn = gr.Button(t("clear_btn"), size="sm", variant="secondary")
 
             # ── Right panel ────────────────────────────────────────────────────
             with gr.Column(scale=2):
                 # Status bar — always visible regardless of which tab is active
                 status_md = gr.Markdown("", elem_id="canopy-status")
                 with gr.Tabs():
-                    with gr.Tab("Answer"):
+                    with gr.Tab(t("tab_answer")):
                         response_box = gr.Markdown(_IDLE_PROMPT)
-                    with gr.Tab("Full data table"):
+                    with gr.Tab(t("tab_data")):
                         row_count_md = gr.Markdown("")
                         results_table = gr.Dataframe(
                             label="",
                             wrap=True,
                             interactive=False,
                         )
-                    with gr.Tab("Database query"):
+                    with gr.Tab(t("tab_sql")):
                         sql_box = gr.Code(
                             label="",
                             language="sql",
