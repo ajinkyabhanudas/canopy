@@ -572,7 +572,7 @@ Second, hallucination tests depend on the DB not having the test entity. "Fictus
 >
 > Gradio is the right choice for the current stage: single developer, internal tool, rapid iteration. The decision is sound today. But two gaps must be acknowledged and not papered over:
 >
-> **Gap 1 — No per-user isolation.** If more than one person uses the same instance simultaneously, their histories are interleaved in the radio list, and the cache is shared (which is actually fine). This is not a security issue (all users are authorised staff) but it is a UX problem. Short-term fix: deploy one instance per user or per team. Medium-term: add Gradio basic auth per user + separate CANOPY_DATA_DIR per user. Long-term: React frontend.
+> **Gap 1 — History isolation: resolved (2026-06-30).** Query history is now per-browser via `gr.BrowserState` (localStorage). Each device maintains its own isolated history list that survives page refresh. The shared result cache (`cache.json`) remains instance-wide — acceptable for a read-only tool where answers are deterministic. Two tabs on the same machine share localStorage (browser constraint, not Canopy's). If full cache isolation is needed, add Gradio `auth=` + separate `CANOPY_DATA_DIR` per user.
 >
 > **Gap 2 — No authentication.** Anyone who can reach the URL can use the system. If the instance is not firewalled to the Jocotoco network, it is publicly accessible. Ensure deployment is network-restricted or add Gradio's `auth=` parameter before any semi-public deployment.
 >

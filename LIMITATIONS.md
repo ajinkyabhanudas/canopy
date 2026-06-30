@@ -4,7 +4,7 @@
 > inconsistencies, and design boundaries that a user or administrator
 > should understand before relying on Canopy outputs for decision-making.
 >
-> Last updated: 2026-06-29. Update this file when a limitation is resolved or a new one is found.
+> Last updated: 2026-06-30. Update this file when a limitation is resolved or a new one is found.
 
 ---
 
@@ -101,25 +101,29 @@ Latitude and longitude columns are stripped before the AI model processes result
 Spatial queries (e.g. "which detections were within 5 km of reserve boundary")
 cannot be answered by Canopy.
 
-### 9. No per-user isolation — shared history and cache
+### 9. Partial per-user isolation — history isolated, cache shared
 
-**Severity:** Medium — affects privacy and reliability in multi-user deployments.
+**Severity:** Low–Medium (reduced from Medium after 2026-06-30 fix).
 
-Canopy runs as a single-instance web app with no authentication layer. All users
-sharing the instance see the same 20-entry query history sidebar and draw from
-the same 24-hour response cache. There is no per-user session, no access control,
-and no audit log of who asked what.
+**Query history** is now isolated per browser via `gr.BrowserState` (localStorage).
+Each device gets its own 20-entry history sidebar; users no longer see each other's
+queries. History survives page refresh within the same browser.
+
+**What is still shared:**
+- The 24-hour response cache (`cache.json`) is instance-wide. A cached answer computed
+  for one user is returned to any other user asking the exact same question.
+- There is no authentication layer and no audit log of who asked what.
+- Two browser tabs on the same computer share localStorage (browser constraint, not Canopy's).
 
 **Implications:**
-- Query history is visible to every user on the instance.
-- A cached answer returned to user A will also be returned to user B asking
-  the same question, regardless of any contextual differences.
-- Canopy must be network-restricted (VPN/firewall or Gradio `auth=` parameter)
-  before being shared across teams. See the auth note in README.md.
+- Cache sharing is generally acceptable for a read-only science tool — the answer to
+  "how many approved detections at Buenaventura in 2023?" is the same for all staff.
+- Canopy must be network-restricted (VPN/firewall or Gradio `auth=` parameter) before
+  any semi-public deployment. See the auth note in README.md.
 
-**Long-term fix:** Add Gradio's built-in `auth=` parameter for simple shared-secret
-access, or move to a FastAPI backend with per-session state management when
-concurrent multi-user access becomes a requirement.
+**Long-term fix:** Add Gradio's built-in `auth=` parameter for shared-secret access if
+per-user cache isolation is required, or move to a FastAPI backend with per-session
+state for full isolation.
 
 ---
 
