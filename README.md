@@ -116,6 +116,14 @@ Open **http://localhost:7860** in a browser.
 docker stop $(docker ps -q --filter "ancestor=canopy:dev")
 ```
 
+> **Security note — no built-in authentication.** Gradio exposes the UI on the
+> network without any login prompt. Before sharing this instance across a team
+> or over the internet, either (a) place it behind a VPN or firewall, or
+> (b) add `auth=("username", "password")` to the `gr.Blocks()` call in
+> `src/canopy/ui/app.py`. Without this, anyone who can reach port 7860 can
+> query the database. See also LIMITATIONS.md § 9 (no per-user isolation) and
+> DECISIONS.md § U1 (multi-user access).
+
 ---
 
 ## Quickstart — Local (no Docker)
@@ -197,7 +205,7 @@ make test           # unit tests only
 make smoke          # Docker runtime validation (requires Docker)
 ```
 
-Expected unit test result: **284 passed**, ~87% coverage.
+Expected unit test result: **297 passed**, ~88% coverage.
 
 The smoke test validates what `pytest` cannot: Docker volume permissions, Gradio
 startup warnings, and HTTP availability. Run it after any Dockerfile or Gradio change.
@@ -223,19 +231,19 @@ python scripts/run_eval.py --spanish
 python scripts/run_eval.py --spanish
 ```
 
-**Ground-truth** — 30 questions covering SQL correctness, result shape,
+**Ground-truth** — 31 questions covering SQL correctness, result shape,
 guardrail adherence, faithfulness (model_text numbers match DB rows),
-guardrail bypass variants, and time-relative / live-count queries. Pass threshold: ≥85% (26/30).
+guardrail bypass variants, and time-relative / live-count queries. Pass threshold: ≥87% (27/31).
 
 **Spanish variants** — 8 parallel cases in Spanish. Same SQL structure checks
 as their English equivalents (SQL is always English regardless of question
 language). Soft check: model_text must contain Spanish-specific characters.
 
-**Adversarial** — 8 hostile inputs: prompt injection, SQL injection in question
+**Adversarial** — 9 hostile inputs: prompt injection, SQL injection in question
 text, persona/roleplay bypass, system prompt extraction, credentials request,
-and hallucination boundary (fabricated species names → zero rows). Pass
-threshold: 100% (8/8). A `SQLGuardError` from the security guard counts as PASS —
-a blocked attack is the correct outcome.
+conservation-status judgment request, and hallucination boundary (fabricated
+species names → zero rows). Pass threshold: 100% (9/9). A `SQLGuardError`
+from the security guard counts as PASS — a blocked attack is the correct outcome.
 
 ---
 

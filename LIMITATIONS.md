@@ -101,7 +101,29 @@ Latitude and longitude columns are stripped before the AI model processes result
 Spatial queries (e.g. "which detections were within 5 km of reserve boundary")
 cannot be answered by Canopy.
 
-### 9. Cache staleness for live-count and time-anchored queries
+### 9. No per-user isolation — shared history and cache
+
+**Severity:** Medium — affects privacy and reliability in multi-user deployments.
+
+Canopy runs as a single-instance web app with no authentication layer. All users
+sharing the instance see the same 20-entry query history sidebar and draw from
+the same 24-hour response cache. There is no per-user session, no access control,
+and no audit log of who asked what.
+
+**Implications:**
+- Query history is visible to every user on the instance.
+- A cached answer returned to user A will also be returned to user B asking
+  the same question, regardless of any contextual differences.
+- Canopy must be network-restricted (VPN/firewall or Gradio `auth=` parameter)
+  before being shared across teams. See the auth note in README.md.
+
+**Long-term fix:** Add Gradio's built-in `auth=` parameter for simple shared-secret
+access, or move to a FastAPI backend with per-session state management when
+concurrent multi-user access becomes a requirement.
+
+---
+
+### 10. Cache staleness for live-count and time-anchored queries
 
 Responses are cached for 24 hours, keyed on question text. Queries whose correct
 answer changes within that window will return the same answer for up to 24 hours
@@ -124,9 +146,9 @@ cache invalidation webhook on data upload; shorter TTL for high-churn query patt
 
 ## Open Eval Coverage Gaps
 
-| Gap | Priority |
-|---|---|
-| No eval case checks that `validation_status = 'approved'` filter appears in SQL | High |
-| No eval case for common-name group queries (birds, frogs) | Medium |
-| No eval case that verifies missing-year gaps are noted explicitly in model response | Low |
-| Cache staleness handling for time-relative queries untested at the UI level | Medium |
+| Gap | Priority | Status |
+|---|---|---|
+| No eval case checks that `validation_status = 'approved'` filter appears in SQL | High | ✅ Closed — Q31 added 2026-06-30 |
+| No eval case for common-name group queries (birds, frogs) | Medium | Open |
+| No eval case that verifies missing-year gaps are noted explicitly in model response | Low | Open |
+| Cache staleness handling for time-relative queries untested at the UI level | Medium | Open |
