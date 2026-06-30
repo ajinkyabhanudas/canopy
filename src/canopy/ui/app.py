@@ -212,8 +212,10 @@ def _run_query_handler(
         else:
             sql_display = ""
 
-    # Prepend question so the sidebar shows newest-first; cap at 20 entries.
-    new_history = ([question] + session_history)[:20]
+    # Deduplicate then prepend — re-running a question moves it to the top
+    # rather than adding a duplicate entry.
+    deduped = [q for q in session_history if q != question]
+    new_history = ([question] + deduped)[:20]
     yield (
         sql_display,
         df,
