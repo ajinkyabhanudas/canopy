@@ -75,6 +75,21 @@ def test_guard_error_carries_sql(monkeypatch, mock_conn):
     assert exc_info.value.sql == bad_sql
 
 
+@pytest.mark.parametrize("sql,expected_op", [
+    ("DROP TABLE species", "DROP"),
+    ("DELETE FROM detections WHERE id = 1", "DELETE"),
+    ("UPDATE species SET name = 'x'", "UPDATE"),
+    ("INSERT INTO species VALUES (1)", "INSERT"),
+    ("TRUNCATE detections", "TRUNCATE"),
+])
+def test_guard_error_operation_uppercased(sql, expected_op, monkeypatch, mock_conn):
+    """SQLGuardError.operation is the uppercased first SQL keyword of the blocked query."""
+    monkeypatch.setattr("canopy.query.executor.get_connection", lambda: mock_conn)
+    with pytest.raises(SQLGuardError) as exc_info:
+        execute_query(sql)
+    assert exc_info.value.operation == expected_op
+
+
 # ---------------------------------------------------------------------------
 # Guard: SELECT passes in all expected forms
 # ---------------------------------------------------------------------------

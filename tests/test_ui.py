@@ -210,7 +210,7 @@ def test_handler_run_query_raises(monkeypatch):
 
 
 def test_handler_sql_guard_error_shows_sql(monkeypatch):
-    """SQLGuardError: rejected SQL appears in sql_box; human-readable message in response."""
+    """SQLGuardError: rejected SQL in sql_box; operation named in response; no internals exposed."""
     bad_sql = "DROP TABLE species"
 
     def _guard_fail(q, status_cb=None):
@@ -219,12 +219,67 @@ def test_handler_sql_guard_error_shows_sql(monkeypatch):
     monkeypatch.setattr(ui_mod, "run_query", _guard_fail)
     sql, df, response, count_md, _, timing, status, state = _run("drop something")
     assert sql == bad_sql
+    assert "DROP" in response
     assert "Database query" in response
-    # Internal exception text must not be exposed
     assert "SQLGuardError" not in response
     assert "ValueError" not in response
     assert timing == ""
+    assert "DROP" in status
     assert "⚠" in status
+
+
+def test_handler_guard_names_delete_operation(monkeypatch):
+    """DELETE generates a message that names DELETE specifically."""
+    bad_sql = "DELETE FROM detections WHERE id = 1"
+
+    def _guard_fail(q, status_cb=None):
+        raise SQLGuardError("Only SELECT queries are permitted", sql=bad_sql)
+
+    monkeypatch.setattr(ui_mod, "run_query", _guard_fail)
+    _, _, response, _, _, _, status, _ = _run("delete that detection")
+    assert "DELETE" in response
+    assert "DELETE" in status
+
+
+def test_handler_statement_timeout_gives_actionable_message(monkeypatch):
+    """psycopg2 QueryCanceled (statement_timeout) → specific timeout message."""
+    import psycopg2.errors
+
+    def _timeout(q, status_cb=None):
+        raise psycopg2.errors.QueryCanceled("canceling statement due to statement timeout")
+
+    monkeypatch.setattr(ui_mod, "run_query", _timeout)
+    _, _, response, _, _, _, status, _ = _run("huge query")
+    assert "too long" in response.lower()
+    assert "⚠" in status
+    assert "timed out" in status.lower()
+
+
+def test_handler_db_connection_error_message(monkeypatch):
+    """psycopg2 OperationalError (connection lost) → specific connection message."""
+    import psycopg2
+
+    def _conn_fail(q, status_cb=None):
+        raise psycopg2.OperationalError("could not connect to server")
+
+    monkeypatch.setattr(ui_mod, "run_query", _conn_fail)
+    _, _, response, _, _, _, status, _ = _run("any question")
+    assert "database" in response.lower()
+    assert "⚠" in status
+    assert "unreachable" in status.lower()
+
+
+def test_handler_loop_exhausted_message(monkeypatch):
+    """RuntimeError from MAX_ITERATIONS → specific complexity message."""
+
+    def _exhaust(q, status_cb=None):
+        raise RuntimeError("Query loop exceeded maximum iterations")
+
+    monkeypatch.setattr(ui_mod, "run_query", _exhaust)
+    _, _, response, _, _, _, status, _ = _run("very complex question")
+    assert "steps" in response.lower()
+    assert "⚠" in status
+    assert "complex" in status.lower()
 
 
 # ---------------------------------------------------------------------------
