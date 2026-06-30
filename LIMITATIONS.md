@@ -101,26 +101,7 @@ Latitude and longitude columns are stripped before the AI model processes result
 Spatial queries (e.g. "which detections were within 5 km of reserve boundary")
 cannot be answered by Canopy.
 
-### 9. No authentication — network restriction required
-
-**Severity:** Low (history now per-browser; DB is read-only; no private data exposed).
-
-Query history is isolated per browser via `gr.BrowserState` (localStorage). Each device
-maintains its own history sidebar that survives page refresh.
-
-The response cache is instance-wide, but this is intentional and correct — the DB is
-read-only and answers are deterministic. Two users asking the same question should get
-the same answer. Cache sharing is not a limitation; see § 10 for the separate
-staleness concern.
-
-**What remains open:** there is no authentication layer. Anyone who can reach the URL
-can query the database. Canopy must be network-restricted (VPN or firewall) or have
-Gradio's `auth=` parameter added before any deployment beyond a personal machine.
-See the auth note in README.md and DECISIONS.md § U1.
-
----
-
-### 10. Cache staleness for live-count and time-anchored queries
+### 9. Cache staleness for live-count and time-anchored queries
 
 Responses are cached for 24 hours, keyed on question text. Queries whose correct
 answer changes within that window will return the same answer for up to 24 hours

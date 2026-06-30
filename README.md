@@ -116,14 +116,6 @@ Open **http://localhost:7860** in a browser.
 docker stop $(docker ps -q --filter "ancestor=canopy:dev")
 ```
 
-> **Security note — no built-in authentication.** Gradio exposes the UI on the
-> network without any login prompt. Before sharing this instance across a team
-> or over the internet, either (a) place it behind a VPN or firewall, or
-> (b) add `auth=("username", "password")` to the `gr.Blocks()` call in
-> `src/canopy/ui/app.py`. Without this, anyone who can reach port 7860 can
-> query the database. See also LIMITATIONS.md § 9 (no per-user isolation) and
-> DECISIONS.md § U1 (multi-user access).
-
 ---
 
 ## Quickstart — Local (no Docker)
