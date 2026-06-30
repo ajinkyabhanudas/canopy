@@ -233,13 +233,13 @@ def _clear_handler() -> tuple:
 
 def build_app() -> gr.Blocks:
     """Build and return the Gradio Blocks application."""
-    with gr.Blocks(title="Canopy", css=CSS) as app:
+    with gr.Blocks(title="Canopy") as app:
         gr.Markdown(f"# 🌿 Canopy\n{t('app_subtitle')}")
 
         # Per-browser history backed by localStorage — survives page refresh,
         # isolated per device. Default is empty; app.load() populates the
         # sidebar Radio from localStorage on every page load.
-        history_state = gr.BrowserState(default=[], storage_key="canopy_history")
+        history_state = gr.BrowserState(default_value=[], storage_key="canopy_history")
 
         with gr.Row():
             # ── Left panel ─────────────────────────────────────────────────────
