@@ -10,7 +10,7 @@ from typing import Generator
 import gradio as gr
 
 from canopy.config import get_ui_lang
-from canopy.history import clear_history, load_history
+from canopy.history import clear_history
 from canopy.i18n import set_locale, t
 from canopy.query.executor import SQLGuardError
 from canopy.query.loop import run_query
@@ -57,48 +57,46 @@ CSS = """
 }
 """
 
-# Type alias for the 7-tuple every handler output must match
-# [sql_box, results_table, response_box, row_count_md, history_radio, timing_md, status_md]
+# Type alias for the 8-tuple every handler output must match:
+# [sql_box, results_table, response_box, row_count_md, history_radio,
+#  timing_md, status_md, history_state]
 _Output = tuple
 
 
-def _history_choices() -> list[str]:
-    """Return the last 20 questions in reverse-chronological order."""
-    return [e["question"] for e in reversed(load_history(n=20))]
-
-
-def _empty_result(message: str, status: str = "") -> _Output:
-    """Return a blank 7-tuple with only the response message and optional status set."""
-    try:
-        choices = _history_choices()
-    except Exception:
-        choices = []
+def _empty_result(message: str, session_history: list, status: str = "") -> _Output:
+    """Return a blank 8-tuple with only the response message and optional status set."""
     return (
         "",
         gr.Dataframe(value=None),
         message,
         "",
-        gr.Radio(choices=choices),
+        gr.Radio(choices=session_history),
         "",
         status,
+        session_history,
     )
 
 
-def _run_query_handler(question: str) -> Generator[_Output, None, None]:
+def _run_query_handler(
+    question: str, session_history: list
+) -> Generator[_Output, None, None]:
     """Streaming generator: yields status updates then the final result.
 
     Gradio streams each yielded tuple to the UI in real time so the user
     sees progress instead of a blank screen during the 10-90 second loop.
+
+    session_history is a per-browser list backed by gr.BrowserState
+    (localStorage). It is threaded through every yield unchanged until the
+    final success yield, which prepends the new question.
     """
     question = question.strip()
     if not question:
-        yield _empty_result(t("error_empty_question"))
+        yield _empty_result(t("error_empty_question"), session_history)
         return
 
     status_q: queue.Queue[str | None] = queue.Queue()
     result_holder: list = [None]
     error_holder: list[BaseException | None] = [None]
-    # Track the last intent text so it persists through subsequent status yields
     intent_text: list[str] = [""]
 
     def _status_cb(msg: str) -> None:
@@ -110,11 +108,7 @@ def _run_query_handler(question: str) -> Generator[_Output, None, None]:
         except BaseException as exc:  # noqa: BLE001
             error_holder[0] = exc
         finally:
-            status_q.put(None)  # sentinel — signals main thread to stop waiting
-
-    # Snapshot history once — it doesn't change while the query runs.
-    # The final yield (after append_history) calls _history_choices() fresh.
-    pre_query_choices = _history_choices()
+            status_q.put(None)
 
     # Immediate feedback before the thread even starts
     yield (
@@ -122,9 +116,10 @@ def _run_query_handler(question: str) -> Generator[_Output, None, None]:
         gr.Dataframe(value=None),
         t("status_reading"),
         "",
-        gr.Radio(choices=pre_query_choices),
+        gr.Radio(choices=session_history),
         "",
         t("status_reading"),
+        session_history,
     )
 
     thread = threading.Thread(target=_worker, daemon=True)
@@ -140,9 +135,10 @@ def _run_query_handler(question: str) -> Generator[_Output, None, None]:
                 gr.Dataframe(value=None),
                 t("status_cache_hit"),
                 "",
-                gr.Radio(choices=pre_query_choices),
+                gr.Radio(choices=session_history),
                 "",
                 t("status_cache_hit"),
+                session_history,
             )
             continue
         if msg.startswith("INTENT:"):
@@ -150,7 +146,6 @@ def _run_query_handler(question: str) -> Generator[_Output, None, None]:
             response_text = t("status_understood", intent=intent_text[0])
             status_text = t("status_searching_db")
         else:
-            # Keep intent visible in response_box if we have it, otherwise blank
             response_text = (
                 t("status_understood", intent=intent_text[0])
                 if intent_text[0]
@@ -162,9 +157,10 @@ def _run_query_handler(question: str) -> Generator[_Output, None, None]:
             gr.Dataframe(value=None),
             response_text,
             "",
-            gr.Radio(choices=pre_query_choices),
+            gr.Radio(choices=session_history),
             "",
             status_text,
+            session_history,
         )
 
     thread.join()
@@ -178,14 +174,16 @@ def _run_query_handler(question: str) -> Generator[_Output, None, None]:
                 gr.Dataframe(value=None),
                 t("error_guard_response"),
                 "",
-                gr.Radio(choices=_history_choices()),
+                gr.Radio(choices=session_history),
                 "",
                 t("error_guard_status"),
+                session_history,
             )
         else:
             _log.error("query failed in UI: %s", exc, exc_info=True)
             yield _empty_result(
                 t("error_generic_response"),
+                session_history,
                 status=t("error_generic_status"),
             )
         return
@@ -213,26 +211,35 @@ def _run_query_handler(question: str) -> Generator[_Output, None, None]:
             sql_display = result.sql + dev_comment
         else:
             sql_display = ""
+
+    # Prepend question so the sidebar shows newest-first; cap at 20 entries.
+    new_history = ([question] + session_history)[:20]
     yield (
         sql_display,
         df,
         result.model_text,
         count_md,
-        gr.Radio(choices=_history_choices(), value=None),
+        gr.Radio(choices=new_history, value=None),
         timing_md,
-        "",  # clear status_md on success
+        "",
+        new_history,
     )
 
 
 def _clear_handler() -> tuple:
     clear_history()
-    return gr.Radio(choices=[]), "", _IDLE_PROMPT
+    return gr.Radio(choices=[]), "", _IDLE_PROMPT, []
 
 
 def build_app() -> gr.Blocks:
     """Build and return the Gradio Blocks application."""
-    with gr.Blocks(title="Canopy") as app:
+    with gr.Blocks(title="Canopy", css=CSS) as app:
         gr.Markdown(f"# 🌿 Canopy\n{t('app_subtitle')}")
+
+        # Per-browser history backed by localStorage — survives page refresh,
+        # isolated per device. Default is empty; app.load() populates the
+        # sidebar Radio from localStorage on every page load.
+        history_state = gr.BrowserState(default=[], storage_key="canopy_history")
 
         with gr.Row():
             # ── Left panel ─────────────────────────────────────────────────────
@@ -246,7 +253,7 @@ def build_app() -> gr.Blocks:
 
                 gr.Markdown(t("recent_queries"))
                 history_radio = gr.Radio(
-                    choices=_history_choices(),
+                    choices=[],  # populated from localStorage on app.load
                     label="",
                     container=False,
                 )
@@ -254,7 +261,6 @@ def build_app() -> gr.Blocks:
 
             # ── Right panel ────────────────────────────────────────────────────
             with gr.Column(scale=2):
-                # Status bar — always visible regardless of which tab is active
                 status_md = gr.Markdown("", elem_id="canopy-status")
                 with gr.Tabs():
                     with gr.Tab(t("tab_answer")):
@@ -276,15 +282,26 @@ def build_app() -> gr.Blocks:
 
         _OUTPUTS = [
             sql_box, results_table, response_box, row_count_md,
-            history_radio, timing_md, status_md,
+            history_radio, timing_md, status_md, history_state,
         ]
 
+        # Restore history sidebar from localStorage on every page load
+        app.load(
+            fn=lambda h: gr.Radio(choices=h),
+            inputs=[history_state],
+            outputs=[history_radio],
+        )
+
         submit_btn.click(
-            fn=_run_query_handler, inputs=[question_box], outputs=_OUTPUTS,
+            fn=_run_query_handler,
+            inputs=[question_box, history_state],
+            outputs=_OUTPUTS,
             concurrency_limit=1,
         )
         question_box.submit(
-            fn=_run_query_handler, inputs=[question_box], outputs=_OUTPUTS,
+            fn=_run_query_handler,
+            inputs=[question_box, history_state],
+            outputs=_OUTPUTS,
             concurrency_limit=1,
         )
         history_radio.input(
@@ -293,9 +310,12 @@ def build_app() -> gr.Blocks:
             outputs=[question_box],
         ).then(
             fn=_run_query_handler,
-            inputs=[question_box],
+            inputs=[question_box, history_state],
             outputs=_OUTPUTS,
         )
-        clear_btn.click(fn=_clear_handler, outputs=[history_radio, question_box, response_box])
+        clear_btn.click(
+            fn=_clear_handler,
+            outputs=[history_radio, question_box, response_box, history_state],
+        )
 
     return app
