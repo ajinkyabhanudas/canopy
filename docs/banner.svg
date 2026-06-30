@@ -1,0 +1,59 @@
+<svg width="900" height="200" viewBox="0 0 900 200" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Subtle background grid -->
+    <pattern id="bg-grid" width="20" height="20" patternUnits="userSpaceOnUse">
+      <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#1a2332" stroke-width="0.5"/>
+    </pattern>
+    <!-- Grid fill inside letters: blue-grey cells with gridlines -->
+    <pattern id="letter-fill" width="12" height="12" patternUnits="userSpaceOnUse">
+      <rect width="12" height="12" fill="#c8d0e8"/>
+      <path d="M 12 0 L 0 0 0 12" fill="none" stroke="#8892b0" stroke-width="0.5"/>
+    </pattern>
+    <!-- Clip letters so the grid fill stays inside them -->
+    <clipPath id="text-clip">
+      <text x="450" y="148"
+        font-family="Impact, 'Arial Black', Gadget, sans-serif"
+        font-size="128"
+        text-anchor="middle"
+        letter-spacing="10">CANOPY</text>
+    </clipPath>
+  </defs>
+
+  <!-- Dark background -->
+  <rect width="900" height="200" fill="#0d1117"/>
+  <!-- Background grid overlay -->
+  <rect width="900" height="200" fill="url(#bg-grid)"/>
+
+  <!-- Grid texture inside letter shapes -->
+  <rect width="900" height="200" fill="url(#letter-fill)" clip-path="url(#text-clip)"/>
+
+  <!-- Outer stroke: dark gap to separate fill from outline -->
+  <text x="450" y="148"
+    font-family="Impact, 'Arial Black', Gadget, sans-serif"
+    font-size="128"
+    text-anchor="middle"
+    letter-spacing="10"
+    fill="none"
+    stroke="#0d1117"
+    stroke-width="5"
+    stroke-linejoin="round">CANOPY</text>
+
+  <!-- Inner stroke: white outline (sits inside the dark gap) -->
+  <text x="450" y="148"
+    font-family="Impact, 'Arial Black', Gadget, sans-serif"
+    font-size="128"
+    text-anchor="middle"
+    letter-spacing="10"
+    fill="none"
+    stroke="#ffffff"
+    stroke-width="1.5"
+    stroke-linejoin="round">CANOPY</text>
+
+  <!-- Subtitle -->
+  <text x="450" y="182"
+    font-family="'Courier New', Courier, monospace"
+    font-size="13"
+    text-anchor="middle"
+    letter-spacing="5"
+    fill="#4a5a7a">NATURAL LANGUAGE SPECIES MONITORING</text>
+</svg>

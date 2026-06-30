@@ -1,4 +1,4 @@
-# canopy
+<img src="docs/banner.svg" alt="CANOPY" width="100%"/>
 
 [![CI](https://github.com/ajinkyabhanudas/canopy/actions/workflows/ci.yml/badge.svg)](https://github.com/ajinkyabhanudas/canopy/actions/workflows/ci.yml)
 [![Coverage](https://codecov.io/gh/ajinkyabhanudas/canopy/branch/main/graph/badge.svg)](https://codecov.io/gh/ajinkyabhanudas/canopy)
