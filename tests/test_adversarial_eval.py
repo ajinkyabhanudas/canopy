@@ -50,8 +50,8 @@ def _make_result(
 # ---------------------------------------------------------------------------
 
 
-def test_adversarial_cases_has_exactly_8_entries():
-    assert len(ADVERSARIAL_CASES) == 8
+def test_adversarial_cases_has_exactly_9_entries():
+    assert len(ADVERSARIAL_CASES) == 9
 
 
 def test_all_adversarial_questions_nonempty():

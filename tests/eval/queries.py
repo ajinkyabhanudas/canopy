@@ -5,9 +5,9 @@ Each EvalCase is a (question, check_fn, description) triple where check_fn
 receives a LoopResult and returns True if the response is acceptable.
 
 Run with: python scripts/run_eval.py  (requires live DB + ANTHROPIC_API_KEY)
-Target: ≥85% pass rate (23/27).
+Target: ≥85% pass rate (27/31).
 
-Coverage across 11 categories:
+Coverage across 12 categories:
   1. Species list at a named site (Q1–Q3)
   2. Year-range / temporal (Q4–Q6)
   3. Validation status breakdown (Q7–Q8)
@@ -19,6 +19,7 @@ Coverage across 11 categories:
   9. Faithfulness — model_text matches actual DB result (Q21–Q23)
   10. Guardrail bypass variants — soft/indirect framing (Q24–Q27)
   11. Time-relative / live-count queries (Q28–Q30)
+  12. Default validation filter — ambiguous queries (Q31)
 """
 
 from __future__ import annotations
@@ -85,10 +86,10 @@ def _count_value_in_text(result: LoopResult) -> bool:
 
 
 def _q1_species_validated_at_any_site(r: LoopResult) -> bool:
-    """Species with validated_true detections; scientific_name column present, row_count > 0."""
+    """Species with approved detections; scientific_name column present, row_count > 0."""
     return (
         r.sql is not None
-        and _sql_has("validated_true")(r.sql)
+        and _sql_has("approved")(r.sql)
         and _col_has(r, "scientific_name", "species")
         and r.row_count > 0
     )
@@ -159,10 +160,10 @@ def _q7_status_breakdown(r: LoopResult) -> bool:
 
 
 def _q8_unvalidated_per_species(r: LoopResult) -> bool:
-    """Filters unvalidated; groups by species; species column in result."""
+    """Filters pending (unvalidated) detections; groups by species; species column in result."""
     return (
         r.sql is not None
-        and _sql_has("unvalidated")(r.sql)
+        and _sql_has("pending")(r.sql)
         and _col_has(r, "scientific_name", "species")
     )
 
@@ -200,10 +201,10 @@ def _q10_detections_per_model(r: LoopResult) -> bool:
 
 
 def _q11_top_management_units(r: LoopResult) -> bool:
-    """Groups by management_unit; validated_true filter in SQL; row_count > 0."""
+    """Groups by management_unit; approved filter in SQL; row_count > 0."""
     return (
         r.sql is not None
-        and _sql_has("management_unit", "validated_true")(r.sql)
+        and _sql_has("management_unit", "approved")(r.sql)
         and _col_has(r, "management_unit")
         and r.row_count > 0
     )
@@ -418,7 +419,22 @@ def _q30_detections_this_year(r: LoopResult) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Ground-truth eval set — 30 cases
+# Category 12 — Default validation filter: ambiguous queries (Q31)
+# ---------------------------------------------------------------------------
+
+
+def _q31_default_filter_approved(r: LoopResult) -> bool:
+    """Ambiguous count query applies the default validation_status = 'approved' filter.
+
+    The system prompt instructs the model to always filter on approved unless the
+    user explicitly asks for pending records. This case verifies that instruction is
+    followed for a question that makes no mention of validation status at all.
+    """
+    return r.sql is not None and _sql_has("validation_status", "approved")(r.sql)
+
+
+# ---------------------------------------------------------------------------
+# Ground-truth eval set — 31 cases
 # ---------------------------------------------------------------------------
 
 EVAL_CASES: list[EvalCase] = [
@@ -426,7 +442,7 @@ EVAL_CASES: list[EvalCase] = [
     EvalCase(
         question="Which species have been validated at any recording site?",
         check_fn=_q1_species_validated_at_any_site,
-        description="Returns species with validated_true detections; scientific_name column present, row_count > 0",  # noqa: E501
+        description="Returns species with approved detections; scientific_name column present, row_count > 0",  # noqa: E501
         translation_es="¿Qué especies han sido validadas en algún sitio de grabación?",
     ),
     EvalCase(
@@ -466,7 +482,7 @@ EVAL_CASES: list[EvalCase] = [
     EvalCase(
         question="How many unvalidated detections exist per species?",
         check_fn=_q8_unvalidated_per_species,
-        description="Filters unvalidated; groups by species; species column in result",
+        description="Filters pending detections; groups by species; species column in result",
     ),
     # --- Category 4: AI model queries ---
     EvalCase(
@@ -483,7 +499,7 @@ EVAL_CASES: list[EvalCase] = [
     EvalCase(
         question="Which management units have the most validated detections?",
         check_fn=_q11_top_management_units,
-        description="Groups by management_unit; validated_true filter in SQL; row_count > 0",
+        description="Groups by management_unit; approved filter in SQL; row_count > 0",
     ),
     EvalCase(
         question="Compare the number of validated species detected across all recording sites",
@@ -631,6 +647,16 @@ EVAL_CASES: list[EvalCase] = [
         description=(
             "SQL must include a year filter (dynamic or hardcoded current year) and reference sites; "  # noqa: E501
             "model must acknowledge zero results explicitly if row_count is 0"
+        ),
+    ),
+    # --- Category 12: Default validation filter ---
+    EvalCase(
+        question="How many detections are in the database?",
+        check_fn=_q31_default_filter_approved,
+        description=(
+            "Ambiguous count query with no explicit status filter; "
+            "SQL must include validation_status = 'approved' per the default guardrail — "
+            "verifies the system-prompt instruction is followed, not just aspirational"
         ),
     ),
 ]

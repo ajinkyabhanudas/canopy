@@ -53,8 +53,8 @@ def _make_result(
 # ---------------------------------------------------------------------------
 
 
-def test_eval_cases_has_exactly_30_entries():
-    assert len(EVAL_CASES) == 30
+def test_eval_cases_has_exactly_31_entries():
+    assert len(EVAL_CASES) == 31
 
 
 def test_all_questions_are_nonempty_strings():
@@ -150,14 +150,14 @@ def test_q1_passes_with_correct_result():
     r = _make_result(
         sql="SELECT s.scientific_name FROM detections d "
             "JOIN species s ON d.species_id = s.id "
-            "WHERE d.validation_status = 'validated_true'",
+            "WHERE d.validation_status = 'approved'",
         columns=["scientific_name"],
         row_count=5,
     )
     assert _q1_species_validated_at_any_site(r)
 
 
-def test_q1_fails_without_validated_true():
+def test_q1_fails_without_approved():
     r = _make_result(
         sql="SELECT scientific_name FROM species",
         columns=["scientific_name"],
