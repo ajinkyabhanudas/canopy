@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from canopy._json import Encoder
+
+_log = logging.getLogger("canopy.history")
 
 if TYPE_CHECKING:
     from canopy.query.loop import LoopResult
@@ -54,7 +57,7 @@ def load_history(n: int = 20) -> list[dict]:
         try:
             entries.append(json.loads(line))
         except json.JSONDecodeError:
-            pass
+            _log.warning("skipping corrupt history line in %s", path)
     return entries
 
 

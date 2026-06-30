@@ -51,6 +51,7 @@ def _read_cache() -> dict:
     try:
         return json.loads(path.read_text())
     except (json.JSONDecodeError, OSError):
+        _log.warning("cache file unreadable or corrupt — starting empty: %s", path)
         return {}
 
 

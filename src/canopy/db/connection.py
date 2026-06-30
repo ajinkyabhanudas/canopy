@@ -38,6 +38,7 @@ def get_connection() -> psycopg2.extensions.connection:
         dbname=cfg.dbname,
         user=cfg.user,
         password=cfg.password,
+        options="-c statement_timeout=30000",  # 30 s — bounds runaway SQL
     )
     conn.set_session(readonly=True)
     return conn
