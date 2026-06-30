@@ -101,29 +101,22 @@ Latitude and longitude columns are stripped before the AI model processes result
 Spatial queries (e.g. "which detections were within 5 km of reserve boundary")
 cannot be answered by Canopy.
 
-### 9. Partial per-user isolation — history isolated, cache shared
+### 9. No authentication — network restriction required
 
-**Severity:** Low–Medium (reduced from Medium after 2026-06-30 fix).
+**Severity:** Low (history now per-browser; DB is read-only; no private data exposed).
 
-**Query history** is now isolated per browser via `gr.BrowserState` (localStorage).
-Each device gets its own 20-entry history sidebar; users no longer see each other's
-queries. History survives page refresh within the same browser.
+Query history is isolated per browser via `gr.BrowserState` (localStorage). Each device
+maintains its own history sidebar that survives page refresh.
 
-**What is still shared:**
-- The 24-hour response cache (`cache.json`) is instance-wide. A cached answer computed
-  for one user is returned to any other user asking the exact same question.
-- There is no authentication layer and no audit log of who asked what.
-- Two browser tabs on the same computer share localStorage (browser constraint, not Canopy's).
+The response cache is instance-wide, but this is intentional and correct — the DB is
+read-only and answers are deterministic. Two users asking the same question should get
+the same answer. Cache sharing is not a limitation; see § 10 for the separate
+staleness concern.
 
-**Implications:**
-- Cache sharing is generally acceptable for a read-only science tool — the answer to
-  "how many approved detections at Buenaventura in 2023?" is the same for all staff.
-- Canopy must be network-restricted (VPN/firewall or Gradio `auth=` parameter) before
-  any semi-public deployment. See the auth note in README.md.
-
-**Long-term fix:** Add Gradio's built-in `auth=` parameter for shared-secret access if
-per-user cache isolation is required, or move to a FastAPI backend with per-session
-state for full isolation.
+**What remains open:** there is no authentication layer. Anyone who can reach the URL
+can query the database. Canopy must be network-restricted (VPN or firewall) or have
+Gradio's `auth=` parameter added before any deployment beyond a personal machine.
+See the auth note in README.md and DECISIONS.md § U1.
 
 ---
 
