@@ -8,6 +8,8 @@ import threading
 from typing import Generator
 
 import gradio as gr
+import psycopg2
+import psycopg2.errors
 
 from canopy.config import get_ui_lang
 from canopy.history import clear_history
@@ -168,16 +170,29 @@ def _run_query_handler(
     exc = error_holder[0]
     if exc is not None:
         if isinstance(exc, SQLGuardError):
-            _log.warning("SQL guard rejected generated query")
+            _log.warning("SQL guard blocked %s", exc.operation)
             yield (
                 exc.sql,
                 gr.Dataframe(value=None),
-                t("error_guard_response"),
+                t("error_guard_readonly", operation=exc.operation),
                 "",
                 gr.Radio(choices=session_history),
                 "",
-                t("error_guard_status"),
+                t("error_guard_readonly_status", operation=exc.operation),
                 session_history,
+            )
+        elif isinstance(exc, psycopg2.errors.QueryCanceled):
+            _log.warning("statement_timeout exceeded for question: %r", question[:60])
+            yield _empty_result(t("error_timeout"), session_history, status="⚠ Query timed out")
+        elif isinstance(exc, psycopg2.OperationalError):
+            _log.error("DB connection error: %s", exc)
+            yield _empty_result(
+                t("error_db_connection"), session_history, status="⚠ Database unreachable"
+            )
+        elif isinstance(exc, RuntimeError) and "maximum iterations" in str(exc):
+            _log.warning("loop exhausted for question: %r", question[:60])
+            yield _empty_result(
+                t("error_iterations"), session_history, status="⚠ Question too complex"
             )
         else:
             _log.error("query failed in UI: %s", exc, exc_info=True)

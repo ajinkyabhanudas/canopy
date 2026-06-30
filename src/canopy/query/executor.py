@@ -21,6 +21,7 @@ class SQLGuardError(ValueError):
     def __init__(self, message: str, sql: str) -> None:
         super().__init__(message)
         self.sql = sql
+        self.operation = _first_token(sql).upper() or "UNKNOWN"
 
 
 @dataclass(frozen=True)

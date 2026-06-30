@@ -43,6 +43,29 @@ STRINGS: dict[str, str] = {
         "The generated query is shown in the **Database query tab** for reference."
     ),
     "error_guard_status":     "⚠ Could not complete that query — see the Answer tab",
+    "error_guard_readonly": (
+        "**{operation} is not permitted** — this tool can only read from the database, "
+        "not modify it.\n\n"
+        "Canopy is designed to retrieve and analyse species monitoring data. "
+        "If you're trying to understand what's in the data, try rephrasing as a question "
+        "(e.g. *'How many pending detections are there?'* rather than asking to change them).\n\n"
+        "The blocked query is shown in the **Database query** tab."
+    ),
+    "error_guard_readonly_status": "⚠ {operation} blocked — this tool is read-only",
+    "error_timeout": (
+        "The database query ran for too long and was stopped.\n\n"
+        "Try asking about a smaller date range, a specific site, or a single species "
+        "rather than the full dataset."
+    ),
+    "error_iterations": (
+        "This question needed too many steps to answer automatically.\n\n"
+        "Try breaking it into smaller questions — for example, ask about one site or "
+        "one species at a time."
+    ),
+    "error_db_connection": (
+        "Couldn't reach the database. Please try again in a moment.\n\n"
+        "If the problem persists, check that the database connection is active."
+    ),
     "error_generic_response": (
         "Something went wrong while searching. "
         "Please try again, or rephrase your question."

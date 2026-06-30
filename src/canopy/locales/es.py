@@ -44,6 +44,30 @@ STRINGS: dict[str, str] = {
         "**Consulta a la base de datos** como referencia."
     ),
     "error_guard_status":     "⚠ No se pudo completar la consulta — vea la pestaña Respuesta",
+    "error_guard_readonly": (
+        "**{operation} no está permitido** — esta herramienta solo puede leer la base de datos, "
+        "no modificarla.\n\n"
+        "Canopy está diseñado para consultar y analizar datos de monitoreo de especies. "
+        "Si desea entender qué contiene la base de datos, intente reformular como una pregunta "
+        "(p. ej. *'¿Cuántas detecciones están pendientes?'*"
+        " en lugar de pedirle que las modifique).\n\n"
+        "La consulta bloqueada se muestra en la pestaña **Consulta a la base de datos**."
+    ),
+    "error_guard_readonly_status": "⚠ {operation} bloqueado — esta herramienta es de solo lectura",
+    "error_timeout": (
+        "La consulta a la base de datos tardó demasiado y fue interrumpida.\n\n"
+        "Intente preguntar sobre un rango de fechas más pequeño, un sitio específico "
+        "o una sola especie en lugar del conjunto de datos completo."
+    ),
+    "error_iterations": (
+        "Esta pregunta requirió demasiados pasos para responderse automáticamente.\n\n"
+        "Intente dividirla en preguntas más simples — por ejemplo, pregunte sobre "
+        "un sitio o una especie a la vez."
+    ),
+    "error_db_connection": (
+        "No se pudo conectar a la base de datos. Por favor, intente de nuevo en un momento.\n\n"
+        "Si el problema persiste, verifique que la conexión a la base de datos esté activa."
+    ),
     "error_generic_response": (
         "Ocurrió un error durante la búsqueda. "
         "Por favor, intente de nuevo o reformule su pregunta."
