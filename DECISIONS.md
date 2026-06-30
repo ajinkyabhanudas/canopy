@@ -575,6 +575,12 @@ Second, hallucination tests depend on the DB not having the test entity. "Fictus
 > **Gap 1 — History isolation: resolved (2026-06-30).** Query history is now per-browser via `gr.BrowserState` (localStorage). Each device maintains its own isolated history list that survives page refresh. Two tabs on the same machine share localStorage (browser constraint). The result cache is intentionally instance-wide — the DB is read-only and answers are deterministic, so cache sharing is correct behaviour, not a gap.
 >
 > **Trigger for revisit:** (a) More than ~5 concurrent users. (b) Need for user-level audit logging. (c) Need for data visualisations beyond tables.
+>
+> **If you need to go further:**
+> - *Network restriction* — the simplest and recommended first step. Run the container inside Jocotoco's VPN or behind a firewall rule that limits port 7860 to known IP ranges. No code changes required.
+> - *Basic shared-secret auth* — add `auth=[("username", "password")]` to the `app.launch()` call in `scripts/run_ui.py`. One credential for the whole team. Five minutes of work. Does not give per-user isolation but stops anonymous access.
+> - *Per-user auth + separate history* — Gradio `auth=` exposes `request.username` in event handlers. Pass it to `append_history` / `load_history` to namespace `history_{username}.jsonl`. Gives each user their own persistent history. Requires coordinating credentials.
+> - *Full isolation* — React + FastAPI with OAuth/JWT. Correct answer if the tool becomes public-facing or user count grows beyond ~10. Significant rewrite; out of scope for v1.
 
 ---
 
