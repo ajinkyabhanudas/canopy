@@ -24,6 +24,13 @@ where = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 markers = ["e2e: end-to-end browser tests — require: make playwright-install"]
+filterwarnings = [
+    # Gradio uses a renamed Starlette constant — not actionable from canopy's code.
+    "ignore:.*HTTP_422_UNPROCESSABLE_ENTITY.*:UserWarning",
+    # Pandas 4 deprecation warnings emitted by Gradio's queueing internals.
+    "ignore:.*no_silent_downcasting.*",
+    "ignore:.*copy keyword is deprecated.*",
+]
 
 [tool.ruff]
 line-length = 100
