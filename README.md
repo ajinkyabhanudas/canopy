@@ -145,6 +145,8 @@ All common tasks are available via `make`. Run `make` (no target) to see the ful
 | `make smoke` | Docker smoke test — validates runtime behaviour unit tests can't catch |
 | `make eval` | Ground-truth + adversarial eval (needs live DB + API key) |
 | `make eval-es` | Spanish language variant eval |
+| `make playwright-install` | Install Chromium for E2E tests (run once) |
+| `make e2e` | Browser-level E2E tests — verifies error messages render in the UI (no DB or API key needed) |
 | `make clean` | Remove build artefacts and caches |
 
 ### Manual checks (CLI, no UI)
@@ -197,7 +199,7 @@ make test           # unit tests only
 make smoke          # Docker runtime validation (requires Docker)
 ```
 
-Expected unit test result: **299 passed**, ~88% coverage.
+Expected unit test result: **313 passed**, ~88% coverage.
 
 The smoke test validates what `pytest` cannot: Docker volume permissions, Gradio
 startup warnings, and HTTP availability. Run it after any Dockerfile or Gradio change.
@@ -263,7 +265,7 @@ src/canopy/
 ├── schema.py          # DB schema constant + build_system_prompt() (language instruction included)
 ├── i18n.py            # set_locale(), t() — UI string localisation singleton
 ├── locales/
-│   ├── en.py          # English string catalog (23 keys — source of truth)
+│   ├── en.py          # English string catalog (28 keys — source of truth)
 │   └── es.py          # Spanish string catalog
 ├── _json.py           # Shared JSON encoder (Decimal, datetime) for cache + history
 ├── history.py         # append_history, load_history, clear_history (JSONL)

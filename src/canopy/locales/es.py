@@ -1,4 +1,4 @@
-"""Spanish locale — all 23 keys mirroring en.py."""
+"""Spanish locale — all 28 keys mirroring en.py."""
 
 STRINGS: dict[str, str] = {
     # UI static labels
