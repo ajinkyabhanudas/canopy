@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import time
 import urllib.request
+import warnings
 from unittest.mock import patch
 
 import psycopg2
@@ -23,6 +24,14 @@ import pytest
 from canopy.query.executor import SQLGuardError
 from canopy.query.loop import LoopResult
 from canopy.ui.app import build_app
+
+# Suppress third-party deprecation warnings emitted by Gradio's internals.
+# These originate in the background server thread so pytest's filterwarnings
+# in pyproject.toml does not reach them — the global Python filter must be
+# set here, before the session fixture starts the server.
+warnings.filterwarnings("ignore", message=".*HTTP_422_UNPROCESSABLE_ENTITY.*")
+warnings.filterwarnings("ignore", message=".*no_silent_downcasting.*")
+warnings.filterwarnings("ignore", message=".*copy keyword is deprecated.*")
 
 _PORT = 7862
 _BASE_URL = f"http://127.0.0.1:{_PORT}"
