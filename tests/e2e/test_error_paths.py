@@ -18,10 +18,13 @@ _PLACEHOLDER = "e.g. How many confirmed"
 _RUN_BTN = "Run Query"
 _DB_TAB = "Database query"
 _TIMEOUT = 15_000  # ms — allows for Gradio hydration + mock handler
+# Consistent viewport so tabs are not obscured by overlapping elements in CI.
+_VIEWPORT = {"width": 1280, "height": 800}
 
 
 def _submit(page: Page, canopy_url: str, question: str) -> None:
     """Navigate to the app, fill the question box, and click Run."""
+    page.set_viewport_size(_VIEWPORT)
     page.goto(canopy_url)
     page.wait_for_selector(f"[placeholder*='{_PLACEHOLDER}']")
     page.fill(f"[placeholder*='{_PLACEHOLDER}']", question)
@@ -45,7 +48,7 @@ def test_guard_blocked_sql_appears_in_database_tab(page: Page, canopy_url: str) 
     """Blocked SQL is shown in the Database query tab so the user can inspect it."""
     _submit(page, canopy_url, "e2e-delete all detections")
     page.wait_for_selector("text=DELETE is not permitted", timeout=_TIMEOUT)
-    page.click(f"button:has-text('{_DB_TAB}')")
+    page.get_by_role("tab", name=_DB_TAB).click()
     expect(page.get_by_text("DELETE FROM detections", exact=False)).to_be_visible(
         timeout=5_000
     )
@@ -69,9 +72,10 @@ def test_loop_exhaustion_shows_actionable_message(page: Page, canopy_url: str) -
 
 
 def test_db_connection_error_shows_actionable_message(page: Page, canopy_url: str) -> None:
-    """DB connection lost: user sees 'database' with an instruction to try again."""
+    """DB connection lost: user sees 'reach the database' — unique to the error message."""
     _submit(page, canopy_url, "e2e-disconnect database test")
-    expect(page.get_by_text("database", exact=False)).to_be_visible(timeout=_TIMEOUT)
+    # "reach the database" appears only in the error message, not in any tab label.
+    expect(page.get_by_text("reach the database", exact=False)).to_be_visible(timeout=_TIMEOUT)
 
 
 # ---------------------------------------------------------------------------
