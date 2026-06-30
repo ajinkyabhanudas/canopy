@@ -1,0 +1,97 @@
+"""Session-scoped Gradio server fixture for Canopy E2E tests.
+
+Starts the real Gradio app on 127.0.0.1:7862 with run_query mocked via a
+keyword-routing stub, so no live database or Anthropic API key is required.
+
+Trigger keywords (all prefixed e2e- to avoid collisions with real queries):
+  e2e-delete    → SQLGuardError (DELETE statement)
+  e2e-timeout   → psycopg2 QueryCanceled (statement_timeout)
+  e2e-overflow  → RuntimeError (MAX_ITERATIONS exhausted)
+  e2e-disconnect→ psycopg2 OperationalError (connection lost)
+  anything else → LoopResult success with model_text mentioning "42 detections"
+"""
+from __future__ import annotations
+
+import time
+import urllib.request
+from unittest.mock import patch
+
+import psycopg2
+import psycopg2.errors
+import pytest
+
+from canopy.query.executor import SQLGuardError
+from canopy.query.loop import LoopResult
+from canopy.ui.app import build_app
+
+_PORT = 7862
+_BASE_URL = f"http://127.0.0.1:{_PORT}"
+
+
+# Safe subclasses — bypass psycopg2 C-extension constructors which require
+# a live connection to build properly.
+class _QueryCanceled(psycopg2.errors.QueryCanceled):
+    def __init__(self) -> None:
+        Exception.__init__(self, "canceling statement due to statement timeout")
+
+
+class _OperationalError(psycopg2.OperationalError):
+    def __init__(self) -> None:
+        Exception.__init__(self, "connection to server lost")
+
+
+_SUCCESS = LoopResult(
+    question="test",
+    sql="SELECT COUNT(*) FROM detections",
+    columns=["count"],
+    rows=[(42,)],
+    row_count=1,
+    model_text="There are 42 detections in the database.",
+    timing={
+        "total_s": 0.5,
+        "cache_hit": False,
+        "llm_s": 0.4,
+        "llm_calls": 1,
+        "db_s": 0.05,
+        "db_calls": 1,
+    },
+)
+
+
+def _smart_mock(question: str, status_cb=None) -> LoopResult:
+    """Route by keyword so one mocked server exercises all error paths."""
+    q = question.lower()
+    if "e2e-delete" in q:
+        raise SQLGuardError(
+            "Only SELECT queries are permitted",
+            sql="DELETE FROM detections WHERE id = 1",
+        )
+    if "e2e-timeout" in q:
+        raise _QueryCanceled()
+    if "e2e-overflow" in q:
+        raise RuntimeError("Query loop exceeded maximum iterations")
+    if "e2e-disconnect" in q:
+        raise _OperationalError()
+    return _SUCCESS
+
+
+@pytest.fixture(scope="session")
+def canopy_url():
+    """Start a mocked Gradio server and yield its URL for the whole test session."""
+    with patch("canopy.ui.app.run_query", side_effect=_smart_mock):
+        app = build_app()
+        app.launch(
+            server_name="127.0.0.1",
+            server_port=_PORT,
+            prevent_thread_lock=True,
+            quiet=True,
+        )
+        # Poll until the server is accepting connections (up to 10 s).
+        for _ in range(20):
+            try:
+                urllib.request.urlopen(_BASE_URL, timeout=1)
+                break
+            except Exception:
+                time.sleep(0.5)
+        yield _BASE_URL
+        app.close()

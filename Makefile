@@ -1,4 +1,4 @@
-.PHONY: help test lint check build run smoke ui eval eval-spanish eval-adversarial clean
+.PHONY: help test lint check build run smoke ui eval eval-spanish eval-adversarial clean playwright-install e2e
 
 # Default target
 help:
@@ -22,6 +22,10 @@ help:
 	@echo "  make eval-es           Spanish language variants"
 	@echo "  make eval-adv          Adversarial suite only"
 	@echo ""
+	@echo "  E2E browser tests (needs Playwright browsers installed once)"
+	@echo "  make playwright-install  Install Chromium for E2E tests (run once)"
+	@echo "  make e2e               Run E2E browser tests against a mocked Gradio server"
+	@echo ""
 	@echo "  Housekeeping"
 	@echo "  make clean             Remove build artefacts and caches"
 	@echo ""
@@ -32,7 +36,7 @@ lint:
 	ruff check src/ tests/ scripts/
 
 test:
-	pytest tests/ -q
+	pytest tests/ -q --ignore=tests/e2e/
 
 check: lint test
 
@@ -63,6 +67,14 @@ eval-es:
 
 eval-adv:
 	python scripts/run_eval.py --adversarial
+
+# ── E2E browser tests ────────────────────────────────────────────────────────
+
+playwright-install:
+	playwright install chromium
+
+e2e:
+	pytest tests/e2e/ -v
 
 # ── Housekeeping ─────────────────────────────────────────────────────────────
 

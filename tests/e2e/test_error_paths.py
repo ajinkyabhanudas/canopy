@@ -1,0 +1,85 @@
+"""E2E browser tests for Canopy UI error paths and happy path.
+
+Each test submits a question via the real Gradio UI and asserts what Jajean
+sees in the browser — verifying that error messages are rendered, not just
+that the Python handler returns the right tuple values.
+
+Run:  make e2e  (not included in make check — requires playwright browsers)
+"""
+from __future__ import annotations
+
+import pytest
+from playwright.sync_api import Page, expect
+
+pytestmark = pytest.mark.e2e
+
+# Partial match against the placeholder text — robust across locale changes.
+_PLACEHOLDER = "e.g. How many confirmed"
+_RUN_BTN = "Run Query"
+_DB_TAB = "Database query"
+_TIMEOUT = 15_000  # ms — allows for Gradio hydration + mock handler
+
+
+def _submit(page: Page, canopy_url: str, question: str) -> None:
+    """Navigate to the app, fill the question box, and click Run."""
+    page.goto(canopy_url)
+    page.wait_for_selector(f"[placeholder*='{_PLACEHOLDER}']")
+    page.fill(f"[placeholder*='{_PLACEHOLDER}']", question)
+    page.click(f"button:has-text('{_RUN_BTN}')")
+
+
+# ---------------------------------------------------------------------------
+# Guard error paths
+# ---------------------------------------------------------------------------
+
+
+def test_guard_names_blocked_operation(page: Page, canopy_url: str) -> None:
+    """DELETE triggers a guard error; response names 'DELETE is not permitted'."""
+    _submit(page, canopy_url, "e2e-delete all detections")
+    expect(page.get_by_text("DELETE is not permitted", exact=False)).to_be_visible(
+        timeout=_TIMEOUT
+    )
+
+
+def test_guard_blocked_sql_appears_in_database_tab(page: Page, canopy_url: str) -> None:
+    """Blocked SQL is shown in the Database query tab so the user can inspect it."""
+    _submit(page, canopy_url, "e2e-delete all detections")
+    page.wait_for_selector("text=DELETE is not permitted", timeout=_TIMEOUT)
+    page.click(f"button:has-text('{_DB_TAB}')")
+    expect(page.get_by_text("DELETE FROM detections", exact=False)).to_be_visible(
+        timeout=5_000
+    )
+
+
+# ---------------------------------------------------------------------------
+# Technical error paths
+# ---------------------------------------------------------------------------
+
+
+def test_statement_timeout_shows_actionable_message(page: Page, canopy_url: str) -> None:
+    """Statement timeout: user sees 'too long' with a suggestion to narrow the query."""
+    _submit(page, canopy_url, "e2e-timeout large dataset query")
+    expect(page.get_by_text("too long", exact=False)).to_be_visible(timeout=_TIMEOUT)
+
+
+def test_loop_exhaustion_shows_actionable_message(page: Page, canopy_url: str) -> None:
+    """MAX_ITERATIONS: user sees 'too many steps' with a suggestion to split the question."""
+    _submit(page, canopy_url, "e2e-overflow very complex question")
+    expect(page.get_by_text("too many steps", exact=False)).to_be_visible(timeout=_TIMEOUT)
+
+
+def test_db_connection_error_shows_actionable_message(page: Page, canopy_url: str) -> None:
+    """DB connection lost: user sees 'database' with an instruction to try again."""
+    _submit(page, canopy_url, "e2e-disconnect database test")
+    expect(page.get_by_text("database", exact=False)).to_be_visible(timeout=_TIMEOUT)
+
+
+# ---------------------------------------------------------------------------
+# Happy path
+# ---------------------------------------------------------------------------
+
+
+def test_happy_path_renders_model_answer(page: Page, canopy_url: str) -> None:
+    """Successful query: model_text appears in the Answer tab."""
+    _submit(page, canopy_url, "how many detections are there")
+    expect(page.get_by_text("42 detections", exact=False)).to_be_visible(timeout=_TIMEOUT)
