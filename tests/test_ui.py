@@ -179,6 +179,16 @@ def test_handler_caps_history_at_20(monkeypatch):
     assert "q19" not in new_state  # oldest dropped
 
 
+def test_handler_deduplicates_repeated_question(monkeypatch):
+    """Re-running a question moves it to the top instead of adding a duplicate."""
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: _make_result())
+    initial = ["repeated q", "other q"]
+    _, _, _, _, _, _, _, new_state = _run("repeated q", session_history=initial)
+    assert new_state.count("repeated q") == 1
+    assert new_state[0] == "repeated q"
+    assert "other q" in new_state
+
+
 # ---------------------------------------------------------------------------
 # _run_query_handler — error paths
 # ---------------------------------------------------------------------------
