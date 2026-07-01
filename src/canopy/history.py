@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -11,6 +12,7 @@ from typing import TYPE_CHECKING
 from canopy._json import Encoder
 
 _log = logging.getLogger("canopy.history")
+_lock = threading.Lock()
 
 if TYPE_CHECKING:
     from canopy.query.loop import LoopResult
@@ -38,7 +40,7 @@ def append_history(result: LoopResult) -> None:
         "row_count": result.row_count,
         "model_text": result.model_text,
     }
-    with path.open("a") as f:
+    with _lock, path.open("a") as f:
         f.write(json.dumps(entry, cls=Encoder) + "\n")
 
 
