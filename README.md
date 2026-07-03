@@ -96,7 +96,7 @@ Edit `.env` and fill in all required values. Never commit `.env`.
 | `ANTHROPIC_TIMEOUT` | No | API timeout in seconds (default: `60`) |
 | `CANOPY_DATA_DIR` | No | History + cache file location — Docker only, do not set locally |
 | `CANOPY_CACHE_TTL_HOURS` | No | Cache TTL in hours (default: `24`) |
-| `CANOPY_UI_LANG` | No | UI label language: `en` (default) or `es` (Spanish). Model responses always auto-detect from question language — this only controls UI labels. |
+| `CANOPY_UI_LANG` | No | UI label language: `en` (default) or `es` (Spanish). Questions must be in English or Spanish — other languages are rejected before reaching the model. This env var only controls UI labels (buttons, tabs, error messages). |
 
 ### 2. Build and run
 
@@ -265,7 +265,7 @@ src/canopy/
 ├── schema.py          # DB schema constant + build_system_prompt() (language instruction included)
 ├── i18n.py            # set_locale(), t() — UI string localisation singleton
 ├── locales/
-│   ├── en.py          # English string catalog (28 keys — source of truth)
+│   ├── en.py          # English string catalog (30 keys — source of truth)
 │   └── es.py          # Spanish string catalog
 ├── _json.py           # Shared JSON encoder (Decimal, datetime) for cache + history
 ├── history.py         # append_history, load_history, clear_history (JSONL)
