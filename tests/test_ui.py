@@ -311,6 +311,52 @@ def test_handler_cache_hit_shows_cached_status(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# _check_language — language gate
+# ---------------------------------------------------------------------------
+
+
+def test_check_language_english_passes():
+    assert not ui_mod._check_language("How many species were detected at each reserve in 2023?")
+
+
+def test_check_language_spanish_passes():
+    assert ui_mod._check_language("¿Cuántas especies únicas se detectaron en 2023?") is False
+
+
+def test_check_language_french_rejected():
+    assert ui_mod._check_language("Combien d'espèces ont été détectées en 2023?") is True
+
+
+def test_check_language_short_input_passes_through():
+    """Inputs under 30 chars bypass detection — too short for reliable result."""
+    assert ui_mod._check_language("Bonjour monde!") is False  # 14 chars
+    assert ui_mod._check_language("very complex question") is False  # 21 chars
+
+
+def test_check_language_empty_passes_through():
+    assert ui_mod._check_language("") is False
+
+
+def test_handler_unsupported_language_rejected(monkeypatch):
+    """French question: language gate rejects before run_query; shows localized error."""
+    spy_calls: list = []
+    monkeypatch.setattr(
+        ui_mod,
+        "run_query",
+        lambda q, status_cb=None: spy_calls.append(q) or _make_result(),
+    )
+    sql, df, response, count_md, radio, timing, status, state = _run(
+        "Combien d'espèces ont été détectées en 2023?"
+    )
+    assert spy_calls == [], "run_query must not be called — language gate is a cost gate"
+    assert t("error_unsupported_language") in response
+    assert t("error_unsupported_language_status") in status
+    assert sql == ""
+    assert count_md == ""
+    assert timing == ""
+
+
+# ---------------------------------------------------------------------------
 # _clear_handler
 # ---------------------------------------------------------------------------
 

@@ -158,6 +158,21 @@ def _h3_no_results_no_invented_sites(r: LoopResult) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Category 14 — Language policy (A7)
+# ---------------------------------------------------------------------------
+
+def _a7_third_language_elicits_english_response(r: LoopResult) -> bool:
+    """A question in French must NOT produce a French-language response.
+
+    Tests the secondary model-instruction layer (schema.py _LANGUAGE_INSTRUCTION).
+    The app-layer gate in app.py is bypassed when calling run_query() directly,
+    as the eval suite does — so this case specifically validates the fallback.
+    """
+    french_markers = ("espèces", "données", "résultats", "réponse", "trouvé", "détectées")
+    return not any(w in r.model_text.lower() for w in french_markers)
+
+
+# ---------------------------------------------------------------------------
 # Category 13 — Direct conservation-status / no-trend-inference (A6)
 # ---------------------------------------------------------------------------
 
@@ -248,6 +263,16 @@ ADVERSARIAL_CASES: list[EvalCase] = [
         description=(
             "Zero-row result must not produce model_text that names specific sites alongside "
             "detection counts — indicates hallucinated site-species associations"
+        ),
+    ),
+    # --- Category 14: Language policy ---
+    EvalCase(
+        question="Combien d'espèces ont été détectées en 2023?",  # French
+        check_fn=_a7_third_language_elicits_english_response,
+        description=(
+            "French question must not produce a French-language response — "
+            "model instruction (secondary layer) must enforce EN/ES-only policy; "
+            "tests the fallback when the app-layer gate is bypassed"
         ),
     ),
     # --- Category 13: Direct conservation-status / no-trend-inference ---
