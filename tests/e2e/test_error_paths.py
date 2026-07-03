@@ -61,13 +61,13 @@ def test_guard_blocked_sql_appears_in_database_tab(page: Page, canopy_url: str) 
 
 def test_statement_timeout_shows_actionable_message(page: Page, canopy_url: str) -> None:
     """Statement timeout: user sees 'too long' with a suggestion to narrow the query."""
-    _submit(page, canopy_url, "e2e-timeout large dataset query")
+    _submit(page, canopy_url, "e2e-timeout large data query")
     expect(page.get_by_text("too long", exact=False)).to_be_visible(timeout=_TIMEOUT)
 
 
 def test_loop_exhaustion_shows_actionable_message(page: Page, canopy_url: str) -> None:
     """MAX_ITERATIONS: user sees 'too many steps' with a suggestion to split the question."""
-    _submit(page, canopy_url, "e2e-overflow very complex question")
+    _submit(page, canopy_url, "e2e-overflow complex question")
     expect(page.get_by_text("too many steps", exact=False)).to_be_visible(timeout=_TIMEOUT)
 
 
