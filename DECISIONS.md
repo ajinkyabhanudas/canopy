@@ -210,6 +210,39 @@ There is no explicit rejection status in the current dataset. Detections not app
 
 ---
 
+### S5 — Language policy gate
+
+> **Files:** `src/canopy/ui/app.py` · `src/canopy/schema.py` · `src/canopy/locales/en.py` · `src/canopy/locales/es.py`
+
+**Decision:** Canopy supports English and Spanish only. Enforcement uses two independent layers.
+
+| Layer | Where | Mechanism |
+|---|---|---|
+| 1 (primary) | `app.py` — `_check_language()` | `langdetect.detect()` runs before the question reaches the model. Non-EN/ES questions are rejected immediately — no API call is made. User receives a clear, forward-looking message. |
+| 2 (secondary) | `schema.py` — `_LANGUAGE_INSTRUCTION` | Model instruction states "if you detect any other language, respond in English only." Fallback if the application layer is bypassed (e.g. direct calls to `run_query()`). |
+
+**Why application layer:** Model instructions are soft — they can drift under prompt injection or fail on unusual inputs. The SELECT guard (S2) and coordinate stripping (S3) both enforce at the application layer for the same reason. Language policy follows the same pattern.
+
+**Short-input threshold (30 chars):** `langdetect` accuracy degrades sharply on short strings — common English phrases like "very complex question" (21 chars) are misdetected as French. Inputs under 30 characters bypass detection and pass through. Any meaningful question about species monitoring data in any language will typically exceed 30 characters; below this length, the signal-to-noise ratio is too low to reject reliably.
+
+**`LangDetectException` pass-through:** When `langdetect` cannot determine the language (symbols, single tokens, unusual encodings), the exception is caught and the question passes through. Uncertain inputs are not rejected.
+
+**Security note:** This is a behavioral gate, not a security-critical gate. The primary security controls (mutation prevention, coordinate privacy) are independent of language. Language gating prevents model confusion on unusual-language prompts but is not the last line of defense against any specific attack class.
+
+**Alternatives considered:**
+
+| Alternative | Why rejected |
+|---|---|
+| Model instruction only | Soft enforcement; costs one full API call per rejected question; untestable with certainty. |
+| Hard-inject `WHERE lang = 'en'` at DB level | Language is not a DB schema property. Not applicable. |
+| Translate non-EN/ES to English before sending | Adds translation latency, cost, and a second model dependency. Policy says EN/ES only — translate implies broader support. |
+
+> **Audit verdict — ✅ Sound**
+>
+> Follows the same defense-in-depth pattern as S2. Application layer is the primary enforcer; model instruction is the secondary fallback. The 15-char threshold is the main source of false negatives (a very short French phrase passes through), but the risk is low for a domain-specific conservation tool where all meaningful questions exceed that length.
+
+---
+
 ## 🏗️ Core Architecture
 
 ---

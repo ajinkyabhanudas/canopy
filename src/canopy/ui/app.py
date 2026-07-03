@@ -10,12 +10,16 @@ from typing import Generator
 import gradio as gr
 import psycopg2
 import psycopg2.errors
+from langdetect import DetectorFactory, LangDetectException
+from langdetect import detect as _lang_detect
 
 from canopy.config import get_ui_lang
 from canopy.history import clear_history
 from canopy.i18n import set_locale, t
 from canopy.query.executor import SQLGuardError
 from canopy.query.loop import run_query
+
+DetectorFactory.seed = 0  # deterministic language detection across calls
 
 _log = logging.getLogger("canopy.ui")
 
@@ -65,6 +69,16 @@ CSS = """
 _Output = tuple
 
 
+def _check_language(question: str) -> bool:
+    """Return True if the question is in a language other than English or Spanish."""
+    if len(question.strip()) < 30:
+        return False  # too short for reliable detection — pass through
+    try:
+        return _lang_detect(question) not in ("en", "es")
+    except LangDetectException:
+        return False  # undetermined — pass through
+
+
 def _empty_result(message: str, session_history: list, status: str = "") -> _Output:
     """Return a blank 8-tuple with only the response message and optional status set."""
     return (
@@ -94,6 +108,15 @@ def _run_query_handler(
     question = question.strip()
     if not question:
         yield _empty_result(t("error_empty_question"), session_history)
+        return
+
+    if _check_language(question):
+        _log.info("language check rejected: %r", question[:60])
+        yield _empty_result(
+            t("error_unsupported_language"),
+            session_history,
+            status=t("error_unsupported_language_status"),
+        )
         return
 
     status_q: queue.Queue[str | None] = queue.Queue()

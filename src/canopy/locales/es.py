@@ -1,4 +1,4 @@
-"""Spanish locale — all 28 keys mirroring en.py."""
+"""Spanish locale — all 30 keys mirroring en.py."""
 
 STRINGS: dict[str, str] = {
     # UI static labels
@@ -73,4 +73,11 @@ STRINGS: dict[str, str] = {
         "Por favor, intente de nuevo o reformule su pregunta."
     ),
     "error_generic_status": "⚠ No se pudo completar la consulta",
+    "error_unsupported_language": (
+        "Canopy actualmente admite preguntas en **inglés o español**.\n\n"
+        "Por favor, reformule su pregunta en cualquiera de los dos idiomas — "
+        "la herramienta responderá en el que usted use.\n\n"
+        "Es posible que se añada compatibilidad con otros idiomas en el futuro."
+    ),
+    "error_unsupported_language_status": "⚠ Idioma no compatible aún — pruebe en inglés o español",
 }

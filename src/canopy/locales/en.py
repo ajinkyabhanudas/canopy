@@ -74,4 +74,11 @@ STRINGS: dict[str, str] = {
         "Please try again, or rephrase your question."
     ),
     "error_generic_status": "⚠ Could not complete that query",
+    "error_unsupported_language": (
+        "Canopy currently supports questions in **English or Spanish**.\n\n"
+        "Please rephrase your question in either language — the tool will respond "
+        "in whichever one you use.\n\n"
+        "Support for additional languages may be added in the future."
+    ),
+    "error_unsupported_language_status": "⚠ Language not yet supported — try English or Spanish",
 }

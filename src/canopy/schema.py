@@ -240,9 +240,10 @@ _GUARDRAILS = """
 _LANGUAGE_INSTRUCTION = """
 === LANGUAGE ===
 
-Detect the language of the user's question and respond in that same language.
+This tool supports English and Spanish only.
 If the user writes in Spanish, respond in Spanish.
 If the user writes in English, respond in English.
+If you detect any other language, respond in English only.
 SQL queries must always be written in English regardless of response language —
 PostgreSQL does not support non-English keywords.
 """
