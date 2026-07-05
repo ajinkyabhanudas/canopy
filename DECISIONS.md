@@ -229,6 +229,8 @@ There is no explicit rejection status in the current dataset. Detections not app
 
 **Security note:** This is a behavioral gate, not a security-critical gate. The primary security controls (mutation prevention, coordinate privacy) are independent of language. Language gating prevents model confusion on unusual-language prompts but is not the last line of defense against any specific attack class.
 
+**`langdetect` dependency note:** `langdetect 1.0.9` is pinned exactly (`==1.0.9`) in `pyproject.toml`. The library is unmaintained — last release was 2014 — but has no known CVEs and is dependency-free. It was chosen because it is sufficient for EN/ES detection and adds no transitive dependencies. If detection quality degrades or Python compatibility breaks, `lingua-py` is the actively-maintained alternative.
+
 **Alternatives considered:**
 
 | Alternative | Why rejected |
@@ -239,7 +241,7 @@ There is no explicit rejection status in the current dataset. Detections not app
 
 > **Audit verdict — ✅ Sound**
 >
-> Follows the same defense-in-depth pattern as S2. Application layer is the primary enforcer; model instruction is the secondary fallback. The 15-char threshold is the main source of false negatives (a very short French phrase passes through), but the risk is low for a domain-specific conservation tool where all meaningful questions exceed that length.
+> Follows the same defense-in-depth pattern as S2. Application layer is the primary enforcer; model instruction is the secondary fallback. The 30-char threshold is the main source of false negatives (a very short French phrase passes through), but the risk is low for a domain-specific conservation tool where all meaningful questions exceed that length.
 
 ---
 

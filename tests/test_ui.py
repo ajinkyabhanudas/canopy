@@ -337,6 +337,28 @@ def test_check_language_empty_passes_through():
     assert ui_mod._check_language("") is False
 
 
+def test_check_language_detection_exception_passes_through(monkeypatch):
+    from langdetect import LangDetectException
+
+    def _raise(q):
+        raise LangDetectException(0, "no features in text")
+
+    monkeypatch.setattr(ui_mod, "_lang_detect", _raise)
+    assert ui_mod._check_language("x" * 40) is False
+
+
+def test_check_language_boundary_30_chars(monkeypatch):
+    """29 chars: detector not called. 30 chars: detector is called."""
+    calls: list = []
+    monkeypatch.setattr(ui_mod, "_lang_detect", lambda q: calls.append(q) or "fr")
+
+    assert ui_mod._check_language("a" * 29) is False
+    assert calls == [], "detector must not run under the threshold"
+
+    assert ui_mod._check_language("a" * 30) is True
+    assert len(calls) == 1, "detector must run at exactly the threshold"
+
+
 def test_handler_unsupported_language_rejected(monkeypatch):
     """French question: language gate rejects before run_query; shows localized error."""
     spy_calls: list = []
