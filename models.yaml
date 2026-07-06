@@ -1,0 +1,37 @@
+# Canopy model connections
+#
+# Each connection has:
+#   id          — used as MODEL_BACKEND value and in benchmark output
+#   backend     — "anthropic" or "azure"
+#   endpoint    — Azure only; the /openai/v1/ base URL for this resource
+#   api_key_env — name of the .env variable that holds the API key
+#   models      — list of deployment names to test; empty list = auto-discover
+#   timeout     — optional, seconds (default: 60)
+#
+# Adding a new Azure resource:
+#   1. Add AZURE_<NAME>_API_KEY to .env
+#   2. Add an entry here with api_key_env pointing to that variable
+#   No code changes needed.
+
+connections:
+  - id: claude-sonnet
+    backend: anthropic
+    api_key_env: ANTHROPIC_API_KEY
+    models:
+      - claude-sonnet-4-6
+    timeout: 60
+
+  - id: capa
+    backend: azure
+    endpoint: https://capa-4249-resource.services.ai.azure.com/openai/v1/
+    api_key_env: AZURE_CAPA_API_KEY
+    models: []   # empty = query /openai/v1/models and test every discovered deployment
+    timeout: 60
+
+  # Template for a second Azure resource:
+  # - id: capa-east
+  #   backend: azure
+  #   endpoint: https://other-resource.services.ai.azure.com/openai/v1/
+  #   api_key_env: AZURE_EAST_API_KEY
+  #   models: []
+  #   timeout: 60
