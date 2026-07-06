@@ -13,6 +13,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from canopy.i18n import t
+from canopy.models.anthropic import AnthropicClient
 from canopy.models.base import ModelResponse, ToolCall
 from canopy.query.loop import MAX_ITERATIONS, run_query
 
@@ -24,8 +25,8 @@ from canopy.query.loop import MAX_ITERATIONS, run_query
 @pytest.fixture(autouse=True)
 def _bypass_cache(monkeypatch):
     """Prevent real cache reads/writes from interfering with loop unit tests."""
-    monkeypatch.setattr("canopy.query.loop.lookup_cache", lambda q: None)
-    monkeypatch.setattr("canopy.query.loop.write_cache", lambda r: None)
+    monkeypatch.setattr("canopy.query.loop.lookup_cache", lambda q, **_kw: None)
+    monkeypatch.setattr("canopy.query.loop.write_cache", lambda r, **_kw: None)
 
 
 @pytest.fixture
@@ -278,18 +279,26 @@ def test_parallel_tool_calls_bundled_into_one_message(monkeypatch, mock_model, m
 # ---------------------------------------------------------------------------
 
 
-def test_anthropic_format_tool_results_single(monkeypatch):
-    """Single result produces one tool_result block."""
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-    monkeypatch.setenv("MODEL_BACKEND", "anthropic")
-    monkeypatch.setenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
-    monkeypatch.setattr("canopy.models.anthropic.anthropic", MagicMock())
-
+def _make_anthropic_client_for_loop_tests(monkeypatch) -> "AnthropicClient":
+    """Build AnthropicClient with config patched — avoids models.yaml lookup."""
+    from canopy.config import ModelConfig
     from canopy.models.anthropic import AnthropicClient
+    monkeypatch.setattr("canopy.models.anthropic.anthropic", MagicMock())
+    monkeypatch.setattr(
+        "canopy.models.anthropic.get_model_config",
+        lambda: ModelConfig(backend="anthropic", api_key="test-key",
+                            model="claude-sonnet-4-6", timeout=60.0),
+    )
+    return AnthropicClient()
 
-    client = AnthropicClient()
-    msg = client.format_tool_results([("id1", "result content")])
 
+def test_anthropic_format_tool_results_single(monkeypatch):
+    """Single result produces one tool_result block inside a list wrapper."""
+    client = _make_anthropic_client_for_loop_tests(monkeypatch)
+    msgs = client.format_tool_results([("id1", "result content")])
+
+    assert isinstance(msgs, list)
+    msg = msgs[0]
     assert msg["role"] == "user"
     assert len(msg["content"]) == 1
     assert msg["content"][0] == {
@@ -301,16 +310,11 @@ def test_anthropic_format_tool_results_single(monkeypatch):
 
 def test_anthropic_format_tool_results_multiple(monkeypatch):
     """Multiple results all land in one user message, preserving order."""
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-    monkeypatch.setenv("MODEL_BACKEND", "anthropic")
-    monkeypatch.setenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
-    monkeypatch.setattr("canopy.models.anthropic.anthropic", MagicMock())
+    client = _make_anthropic_client_for_loop_tests(monkeypatch)
+    msgs = client.format_tool_results([("tc1", "r1"), ("tc2", "r2")])
 
-    from canopy.models.anthropic import AnthropicClient
-
-    client = AnthropicClient()
-    msg = client.format_tool_results([("tc1", "r1"), ("tc2", "r2")])
-
+    assert isinstance(msgs, list)
+    msg = msgs[0]
     assert msg["role"] == "user"
     assert len(msg["content"]) == 2
     assert msg["content"][0]["tool_use_id"] == "tc1"
@@ -320,17 +324,11 @@ def test_anthropic_format_tool_results_multiple(monkeypatch):
 
 
 def test_anthropic_format_tool_result_singular_delegates(monkeypatch):
-    """format_tool_result (singular) is now a one-element wrapper — verify it still works."""
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-    monkeypatch.setenv("MODEL_BACKEND", "anthropic")
-    monkeypatch.setenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
-    monkeypatch.setattr("canopy.models.anthropic.anthropic", MagicMock())
-
-    from canopy.models.anthropic import AnthropicClient
-
-    client = AnthropicClient()
+    """format_tool_result (singular) returns a single dict with one content block."""
+    client = _make_anthropic_client_for_loop_tests(monkeypatch)
     msg = client.format_tool_result("myid", "mycontent")
 
+    assert isinstance(msg, dict)
     assert msg["role"] == "user"
     assert len(msg["content"]) == 1
     assert msg["content"][0]["tool_use_id"] == "myid"
@@ -371,7 +369,7 @@ def test_cache_hit_skips_llm_call(monkeypatch, mock_model, tmp_path):
         model_text="There are 42 detections.",
         timing={"cache_hit": True, "cached_at": "2026-06-26T00:00:00+00:00"},
     )
-    monkeypatch.setattr("canopy.query.loop.lookup_cache", lambda q: cached)
+    monkeypatch.setattr("canopy.query.loop.lookup_cache", lambda q, **_kw: cached)
     monkeypatch.setattr("canopy.query.loop.get_model_client", lambda: mock_model)
 
     result = run_query("How many detections?")
@@ -384,8 +382,8 @@ def test_cache_hit_skips_llm_call(monkeypatch, mock_model, tmp_path):
 def test_cache_miss_writes_result(monkeypatch, mock_model, mock_conn):
     """On a cache miss, the result should be written to cache after the query."""
     written: list = []
-    monkeypatch.setattr("canopy.query.loop.lookup_cache", lambda q: None)
-    monkeypatch.setattr("canopy.query.loop.write_cache", lambda r: written.append(r))
+    monkeypatch.setattr("canopy.query.loop.lookup_cache", lambda q, **_kw: None)
+    monkeypatch.setattr("canopy.query.loop.write_cache", lambda r, **_kw: written.append(r))
     monkeypatch.setattr("canopy.query.loop.get_model_client", lambda: mock_model)
     monkeypatch.setattr("canopy.query.executor.get_connection", lambda: mock_conn)
     mock_model.generate.side_effect = [
