@@ -11,8 +11,10 @@ dependencies = [
     "anthropic>=0.40",
     "gradio>=6.0",
     "langdetect==1.0.9",
+    "openai>=1.0",
     "python-dotenv>=1.0",
     "psycopg2-binary>=2.9",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
