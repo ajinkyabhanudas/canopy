@@ -2,8 +2,12 @@
 Multi-model benchmark runner for canopy.
 
 For each connection defined in models.yaml:
-  - If models: [] (empty) → auto-discover deployments via GET /openai/v1/models
+  - If models: [] (empty) → discover deployments via the Foundry /models API
   - Otherwise → test the explicitly listed model names
+
+At most MAX_TESTED_MODELS models are benchmarked per connection. If more are
+available, the extras are recorded in the JSON output and README but not run
+(they are too expensive and slow to test on every run).
 
 Runs ground-truth (31 cases) + adversarial (10 cases) eval suites against
 every (connection, model) pair. Prints a comparison table to stdout and writes
@@ -58,6 +62,7 @@ _PRICING: dict[str, dict[str, float]] = {
 }
 
 _OUT_DIR = _REPO_ROOT / "benchmark_results"
+MAX_TESTED_MODELS = 5
 
 
 def _est_cost(model: str, backend: str, in_tok: int, out_tok: int) -> float:
@@ -71,29 +76,44 @@ def _est_cost(model: str, backend: str, in_tok: int, out_tok: int) -> float:
 # Model discovery
 # ---------------------------------------------------------------------------
 
-def _discover_models(conn: ModelConnection) -> list[str]:
-    """Return models to benchmark for a connection.
+
+def _discover_models(conn: ModelConnection) -> tuple[list[str], list[str]]:
+    """Return (to_test, available_but_skipped) for a connection.
+
+    to_test          — at most MAX_TESTED_MODELS models, in declaration order
+    available_but_skipped — any beyond that cap; recorded but not benchmarked
 
     If conn.models is non-empty, use that list directly.
-    Otherwise query the Azure endpoint's /models API to auto-discover.
+    Otherwise query the Foundry /models API to discover deployed models.
     """
     if conn.models:
-        return conn.models
+        all_models = conn.models
+    elif conn.backend == "anthropic":
+        all_models = ["claude-sonnet-4-6"]
+    else:
+        # Azure: discover via azure-ai-inference
+        from azure.ai.inference import ChatCompletionsClient
+        from azure.core.credentials import AzureKeyCredential
 
-    if conn.backend == "anthropic":
-        # Anthropic has no model list endpoint; default to what's in the connection
-        return ["claude-sonnet-4-6"]
+        client = ChatCompletionsClient(
+            endpoint=conn.endpoint,
+            credential=AzureKeyCredential(conn.api_key),
+        )
+        try:
+            all_models = [m.id for m in client.list_models()]
+            print(f"  [discover] {conn.id}: found {len(all_models)} deployment(s)")
+        except Exception as exc:
+            print(f"  [discover] {conn.id}: model list failed ({exc}) — skipping connection")
+            return [], []
 
-    # Azure: auto-discover via OpenAI SDK
-    from openai import OpenAI
-    client = OpenAI(api_key=conn.api_key, base_url=conn.endpoint)
-    try:
-        model_ids = [m.id for m in client.models.list()]
-        print(f"  [discover] {conn.id}: found {len(model_ids)} deployment(s): {model_ids}")
-        return model_ids
-    except Exception as exc:
-        print(f"  [discover] {conn.id}: model list failed ({exc}) — skipping connection")
-        return []
+    to_test = all_models[:MAX_TESTED_MODELS]
+    skipped = all_models[MAX_TESTED_MODELS:]
+    if skipped:
+        print(
+            f"  [cap] {conn.id}: testing {len(to_test)}/{len(all_models)} models"
+            f" (skipping: {', '.join(skipped)})"
+        )
+    return to_test, skipped
 
 
 # ---------------------------------------------------------------------------
@@ -296,7 +316,11 @@ def _print_table(summaries: list[ModelSummary], total_cases: int) -> None:
 # Output: JSON + CSV
 # ---------------------------------------------------------------------------
 
-def _write_outputs(all_results: list[CaseResult], summaries: list[ModelSummary]) -> None:
+def _write_outputs(
+    all_results: list[CaseResult],
+    summaries: list[ModelSummary],
+    skipped: dict[str, list[str]],
+) -> None:
     _OUT_DIR.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
 
@@ -305,6 +329,8 @@ def _write_outputs(all_results: list[CaseResult], summaries: list[ModelSummary])
         json.dumps(
             {
                 "run_at": datetime.now(timezone.utc).isoformat(),
+                "max_tested_models": MAX_TESTED_MODELS,
+                "available_not_tested": skipped,
                 "summary": [s.__dict__ for s in summaries],
                 "cases": [r.__dict__ for r in all_results],
             },
@@ -323,9 +349,68 @@ def _write_outputs(all_results: list[CaseResult], summaries: list[ModelSummary])
         for r in all_results:
             writer.writerow(r.__dict__)
 
-    print("Results written to:")
+    _update_readme(summaries, skipped)
+
+    if skipped:
+        print(f"\nAvailable but not tested (beyond cap of {MAX_TESTED_MODELS}):")
+        for conn_id, models in skipped.items():
+            print(f"  {conn_id}: {', '.join(models)}")
+
+    print("\nResults written to:")
     print(f"  {json_path}")
     print(f"  {csv_path}")
+
+
+def _update_readme(summaries: list[ModelSummary], skipped: dict[str, list[str]]) -> None:
+    """Update the 'Available models' table in README.md after each benchmark run."""
+    readme_path = _REPO_ROOT / "README.md"
+    if not readme_path.exists():
+        return
+
+    # Group by connection
+    tested_by_conn: dict[str, list[str]] = {}
+    for s in summaries:
+        tested_by_conn.setdefault(s.conn_id, []).append(s.model)
+
+    all_conn_ids = sorted(set(list(tested_by_conn) + list(skipped)))
+
+    # Build one table per connection
+    table_lines: list[str] = []
+    for conn_id in all_conn_ids:
+        table_lines.append(f"### Available models — {conn_id}")
+        table_lines.append("")
+        table_lines.append("<!-- Updated automatically by make benchmark. Do not edit by hand. -->")
+        table_lines.append("| Status | Model |")
+        table_lines.append("|--------|-------|")
+        for m in tested_by_conn.get(conn_id, []):
+            table_lines.append(f"| tested | `{m}` |")
+        for m in skipped.get(conn_id, []):
+            table_lines.append(f"| available (not tested) | `{m}` |")
+        table_lines.append("")
+
+    new_block = "\n".join(table_lines)
+
+    text = readme_path.read_text()
+
+    # Replace every existing "### Available models" block (one per connection)
+    import re  # noqa: PLC0415
+
+    pattern = re.compile(
+        r"### Available models.*?(?=\n###|\Z)",
+        re.DOTALL,
+    )
+    if pattern.search(text):
+        updated = pattern.sub("", text).rstrip()
+        # Re-insert after the model cap paragraph
+        insert_marker = "tracked as a running\nrecord of what is deployed on each resource."
+        updated = updated.replace(insert_marker, insert_marker + "\n\n" + new_block.rstrip())
+    else:
+        insert_marker = "tracked as a running\nrecord of what is deployed on each resource."
+        updated = text.replace(insert_marker, insert_marker + "\n\n" + new_block.rstrip())
+
+    readme_path.write_text(updated)
+    print(f"  README.md model table updated ({sum(len(v) for v in tested_by_conn.values())} tested,"
+          f" {sum(len(v) for v in skipped.values())} available-not-tested)")
 
 
 # ---------------------------------------------------------------------------
@@ -345,22 +430,25 @@ def main() -> None:
 
     total_cases = (len(EVAL_CASES) if run_gt else 0) + (len(ADVERSARIAL_CASES) if run_adv else 0)
     all_results: list[CaseResult] = []
+    all_skipped: dict[str, list[str]] = {}
 
     print(f"\nCanopy benchmark — {len(connections)} connection(s) from models.yaml")
     print(f"Suites: {'ground-truth' if run_gt else ''}  {'adversarial' if run_adv else ''}")
-    print(f"Cases per model: {total_cases}")
+    print(f"Cases per model: {total_cases}  |  Model cap: {MAX_TESTED_MODELS} per connection")
 
     for conn in connections:
         if not conn.api_key:
             print(f"\n[SKIP] {conn.id}: api_key_env not set in env — skipping")
             continue
 
-        models = _discover_models(conn)
-        if not models:
+        to_test, skipped = _discover_models(conn)
+        if not to_test:
             print(f"\n[SKIP] {conn.id}: no models to benchmark")
             continue
+        if skipped:
+            all_skipped[conn.id] = skipped
 
-        for model in models:
+        for model in to_test:
             results = _benchmark_model(conn, model, run_gt=run_gt, run_adv=run_adv)
             all_results.extend(results)
 
@@ -370,7 +458,7 @@ def main() -> None:
 
     summaries = _summarise(all_results)
     _print_table(summaries, total_cases)
-    _write_outputs(all_results, summaries)
+    _write_outputs(all_results, summaries, all_skipped)
 
 
 if __name__ == "__main__":

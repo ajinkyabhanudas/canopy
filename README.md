@@ -95,9 +95,9 @@ connections:
 
   - id: capa
     backend: azure
-    endpoint: https://your-resource.services.ai.azure.com/openai/v1/
+    endpoint: https://your-resource.services.ai.azure.com/models
     api_key_env: AZURE_CAPA_API_KEY
-    models: []   # empty → auto-discover all deployed models at benchmark time
+    models: []   # empty → discover deployed models at benchmark time (up to 5 tested)
 ```
 
 To add a second Azure resource: add a new `connections` entry to `models.yaml` and add the
@@ -249,9 +249,17 @@ prompt+completion tokens across all cases, **$** = estimated cost at published r
 Results are also written to `benchmark_results/benchmark_<timestamp>.json` and `.csv`
 for reproducible records and trend tracking.
 
-**For Azure connections with `models: []`**, the benchmark runner queries
-`GET /openai/v1/models` to auto-discover all deployed models and runs them all —
-no config change needed when new deployments are added to the Azure resource.
+**Model cap:** at most 5 models are benchmarked per connection. If a connection has more
+deployments available, the extras are listed in the JSON output under `available_not_tested`
+and printed at the end of the run — they are not benchmarked but are tracked as a running
+record of what is deployed on each resource.
+
+### Available models — capa (Azure AI Foundry)
+
+<!-- Updated automatically by make benchmark. Do not edit by hand. -->
+| Status | Model |
+|--------|-------|
+| — | *(no deployments recorded yet — run `make benchmark` after deploying a model)* |
 
 ---
 
