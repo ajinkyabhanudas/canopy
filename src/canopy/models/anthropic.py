@@ -53,16 +53,22 @@ class AnthropicClient(ModelClient):
         )
 
     def format_tool_result(self, tool_call_id: str, content: str) -> dict:
-        return self.format_tool_results([(tool_call_id, content)])
-
-    def format_tool_results(self, results: list[tuple[str, str]]) -> dict:
         return {
             "role": "user",
-            "content": [
-                {"type": "tool_result", "tool_use_id": tid, "content": content}
-                for tid, content in results
-            ],
+            "content": [{"type": "tool_result", "tool_use_id": tool_call_id, "content": content}],
         }
+
+    def format_tool_results(self, results: list[tuple[str, str]]) -> list[dict]:
+        # Anthropic bundles all tool results into a single user message.
+        return [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": tid, "content": content}
+                    for tid, content in results
+                ],
+            }
+        ]
 
     def format_assistant_turn(self, response: ModelResponse) -> dict:
         blocks: list[dict] = []

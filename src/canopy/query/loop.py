@@ -8,6 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from canopy.cache import lookup_cache, write_cache
+from canopy.config import get_active_connection
 from canopy.history import append_history
 from canopy.i18n import t
 from canopy.models import get_model_client
@@ -76,13 +77,19 @@ def run_query(
         RuntimeError: If the model keeps calling tools beyond MAX_ITERATIONS.
         ValueError: If the model generates a non-SELECT SQL statement.
     """
-    _log.info("run_query started: %r", question)
+    conn = get_active_connection()
+    active_model = conn.models[0] if conn.models else conn.id
+    _log.info(
+        "run_query started — backend=%s model=%s question=%r", conn.id, active_model, question
+    )
 
-    cached = lookup_cache(question)
+    cached = lookup_cache(question, connection_id=conn.id, model=active_model)
     if cached is not None:
         if status_cb:
             status_cb("CACHE_HIT")
-        _log.info("cache hit for question: %r", question[:60])
+        _log.info(
+            "cache hit: backend=%s model=%s question=%r", conn.id, active_model, question[:60]
+        )
         return cached
 
     t_total = time.perf_counter()
@@ -132,7 +139,7 @@ def run_query(
                 key = "found_detections_singular" if n == 1 else "found_detections_plural"
                 status_cb(t(key, n=n))
             tool_results.append((tool_call.id, _format_result(last_query_result)))
-        messages.append(model.format_tool_results(tool_results))
+        messages.extend(model.format_tool_results(tool_results))
     else:
         raise RuntimeError("Query loop exceeded maximum iterations")
 
@@ -143,9 +150,13 @@ def run_query(
         "llm_calls": len(llm_times),
         "db_s": round(sum(db_times), 3),
         "db_calls": len(db_times),
+        "connection_id": conn.id,
+        "model": active_model,
     }
     _log.info(
-        "run_query complete: %d rows in %.1fs (llm %.1fs × %d calls, db %.3fs × %d calls)",
+        "run_query complete — backend=%s model=%s rows=%d total=%.1fs"
+        " (llm %.1fs × %d, db %.3fs × %d)",
+        conn.id, active_model,
         last_query_result.row_count if last_query_result else 0,
         total_s, timing["llm_s"], timing["llm_calls"],
         timing["db_s"], timing["db_calls"],
@@ -161,7 +172,7 @@ def run_query(
         timing=timing,
     )
     try:
-        write_cache(result)
+        write_cache(result, connection_id=conn.id, model=active_model)
     except Exception as exc:
         _log.warning("cache write failed: %s", exc)
     try:
