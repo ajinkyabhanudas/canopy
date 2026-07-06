@@ -3,7 +3,7 @@
 # Each connection has:
 #   id          — used as MODEL_BACKEND value and in benchmark output
 #   backend     — "anthropic" or "azure"
-#   endpoint    — Azure only; the /openai/v1/ base URL for this resource
+#   endpoint    — Azure only; the Foundry inference base URL for this resource
 #   api_key_env — name of the .env variable that holds the API key
 #   models      — list of deployment names to test; empty list = auto-discover
 #   timeout     — optional, seconds (default: 60)
@@ -23,15 +23,15 @@ connections:
 
   - id: capa
     backend: azure
-    endpoint: https://capa-4249-resource.services.ai.azure.com/openai/v1/
+    endpoint: https://capa-4249-resource.services.ai.azure.com/models
     api_key_env: AZURE_CAPA_API_KEY
-    models: []   # empty = query /openai/v1/models and test every discovered deployment
+    models: []   # add deployment names here once models are deployed on the resource
     timeout: 60
 
   # Template for a second Azure resource:
   # - id: capa-east
   #   backend: azure
-  #   endpoint: https://other-resource.services.ai.azure.com/openai/v1/
+  #   endpoint: https://other-resource.services.ai.azure.com/models
   #   api_key_env: AZURE_EAST_API_KEY
   #   models: []
   #   timeout: 60
