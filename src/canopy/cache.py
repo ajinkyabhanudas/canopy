@@ -38,10 +38,11 @@ def _ttl_hours() -> int:
     return int(os.environ.get("CANOPY_CACHE_TTL_HOURS", _DEFAULT_TTL_HOURS))
 
 
-def _make_key(question: str) -> str:
+def _make_key(question: str, connection_id: str = "", model: str = "") -> str:
     q = unicodedata.normalize("NFC", question)
     normalised = re.sub(r"\s+", " ", q.casefold().strip())
-    return hashlib.sha256(normalised.encode()).hexdigest()[:16]
+    payload = f"{connection_id}\x00{model}\x00{normalised}"
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
 def _read_cache() -> dict:
@@ -73,11 +74,11 @@ def _maybe_datetime(v: object) -> object:
     return v
 
 
-def lookup_cache(question: str) -> LoopResult | None:
+def lookup_cache(question: str, connection_id: str = "", model: str = "") -> LoopResult | None:
     """Return a cached LoopResult for question, or None on miss/expiry."""
     from canopy.query.loop import LoopResult
 
-    key = _make_key(question)
+    key = _make_key(question, connection_id, model)
     data = _read_cache()
     entry = data.get(key)
     if entry is None:
@@ -100,9 +101,9 @@ def lookup_cache(question: str) -> LoopResult | None:
     )
 
 
-def write_cache(result: LoopResult) -> None:
+def write_cache(result: LoopResult, connection_id: str = "", model: str = "") -> None:
     """Write a LoopResult to the cache, evicting oldest entries beyond _MAX_ENTRIES."""
-    key = _make_key(result.question)
+    key = _make_key(result.question, connection_id, model)
     data = _read_cache()
 
     # LRU eviction: remove oldest entries if at capacity
