@@ -68,7 +68,7 @@ SQL (shown in "Database query" tab):
 ## Requirements
 
 - Python 3.11+ (local) or Docker (recommended for deployment)
-- An Anthropic API key
+- At least one model API key (Anthropic and/or Azure AI Foundry)
 - PostgreSQL credentials for the VAJocotoco database
 
 ---
@@ -83,17 +83,36 @@ cp .env.example .env
 
 Edit `.env` and fill in all required values. Never commit `.env`.
 
+**Model connections** are declared in `models.yaml` at the project root (safe to commit —
+no secrets). Each connection points to an API key env var by name:
+
+```yaml
+connections:
+  - id: claude-sonnet          # matches MODEL_BACKEND value
+    backend: anthropic
+    api_key_env: ANTHROPIC_API_KEY
+    models: [claude-sonnet-4-6]
+
+  - id: capa
+    backend: azure
+    endpoint: https://your-resource.services.ai.azure.com/openai/v1/
+    api_key_env: AZURE_CAPA_API_KEY
+    models: []   # empty → auto-discover all deployed models at benchmark time
+```
+
+To add a second Azure resource: add a new `connections` entry to `models.yaml` and add the
+corresponding `AZURE_<NAME>_API_KEY` to `.env`. No code changes needed.
+
 | Variable | Required | Description |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | Yes | Anthropic API key |
-| `ANTHROPIC_MODEL` | No | Model ID (default: `claude-sonnet-4-6`) |
-| `MODEL_BACKEND` | No | Backend (default: `anthropic`) |
+| `ANTHROPIC_API_KEY` | If using Anthropic | Anthropic API key |
+| `AZURE_CAPA_API_KEY` | If using Azure | Key for the `capa` connection in models.yaml |
+| `MODEL_BACKEND` | No | Active connection `id` from models.yaml (default: `claude-sonnet`) |
 | `PG_HOST` | Yes | PostgreSQL host |
 | `PG_PORT` | Yes | PostgreSQL port (usually `5432`) |
 | `PG_DBNAME` | Yes | Database name |
 | `PG_USER` | Yes | Database user (read-only) |
 | `PG_PASSWORD` | Yes | Database password |
-| `ANTHROPIC_TIMEOUT` | No | API timeout in seconds (default: `60`) |
 | `CANOPY_DATA_DIR` | No | History + cache file location — Docker only, do not set locally |
 | `CANOPY_CACHE_TTL_HOURS` | No | Cache TTL in hours (default: `24`) |
 | `CANOPY_UI_LANG` | No | UI label language: `en` (default) or `es` (Spanish). Questions must be in English or Spanish — other languages are rejected before reaching the model. This env var only controls UI labels (buttons, tabs, error messages). |
@@ -145,6 +164,7 @@ All common tasks are available via `make`. Run `make` (no target) to see the ful
 | `make smoke` | Docker smoke test — validates runtime behaviour unit tests can't catch |
 | `make eval` | Ground-truth + adversarial eval (needs live DB + API key) |
 | `make eval-es` | Spanish language variant eval |
+| `make benchmark` | Run all connections from `models.yaml`, print comparison table (needs live DB + all API keys) |
 | `make playwright-install` | Install Chromium for E2E tests (run once) |
 | `make e2e` | Browser-level E2E tests — verifies error messages render in the UI (no DB or API key needed) |
 | `make clean` | Remove build artefacts and caches |
@@ -199,10 +219,41 @@ make test           # unit tests only
 make smoke          # Docker runtime validation (requires Docker)
 ```
 
-Expected unit test result: **313 passed**, ~88% coverage.
+Expected unit test result: **338 passed**, ~88% coverage.
 
 The smoke test validates what `pytest` cannot: Docker volume permissions, Gradio
 startup warnings, and HTTP availability. Run it after any Dockerfile or Gradio change.
+
+## Multi-model benchmark
+
+`make benchmark` runs all connections declared in `models.yaml` — Anthropic and any Azure AI
+Foundry endpoints — against the full eval suite and prints a comparison table:
+
+```
+════════════════════════════════════════════════════════════════════════════════
+  CANOPY MODEL BENCHMARK — 41 cases
+  Run: 2026-07-07 12:34 UTC
+════════════════════════════════════════════════════════════════════════════════
+  Connection           Model                          GT%   ADV%  Lat(s)  Tokens       $
+  ────────────────────────────────────────────────────────────────────────────
+  claude-sonnet        claude-sonnet-4-6              87%   100%    1.2    4100   0.052
+  capa                 gpt-4o                         84%   100%    0.9    3900   0.031
+  capa                 gpt-4.1-mini                   81%    90%    0.6    3700   0.011
+════════════════════════════════════════════════════════════════════════════════
+```
+
+Columns: **GT%** = ground-truth pass rate (31 cases, target ≥85%), **ADV%** = adversarial
+pass rate (10 cases, must be 100%), **Lat(s)** = average latency, **Tokens** = total
+prompt+completion tokens across all cases, **$** = estimated cost at published rates.
+
+Results are also written to `benchmark_results/benchmark_<timestamp>.json` and `.csv`
+for reproducible records and trend tracking.
+
+**For Azure connections with `models: []`**, the benchmark runner queries
+`GET /openai/v1/models` to auto-discover all deployed models and runs them all —
+no config change needed when new deployments are added to the Azure resource.
+
+---
 
 ## Eval suites
 
@@ -261,7 +312,7 @@ from the security guard counts as PASS — a blocked attack is the correct outco
 
 ```
 src/canopy/
-├── config.py          # Env var loading — ModelConfig, DBConfig, get_data_dir(), get_ui_lang()
+├── config.py          # Env var + models.yaml loading — ModelConnection, get_active_connection()
 ├── schema.py          # DB schema constant + build_system_prompt() (language instruction included)
 ├── i18n.py            # set_locale(), t() — UI string localisation singleton
 ├── locales/
@@ -270,10 +321,12 @@ src/canopy/
 ├── _json.py           # Shared JSON encoder (Decimal, datetime) for cache + history
 ├── history.py         # append_history, load_history, clear_history (JSONL)
 ├── cache.py           # lookup_cache, write_cache — SHA-256+NFC key, 24h TTL, LRU evict
+│                      # cache key includes connection_id + model to prevent cross-model poisoning
 ├── models/
 │   ├── base.py        # ModelClient ABC — vendor-neutral interface
-│   ├── anthropic.py   # Claude adapter (only backend today)
-│   └── registry.py    # get_model_client() — reads MODEL_BACKEND
+│   ├── anthropic.py   # Claude adapter
+│   ├── azure.py       # Azure AI Foundry adapter (OpenAI-compatible endpoint)
+│   └── registry.py    # get_model_client() — reads models.yaml via get_active_connection()
 ├── db/
 │   └── connection.py  # get_connection() — psycopg2, read-only
 ├── query/
@@ -282,17 +335,24 @@ src/canopy/
 └── ui/
     └── app.py         # build_app() — Gradio two-panel UI (all strings via t())
 
+models.yaml            # Connection registry — safe to commit, no secrets
+                       # api_key_env field references .env variable names
+
 scripts/
 ├── docker_run.sh      # Docker launcher (handles .env quote stripping)
 ├── run_ui.py          # Local UI launcher
 ├── smoke_test.py      # API key / model config check
-└── run_eval.py        # Eval runner — ground-truth (27) + adversarial (8) suites
+├── run_eval.py        # Eval runner — ground-truth + adversarial suites
+└── run_benchmark.py   # Multi-model benchmark — discovers models, runs evals, prints table
+
+benchmark_results/     # Timestamped JSON + CSV benchmark outputs (git-ignored)
 
 tests/
 ├── conftest.py        # autouse fixture — redirects CANOPY_DATA_DIR to tmp_path per test
+├── test_models_azure.py  # AzureFoundryClient unit tests + Anthropic return-type regression
 └── eval/
-    ├── queries.py     # 30 EvalCase entries (8 with Spanish translation_es); correctness, guardrails, faithfulness
-    └── adversarial.py # 8 adversarial cases — injection, persona bypass, hallucination boundary
+    ├── queries.py     # 31 EvalCase entries (8 with Spanish translation_es)
+    └── adversarial.py # 10 adversarial cases — injection, persona bypass, hallucination boundary
 
 Dockerfile             # python:3.11-slim, non-root user, /data volume
 ```
@@ -339,7 +399,7 @@ behaviour boundaries.
 | SQL executor with SELECT-only guard | Done |
 | Agentic query loop | Done |
 | Parallel tool call handling | Done |
-| Ground-truth eval set (30 queries) | Done |
+| Ground-truth eval set (31 queries) | Done |
 | Query history (JSONL, Docker-safe) | Done |
 | Production hardening (logging, timeout, Dockerfile) | Done |
 | Gradio UI with streaming progress | Done |
@@ -347,8 +407,11 @@ behaviour boundaries.
 | Coordinate filtering (lat/lon never sent to AI layer) | Done |
 | Read-only DB connection enforcement | Done |
 | Resilient query history | Done |
-| Faithfulness + adversarial evals (30 GT + 8 adversarial) | Done |
-| Query result cache (SHA-256+NFC, TTL, LRU) | Done |
+| Faithfulness + adversarial evals (31 GT + 10 adversarial) | Done |
+| Query result cache (SHA-256+NFC, TTL, LRU, model-scoped key) | Done |
 | Spanish language support (auto-detect responses + UI labels) | Done |
 | Spanish eval suite (8 GT parallel cases) | Done |
+| Azure AI Foundry adapter (OpenAI-compatible) | Done |
+| models.yaml connection registry (named connections, auto-discover) | Done |
+| Multi-model benchmark runner (`make benchmark`) | Done |
 | IUCN API integration | Deferred (needs API key) |
