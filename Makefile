@@ -1,4 +1,4 @@
-.PHONY: help test lint check build run smoke ui eval eval-spanish eval-adversarial clean playwright-install e2e
+.PHONY: help test lint check build run smoke ui eval eval-spanish eval-adversarial benchmark clean playwright-install e2e
 
 # Default target
 help:
@@ -21,6 +21,9 @@ help:
 	@echo "  make eval-gt           Ground-truth suite only"
 	@echo "  make eval-es           Spanish language variants"
 	@echo "  make eval-adv          Adversarial suite only"
+	@echo ""
+	@echo "  Benchmark (needs live DB + all API keys in .env)"
+	@echo "  make benchmark         Run all models from models.yaml, print comparison table"
 	@echo ""
 	@echo "  E2E browser tests (needs Playwright browsers installed once)"
 	@echo "  make playwright-install  Install Chromium for E2E tests (run once)"
@@ -58,6 +61,9 @@ smoke:
 
 eval:
 	python scripts/run_eval.py
+
+benchmark:
+	python scripts/run_benchmark.py
 
 eval-gt:
 	python scripts/run_eval.py --ground-truth
