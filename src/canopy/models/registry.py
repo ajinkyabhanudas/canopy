@@ -1,29 +1,44 @@
 """
 models/registry.py
 -------------------
-One place to add a new backend. Today there is exactly one: Claude,
-called directly through Anthropic's API. Swapping which model answers
-queries inside that backend is the ANTHROPIC_MODEL environment variable,
-not a code change. A second backend (Azure AI Foundry, once provisioned)
-gets added here as a new entry, nothing else in the codebase changes.
+One place to add a new backend. Backends are keyed by the "backend" field
+in models.yaml. Adding a new provider = one import + one dict entry here,
+nothing else in the codebase changes.
 """
 
 from __future__ import annotations
 
-from ..config import get_model_config
+from ..config import get_active_connection
 from .anthropic import AnthropicClient
+from .azure import AzureFoundryClient
 from .base import ModelClient
 
-_BACKENDS: dict[str, type[ModelClient]] = {
-    "anthropic": AnthropicClient,
-}
+_BACKENDS = frozenset({"anthropic", "azure"})
 
 
-def get_model_client() -> ModelClient:
-    backend = get_model_config().backend
-    try:
-        return _BACKENDS[backend]()
-    except KeyError as exc:
-        raise ValueError(
-            f"Unknown MODEL_BACKEND '{backend}'. Available: {list(_BACKENDS)}"
-        ) from exc
+def get_model_client(model_override: str | None = None) -> ModelClient:
+    """Return a ModelClient for the active connection in models.yaml.
+
+    model_override pins a specific model name — used by the benchmark runner
+    to iterate over discovered Azure deployments.
+    """
+    conn = get_active_connection(model_override=model_override)
+    if conn.backend == "anthropic":
+        return AnthropicClient()
+    if conn.backend == "azure":
+        model = model_override or (conn.models[0] if conn.models else "")
+        if not model:
+            raise ValueError(
+                f"Connection '{conn.id}' has no model specified and model_override was not given. "
+                "Run the benchmark (make benchmark) to auto-discover available deployments."
+            )
+        return AzureFoundryClient(
+            model=model,
+            api_key=conn.api_key,
+            endpoint=conn.endpoint,
+            timeout=conn.timeout,
+        )
+    raise ValueError(
+        f"Unknown backend '{conn.backend}' for connection '{conn.id}'. "
+        f"Available: {sorted(_BACKENDS)}"
+    )
