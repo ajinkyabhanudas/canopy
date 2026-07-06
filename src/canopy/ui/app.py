@@ -232,12 +232,16 @@ def _run_query_handler(
     count = result.row_count
     count_md = t("count_row_singular", n=count) if count == 1 else t("count_row_plural", n=count)
     timing = result.timing
+    model_label = ""
+    if timing.get("connection_id") and timing.get("model"):
+        model_label = f" · {timing['connection_id']}/{timing['model']}"
+
     if timing.get("cache_hit"):
-        timing_md = t("timing_cached")
+        timing_md = t("timing_cached") + model_label
         sql_display = result.sql or ""
     else:
         total = timing.get("total_s", 0)
-        timing_md = t("timing_live", total=total)
+        timing_md = t("timing_live", total=total) + model_label
         n_calls = timing.get("llm_calls", 0)
         if result.sql:
             call_s = "calls" if n_calls != 1 else "call"
@@ -245,6 +249,7 @@ def _run_query_handler(
                 f"\n-- {total:.1f}s total · "
                 f"LLM {timing.get('llm_s', 0):.1f}s ({n_calls} {call_s}) · "
                 f"DB {timing.get('db_s', 0):.3f}s"
+                f" · {timing.get('connection_id', '')}/{timing.get('model', '')}"
             )
             sql_display = result.sql + dev_comment
         else:
