@@ -3,17 +3,23 @@
 # Each connection has:
 #   id          — used as MODEL_BACKEND value and in benchmark output
 #   backend     — "anthropic" or "azure"
-#   endpoint    — Azure only; the Foundry inference base URL for this resource
+#   api_style   — Azure only; one of:
+#                   "azure-inference"   (default) azure-ai-inference SDK, /models endpoint
+#                   "openai-compat"     OpenAI SDK, /openai/v1/chat/completions
+#                   "openai-responses"  urllib POST to /openai/v1/responses (Responses API)
+#   active      — false = skip in benchmark until deployment is activated by admin
+#   endpoint    — Azure only; base URL for this connection path
 #   api_key_env — name of the .env variable that holds the API key
 #   models      — list of deployment names to test; empty list = auto-discover
 #   timeout     — optional, seconds (default: 60)
 #
-# Adding a new Azure resource:
-#   1. Add AZURE_<NAME>_API_KEY to .env
-#   2. Add an entry here with api_key_env pointing to that variable
-#   No code changes needed.
+# All four capa connections share the same key (AZURE_CAPA_API_KEY) on the
+# same resource (capa-4249-resource). The endpoint path differs per deployment.
 
 connections:
+  # ------------------------------------------------------------------
+  # Anthropic (personal key — Azure does not support Anthropic models)
+  # ------------------------------------------------------------------
   - id: claude-sonnet
     backend: anthropic
     api_key_env: ANTHROPIC_API_KEY
@@ -21,17 +27,60 @@ connections:
       - claude-sonnet-4-6
     timeout: 60
 
-  - id: capa
+  # ------------------------------------------------------------------
+  # Azure capa — gpt-5.1-codex-mini (OpenAI Responses API, active)
+  # POST /openai/v1/responses — different request/response shape from
+  # chat completions; handled by AzureResponsesClient
+  # ------------------------------------------------------------------
+  - id: gpt-5.1-codex-mini
     backend: azure
-    endpoint: https://capa-4249-resource.services.ai.azure.com/models
+    api_style: openai-responses
+    active: true
+    endpoint: https://capa-4249-resource.services.ai.azure.com/openai/v1/
     api_key_env: AZURE_CAPA_API_KEY
-    models: []   # add deployment names here once models are deployed on the resource
+    models:
+      - gpt-5.1-codex-mini
     timeout: 60
 
-  # Template for a second Azure resource:
-  # - id: capa-east
-  #   backend: azure
-  #   endpoint: https://other-resource.services.ai.azure.com/models
-  #   api_key_env: AZURE_EAST_API_KEY
-  #   models: []
-  #   timeout: 60
+  # ------------------------------------------------------------------
+  # Azure capa — gpt-5.1-2 (project endpoint, deferred)
+  # Correct api-version unknown — no working version found across 13+
+  # attempts. Marked inactive until admin provides the version string.
+  # ------------------------------------------------------------------
+  - id: gpt-5.1-2
+    backend: azure
+    api_style: azure-inference
+    active: false
+    endpoint: https://capa-4249-resource.services.ai.azure.com/api/projects/capa-4249
+    api_key_env: AZURE_CAPA_API_KEY
+    models:
+      - gpt-5.1-2
+    timeout: 60
+
+  # ------------------------------------------------------------------
+  # Azure capa — Phi-4 (inactive until admin activates the deployment)
+  # Standard OpenAI-compatible chat completions path
+  # ------------------------------------------------------------------
+  - id: phi-4
+    backend: azure
+    api_style: openai-compat
+    active: false
+    endpoint: https://capa-4249-resource.services.ai.azure.com/openai/v1/
+    api_key_env: AZURE_CAPA_API_KEY
+    models:
+      - Phi-4
+    timeout: 60
+
+  # ------------------------------------------------------------------
+  # Azure capa — Qwen3-4B (inactive until admin activates the deployment)
+  # Standard OpenAI-compatible chat completions path
+  # ------------------------------------------------------------------
+  - id: qwen-3-4b
+    backend: azure
+    api_style: openai-compat
+    active: false
+    endpoint: https://capa-4249-resource.services.ai.azure.com/openai/v1/
+    api_key_env: AZURE_CAPA_API_KEY
+    models:
+      - qwen--qwen3-4b-instruct-2507
+    timeout: 60

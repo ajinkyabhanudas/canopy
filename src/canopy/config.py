@@ -53,6 +53,8 @@ class ModelConnection:
     models: list[str] = field(default_factory=list)
     endpoint: str = ""
     timeout: float = 60.0
+    api_style: str = "azure-inference"  # "azure-inference" | "openai-compat" | "openai-responses"
+    active: bool = True                 # False = skip in benchmark until admin activates
 
 
 def _models_yaml_path() -> Path:
@@ -87,6 +89,8 @@ def load_model_connections(path: str | Path | None = None) -> list[ModelConnecti
                 models=entry.get("models") or [],
                 endpoint=entry.get("endpoint", ""),
                 timeout=float(entry.get("timeout", 60)),
+                api_style=entry.get("api_style", "azure-inference"),
+                active=entry.get("active", True),
             )
         )
 
@@ -113,6 +117,8 @@ def get_active_connection(model_override: str | None = None) -> ModelConnection:
                     models=[model_override],
                     endpoint=conn.endpoint,
                     timeout=conn.timeout,
+                    api_style=conn.api_style,
+                    active=conn.active,
                 )
             return conn
     available = [c.id for c in connections]

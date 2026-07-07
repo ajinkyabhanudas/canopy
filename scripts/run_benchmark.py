@@ -437,6 +437,9 @@ def main() -> None:
     print(f"Cases per model: {total_cases}  |  Model cap: {MAX_TESTED_MODELS} per connection")
 
     for conn in connections:
+        if not conn.active:
+            print(f"\n[SKIP] {conn.id}: marked inactive in models.yaml — activate before benchmarking")  # noqa: E501
+            continue
         if not conn.api_key:
             print(f"\n[SKIP] {conn.id}: api_key_env not set in env — skipping")
             continue
