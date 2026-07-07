@@ -90,9 +90,11 @@ def test_language_gate_rejects_french_question(page: Page, canopy_url: str) -> N
     unsupported-language error and no SQL is generated (no API call made).
     """
     _submit(page, canopy_url, "Combien d'espèces ont été détectées en 2023?")
-    expect(page.get_by_text("English or Spanish", exact=False)).to_be_visible(
-        timeout=_TIMEOUT
-    )
+    # Scope to the response tab — "English or Spanish" also appears in the subtitle
+    # and the idle-prompt constraints section, causing strict-mode ambiguity.
+    expect(
+        page.locator(".tabitem").get_by_text("English or Spanish", exact=False)
+    ).to_be_visible(timeout=_TIMEOUT)
 
 
 def test_language_gate_status_indicator_shown(page: Page, canopy_url: str) -> None:
