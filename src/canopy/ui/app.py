@@ -228,13 +228,15 @@ def _run_query_handler(
 
     result = result_holder[0]
     rows = [list(row) for row in result.rows]
-    df = gr.Dataframe(value=rows or None, headers=result.columns)
+    df = gr.Dataframe(value=rows or None, headers=result.columns or None)
     count = result.row_count
     count_md = t("count_row_singular", n=count) if count == 1 else t("count_row_plural", n=count)
     timing = result.timing
     model_label = ""
-    if timing.get("connection_id") and timing.get("model"):
-        model_label = f" · {timing['connection_id']}/{timing['model']}"
+    conn_id = timing.get("connection_id")
+    model_name = timing.get("model")
+    if conn_id and model_name:
+        model_label = f" · {conn_id}" if conn_id == model_name else f" · {conn_id}/{model_name}"
 
     if timing.get("cache_hit"):
         timing_md = t("timing_cached") + model_label
@@ -271,9 +273,20 @@ def _run_query_handler(
     )
 
 
-def _clear_handler() -> tuple:
+def _clear_handler(current_question: str) -> tuple:
+    """Clear history list and all result panels. Preserve the question box text."""
     clear_history()
-    return gr.Radio(choices=[]), "", _IDLE_PROMPT, []
+    return (
+        gr.Radio(choices=[]),   # history_radio — empty
+        current_question,       # question_box — preserve what user typed
+        _IDLE_PROMPT,           # response_box — reset to idle
+        "",                     # row_count_md
+        gr.Dataframe(value=None, headers=None),  # results_table
+        "",                     # sql_box
+        "",                     # timing_md
+        "",                     # status_md
+        [],                     # history_state
+    )
 
 
 def build_app() -> gr.Blocks:
@@ -360,7 +373,12 @@ def build_app() -> gr.Blocks:
         )
         clear_btn.click(
             fn=_clear_handler,
-            outputs=[history_radio, question_box, response_box, history_state],
+            inputs=[question_box],
+            outputs=[
+                history_radio, question_box, response_box,
+                row_count_md, results_table, sql_box,
+                timing_md, status_md, history_state,
+            ],
         )
 
     return app
