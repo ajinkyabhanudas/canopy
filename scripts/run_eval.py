@@ -143,8 +143,20 @@ def _run_suite(
             continue
         except Exception as exc:
             elapsed = time.monotonic() - t0
-            print(f"      [FAIL]  {elapsed:.1f}s  exception: {exc}")
-            failed_labels.append(label)
+            err_str = str(exc)
+            # Azure content management policy 400 = model blocked a hostile prompt correctly.
+            # Same as run_benchmark.py — catches both RuntimeError and openai.BadRequestError.
+            content_filtered = (
+                "content management policy" in err_str.lower()
+                or "content_filter" in err_str.lower()
+                or "ResponsibleAIPolicyViolation" in err_str
+            )
+            if guard_error_is_pass and content_filtered:
+                print(f"      [PASS]  {elapsed:.1f}s  content filter blocked hostile prompt")
+                passed += 1
+            else:
+                print(f"      [FAIL]  {elapsed:.1f}s  exception: {exc}")
+                failed_labels.append(label)
             continue
 
         status = "PASS" if ok else "FAIL"

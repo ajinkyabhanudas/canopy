@@ -55,10 +55,11 @@ from tests.eval.queries import EVAL_CASES  # noqa: E402
 # Pricing constants — $/1K tokens. Update if Azure pricing changes.
 # ---------------------------------------------------------------------------
 _PRICING: dict[str, dict[str, float]] = {
-    "claude-sonnet-4-6": {"in": 0.003, "out": 0.015},
-    "claude-sonnet":     {"in": 0.003, "out": 0.015},
-    # Default Azure estimate — update per-model if actual pricing is known
-    "_azure_default":    {"in": 0.002, "out": 0.008},
+    "claude-sonnet-4-6":  {"in": 0.003,   "out": 0.015},
+    "claude-sonnet":      {"in": 0.003,   "out": 0.015},
+    "gpt-5.1-codex-mini": {"in": 0.00075, "out": 0.003},
+    "gpt-5.1-2":          {"in": 0.003,   "out": 0.012},
+    "_azure_default":     {"in": 0.002,   "out": 0.008},  # fallback for unknown Azure models
 }
 
 _OUT_DIR = _REPO_ROOT / "benchmark_results"
@@ -168,11 +169,12 @@ def _run_case(
             input_tokens=0, output_tokens=0, cost_usd=0.0,
             error=f"SQLGuardError: {exc}",
         )
-    except RuntimeError as exc:
+    except Exception as exc:
         latency = time.monotonic() - t0
         err_str = str(exc)
-        # Azure content management policy 400 on adversarial inputs = the model
-        # correctly refused a hostile prompt. That is a PASS for adversarial cases.
+        # Azure content management policy 400 = model correctly blocked a hostile
+        # prompt. Applies to both RuntimeError (AzureResponsesClient) and
+        # openai.BadRequestError (AzureOpenAICompatClient). PASS for adversarial cases.
         content_filtered = (
             "content management policy" in err_str.lower()
             or "content_filter" in err_str.lower()
@@ -185,15 +187,6 @@ def _run_case(
             passed=passed, latency_s=round(latency, 2),
             input_tokens=0, output_tokens=0, cost_usd=0.0,
             error=err_str[:200],
-        )
-    except Exception as exc:
-        latency = time.monotonic() - t0
-        return CaseResult(
-            conn_id=conn_id, backend=backend, model=model,
-            suite=suite, case_id=case_id, question=case.question,
-            passed=False, latency_s=round(latency, 2),
-            input_tokens=0, output_tokens=0, cost_usd=0.0,
-            error=str(exc),
         )
 
 
