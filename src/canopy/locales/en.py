@@ -19,7 +19,14 @@ STRINGS: dict[str, str] = {
         "→ How many confirmed species were detected at each reserve in 2023?  \n"
         "→ Which sites had the most activity last year?  \n"
         "→ Show me all Jocotoco Antpitta detections since 2022.  \n"
-        "→ How many detections are awaiting human review at each site?"
+        "→ How many detections are awaiting human review at each site?\n\n"
+        "---\n\n"
+        "**This tool cannot:**  \n"
+        "✗ Assess population trends or conservation status"
+        " — that requires formal scientific review  \n"
+        "✗ Answer questions in languages other than English or Spanish  \n"
+        "✗ Look up IUCN Red List categories — not stored in this database  \n"
+        "✗ Identify species by common name (e.g. \"birds\") — use scientific names"
     ),
     # Streaming status messages
     "status_reading":       "Reading your question…",

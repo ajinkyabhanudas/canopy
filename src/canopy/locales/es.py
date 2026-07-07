@@ -16,7 +16,15 @@ STRINGS: dict[str, str] = {
         "→ ¿Cuántas especies confirmadas se detectaron en cada reserva en 2023?  \n"
         "→ ¿Qué sitios tuvieron más actividad el año pasado?  \n"
         "→ Mostrar todas las detecciones de Grallaria ridgelyi desde 2022.  \n"
-        "→ ¿Cuántas detecciones están esperando revisión humana en cada sitio?"
+        "→ ¿Cuántas detecciones están esperando revisión humana en cada sitio?\n\n"
+        "---\n\n"
+        "**Esta herramienta no puede:**  \n"
+        "✗ Evaluar tendencias poblacionales o estado de conservación"
+        " — requiere revisión científica formal  \n"
+        "✗ Responder preguntas en idiomas distintos al inglés o español  \n"
+        "✗ Consultar categorías de la Lista Roja de la UICN"
+        " — no están en esta base de datos  \n"
+        "✗ Identificar especies por nombre común (p. ej. \"aves\") — use nombres científicos"
     ),
     # Streaming status messages
     "status_reading":       "Leyendo su pregunta…",
