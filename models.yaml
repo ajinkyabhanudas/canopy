@@ -19,10 +19,13 @@
 connections:
   # ------------------------------------------------------------------
   # Anthropic (personal key — Azure does not support Anthropic models)
+  # active: false — API credits exhausted; re-enable after topping up
+  # at console.anthropic.com
   # ------------------------------------------------------------------
   - id: claude-sonnet
     backend: anthropic
     api_key_env: ANTHROPIC_API_KEY
+    active: false
     models:
       - claude-sonnet-4-6
     timeout: 60

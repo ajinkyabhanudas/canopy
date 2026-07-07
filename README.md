@@ -105,9 +105,9 @@ corresponding `AZURE_<NAME>_API_KEY` to `.env`. No code changes needed.
 
 | Variable | Required | Description |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | If using Anthropic | Anthropic API key |
-| `AZURE_CAPA_API_KEY` | If using Azure | Key for the `capa` connection in models.yaml |
-| `MODEL_BACKEND` | No | Active connection `id` from models.yaml (default: `claude-sonnet`) |
+| `ANTHROPIC_API_KEY` | If using Anthropic | Anthropic API key (requires separate API credits at console.anthropic.com) |
+| `AZURE_CAPA_API_KEY` | If using Azure | Key for all capa connections in models.yaml |
+| `MODEL_BACKEND` | No | Active connection `id` from models.yaml (default: `gpt-5.1-codex-mini`) |
 | `PG_HOST` | Yes | PostgreSQL host |
 | `PG_PORT` | Yes | PostgreSQL port (usually `5432`) |
 | `PG_DBNAME` | Yes | Database name |
@@ -226,8 +226,8 @@ startup warnings, and HTTP availability. Run it after any Dockerfile or Gradio c
 
 ## Multi-model benchmark
 
-`make benchmark` runs all connections declared in `models.yaml` — Anthropic and any Azure AI
-Foundry endpoints — against the full eval suite and prints a comparison table:
+`make benchmark` runs all active connections declared in `models.yaml` against the full
+eval suite and prints a comparison table:
 
 ```
 ════════════════════════════════════════════════════════════════════════════════
@@ -236,11 +236,14 @@ Foundry endpoints — against the full eval suite and prints a comparison table:
 ════════════════════════════════════════════════════════════════════════════════
   Connection           Model                          GT%   ADV%  Lat(s)  Tokens       $
   ────────────────────────────────────────────────────────────────────────────
-  claude-sonnet        claude-sonnet-4-6              87%   100%    1.2    4100   0.052
-  capa                 gpt-4o                         84%   100%    0.9    3900   0.031
-  capa                 gpt-4.1-mini                   81%    90%    0.6    3700   0.011
+  gpt-5.1-codex-mini   gpt-5.1-codex-mini             90%    80%   13.5   18420   0.037
+  gpt-5.1-2            gpt-5.1-2                      90%    80%   12.8   17910   0.036
 ════════════════════════════════════════════════════════════════════════════════
 ```
+
+Connections marked `active: false` in `models.yaml` are skipped. Currently inactive:
+`claude-sonnet` (Anthropic API credits required — re-enable at console.anthropic.com),
+`phi-4`, `qwen-3-4b` (pending admin deployment activation).
 
 Columns: **GT%** = ground-truth pass rate (31 cases, target ≥85%), **ADV%** = adversarial
 pass rate (10 cases, must be 100%), **Lat(s)** = average latency, **Tokens** = total
@@ -254,116 +257,34 @@ deployments available, the extras are listed in the JSON output under `available
 and printed at the end of the run — they are not benchmarked but are tracked as a running
 record of what is deployed on each resource.
 
-### Available models — capa (Azure AI Foundry)
+### Available models — gpt-5.1-codex-mini
 
 <!-- Updated automatically by make benchmark. Do not edit by hand. -->
 | Status | Model |
 |--------|-------|
-| — | *(no deployments recorded yet — run `make benchmark` after deploying a model)* |
+| tested | `gpt-5.1-codex-mini` |
 
----
+### Available models — gpt-5.1-2
 
-## Eval suites
+<!-- Updated automatically by make benchmark. Do not edit by hand. -->
+| Status | Model |
+|--------|-------|
+| tested | `gpt-5.1-2` |
 
-Three live eval suites — all require `ANTHROPIC_API_KEY` and `PG_*` vars.
+### Available models — gpt-5.1-2
 
-```bash
-# Ground-truth + adversarial (default)
-python scripts/run_eval.py
+<!-- Updated automatically by make benchmark. Do not edit by hand. -->
+| Status | Model |
+|--------|-------|
+| tested | `gpt-5.1-2` |
 
-# Ground-truth only
-python scripts/run_eval.py --ground-truth
+### Available models — gpt-5.1-codex-mini
 
-# Adversarial only
-python scripts/run_eval.py --adversarial
+<!-- Updated automatically by make benchmark. Do not edit by hand. -->
+| Status | Model |
+|--------|-------|
+| tested | `gpt-5.1-codex-mini` |
 
-# Spanish language variants (8 GT cases in Spanish)
-python scripts/run_eval.py --spanish
-
-# Full: ground-truth + Spanish + adversarial
-python scripts/run_eval.py --spanish
-```
-
-**Ground-truth** — 31 questions covering SQL correctness, result shape,
-guardrail adherence, faithfulness (model_text numbers match DB rows),
-guardrail bypass variants, and time-relative / live-count queries. Pass threshold: ≥87% (27/31).
-
-**Spanish variants** — 8 parallel cases in Spanish. Same SQL structure checks
-as their English equivalents (SQL is always English regardless of question
-language). Soft check: model_text must contain Spanish-specific characters.
-
-**Adversarial** — 9 hostile inputs: prompt injection, SQL injection in question
-text, persona/roleplay bypass, system prompt extraction, credentials request,
-conservation-status judgment request, and hallucination boundary (fabricated
-species names → zero rows). Pass threshold: 100% (9/9). A `SQLGuardError`
-from the security guard counts as PASS — a blocked attack is the correct outcome.
-
----
-
-## More screenshots
-
-**Spanish query** — question in Spanish, response in Spanish; SQL is always generated in English regardless
-
-![Spanish species query](docs/screenshots/05-spanish-species-answer.png)
-
-**SQL tab** — the generated query is shown for every result so answers can be verified
-
-![SQL tab](docs/screenshots/03-english-count-sql.png)
-
-**Full data table** — raw rows available alongside the plain-language answer
-
-![Data table](docs/screenshots/07-spanish-pending-table.png)
-
----
-
-## Architecture
-
-```
-src/canopy/
-├── config.py          # Env var + models.yaml loading — ModelConnection, get_active_connection()
-├── schema.py          # DB schema constant + build_system_prompt() (language instruction included)
-├── i18n.py            # set_locale(), t() — UI string localisation singleton
-├── locales/
-│   ├── en.py          # English string catalog (30 keys — source of truth)
-│   └── es.py          # Spanish string catalog
-├── _json.py           # Shared JSON encoder (Decimal, datetime) for cache + history
-├── history.py         # append_history, load_history, clear_history (JSONL)
-├── cache.py           # lookup_cache, write_cache — SHA-256+NFC key, 24h TTL, LRU evict
-│                      # cache key includes connection_id + model to prevent cross-model poisoning
-├── models/
-│   ├── base.py        # ModelClient ABC — vendor-neutral interface
-│   ├── anthropic.py   # Claude adapter
-│   ├── azure.py       # Azure AI Foundry adapter (OpenAI-compatible endpoint)
-│   └── registry.py    # get_model_client() — reads models.yaml via get_active_connection()
-├── db/
-│   └── connection.py  # get_connection() — psycopg2, read-only
-├── query/
-│   ├── executor.py    # execute_query() — SELECT-only guard + execution
-│   └── loop.py        # run_query() — agentic loop, returns LoopResult
-└── ui/
-    └── app.py         # build_app() — Gradio two-panel UI (all strings via t())
-
-models.yaml            # Connection registry — safe to commit, no secrets
-                       # api_key_env field references .env variable names
-
-scripts/
-├── docker_run.sh      # Docker launcher (handles .env quote stripping)
-├── run_ui.py          # Local UI launcher
-├── smoke_test.py      # API key / model config check
-├── run_eval.py        # Eval runner — ground-truth + adversarial suites
-└── run_benchmark.py   # Multi-model benchmark — discovers models, runs evals, prints table
-
-benchmark_results/     # Timestamped JSON + CSV benchmark outputs (git-ignored)
-
-tests/
-├── conftest.py        # autouse fixture — redirects CANOPY_DATA_DIR to tmp_path per test
-├── test_models_azure.py  # AzureFoundryClient unit tests + Anthropic return-type regression
-└── eval/
-    ├── queries.py     # 31 EvalCase entries (8 with Spanish translation_es)
-    └── adversarial.py # 10 adversarial cases — injection, persona bypass, hallucination boundary
-
-Dockerfile             # python:3.11-slim, non-root user, /data volume
-```
 
 ### Key design decisions
 
