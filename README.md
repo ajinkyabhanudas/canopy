@@ -222,7 +222,7 @@ make test           # unit tests only
 make smoke          # Docker runtime validation (requires Docker)
 ```
 
-Expected unit test result: **338 passed**, ~88% coverage.
+Expected unit test result: **367 passed**, ~88% coverage.
 
 The smoke test validates what `pytest` cannot: Docker volume permissions, Gradio
 startup warnings, and HTTP availability. Run it after any Dockerfile or Gradio change.
@@ -232,17 +232,16 @@ startup warnings, and HTTP availability. Run it after any Dockerfile or Gradio c
 `make benchmark` runs all active connections declared in `models.yaml` against the full
 eval suite and prints a comparison table:
 
-```
-════════════════════════════════════════════════════════════════════════════════
-  CANOPY MODEL BENCHMARK — 41 cases
-  Run: 2026-07-07 12:34 UTC
-════════════════════════════════════════════════════════════════════════════════
-  Connection           Model                          GT%   ADV%  Lat(s)  Tokens       $
-  ────────────────────────────────────────────────────────────────────────────
-  gpt-5.1-codex-mini   gpt-5.1-codex-mini             90%    80%   13.5   18420   0.037
-  gpt-5.1-2            gpt-5.1-2                      90%    80%   12.8   17910   0.036
-════════════════════════════════════════════════════════════════════════════════
-```
+| Connection | Model | GT% | ADV% | Lat(s) | Tokens | $ (run) | $/1K in | $/1K out |
+|---|---|---|---|---|---|---|---|---|
+| gpt-5.1-codex-mini | gpt-5.1-codex-mini | 90% | 80% | 13.5 | 18 420 | $0.037 | $0.00075 | $0.003 |
+| gpt-5.1-2 | gpt-5.1-2 | 90% | 80% | 12.8 | 17 910 | $0.036 | $0.003 | $0.012 |
+
+> **Why does codex-mini cost slightly more on this run?** Per-token rates are 4× cheaper
+> than gpt-5.1-2, but this 41-case run happened to generate ~500 more tokens (reasoning
+> traces are verbose on some cases). At scale the per-token gap dominates — codex-mini
+> costs roughly 4× less per query. The `$` column reflects run totals; the `$/1K` columns
+> show the actual unit economics.
 
 Connections marked `active: false` in `models.yaml` are skipped. Currently inactive:
 `claude-sonnet` (Anthropic API credits required — re-enable at console.anthropic.com),
@@ -250,7 +249,7 @@ Connections marked `active: false` in `models.yaml` are skipped. Currently inact
 
 Columns: **GT%** = ground-truth pass rate (31 cases, target ≥85%), **ADV%** = adversarial
 pass rate (10 cases, must be 100%), **Lat(s)** = average latency, **Tokens** = total
-prompt+completion tokens across all cases, **$** = estimated cost at published rates.
+prompt+completion tokens across all cases, **$** = estimated total cost at published rates.
 
 Results are also written to `benchmark_results/benchmark_<timestamp>.json` and `.csv`
 for reproducible records and trend tracking.
