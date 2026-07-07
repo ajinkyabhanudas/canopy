@@ -232,23 +232,25 @@ startup warnings, and HTTP availability. Run it after any Dockerfile or Gradio c
 `make benchmark` runs all active connections declared in `models.yaml` against the full
 eval suite and prints a comparison table:
 
-| Connection | Model | GT% | ADV% | Lat(s) | $/1K in | $/1K out | Cost ratio |
+| Connection | GT% | ADV% | Lat(s) | Tokens | $ (41 cases) | $/1K in | $/1K out |
 |---|---|---|---|---|---|---|---|
-| gpt-5.1-codex-mini | gpt-5.1-codex-mini | 90% | 80% | 13.5 | $0.00075 | $0.003 | **1×** (baseline) |
-| gpt-5.1-2 | gpt-5.1-2 | 90% | 80% | 12.8 | $0.003 | $0.012 | ~4× more expensive |
+| gpt-5.1-codex-mini | **94%** | **100%** | 12.3s | 305,687 | **$0.308** | $0.00075 | $0.003 |
+| gpt-5.1-2 | 97% | 80% | 11.5s | 327,934 | $1.140 | $0.003 | $0.012 |
 
-> **Run cost (`$`) is omitted** — prior benchmark runs hit the query cache for most cases,
-> producing zero token counts and meaningless totals. `make benchmark` now clears the cache
-> before each model run. Re-run to get accurate per-model totals. The per-token rates above
-> are the ground truth; at any token volume codex-mini is ~4× cheaper than gpt-5.1-2.
+> **codex-mini is the default** — 3.7× cheaper ($0.308 vs $1.140 on this 41-case run) and
+> scores higher on adversarial cases (100% vs 80%). gpt-5.1-2 scores 3% higher on
+> ground-truth but fails two adversarial cases: A02 (SQL injection) and A09 (language gate
+> bypass via French). The single shared failure is Q27 ("informal planning notes" framing —
+> both models reason about trends instead of declining). Run `make benchmark` to refresh; the
+> cache is now cleared before each model run so token and cost totals reflect live API usage.
 
 Connections marked `active: false` in `models.yaml` are skipped. Currently inactive:
 `claude-sonnet` (Anthropic API credits required — re-enable at console.anthropic.com),
 `phi-4`, `qwen-3-4b` (pending admin deployment activation).
 
 Columns: **GT%** = ground-truth pass rate (31 cases, target ≥85%), **ADV%** = adversarial
-pass rate (10 cases, must be 100%), **Lat(s)** = average latency, **Tokens** = total
-prompt+completion tokens across all cases, **$** = estimated total cost at published rates.
+pass rate (10 cases, target 100%), **Lat(s)** = average latency per case, **Tokens** = total
+prompt+completion tokens across all 41 cases, **$** = estimated cost at published Azure rates.
 
 Results are also written to `benchmark_results/benchmark_<timestamp>.json` and `.csv`
 for reproducible records and trend tracking.
