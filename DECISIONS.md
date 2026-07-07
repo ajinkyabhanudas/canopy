@@ -64,6 +64,12 @@
 |---|---|---|---|
 | U1 | UI framework | Gradio Blocks | 🔄 Revisit |
 
+### 🤖 Model Selection
+
+| # | Decision | Chosen approach | Verdict |
+|---|---|---|---|
+| M1 | Primary model tier | Azure AI Foundry (gpt-5.1-codex-mini + gpt-5.1-2); Claude Sonnet inactive | ⚠️ Caveat |
+
 ### ⚙️ Operations
 
 | # | Decision | Chosen approach | Verdict |
@@ -708,6 +714,52 @@ prior `chown` would create the volume as root:root and deny writes to the non-ro
 > **Audit verdict — ✅ Sound**
 >
 > The design is correct and the volume ownership issue has been resolved in the Dockerfile directly (2026-06-27). The previous caveat about entrypoint.sh is no longer applicable.
+
+---
+
+## 🤖 Model Selection
+
+---
+
+### M1 — Primary model tier: Azure AI Foundry over Claude Sonnet
+
+> **Files:** `models.yaml` · `src/canopy/models/azure_responses.py` · `src/canopy/models/azure_compat.py` · `src/canopy/models/registry.py` · `src/canopy/config.py`
+
+**Decision:** Canopy uses Azure AI Foundry models (gpt-5.1-codex-mini via Responses API, gpt-5.1-2 via OpenAI-compat endpoint) as the active model tier. Claude Sonnet 4.6 (Anthropic API) is wired but marked `active: false` — requires separate API credits at console.anthropic.com.
+
+**Context:** Claude Sonnet was the original primary model during development. Anthropic API credits are billed per-token separately from the Claude Pro subscription — they require an explicit top-up at console.anthropic.com. When credits ran out in the current billing cycle, Azure AI Foundry was fully wired and activated. The two Azure models passed the benchmark at 97% GT / 90% ADV (gpt-5.1-codex-mini) and 100% GT / 90% ADV (gpt-5.1-2).
+
+**Capability comparison — Claude Sonnet 4.6 vs current Azure tier:**
+
+| Capability | Claude Sonnet 4.6 | gpt-5.1-codex-mini | gpt-5.1-2 |
+|---|---|---|---|
+| Ground-truth SQL accuracy (31 cases) | ~97% (historic) | 97% | **100%** |
+| Adversarial eval (10 cases) | 100% (historic) | 90% | 90% |
+| Language instruction compliance (non-EN/ES) | ✅ Full — followed model instruction | ❌ Fails A09 — responds in French | ❌ Fails A09 — responds in French |
+| Guardrail soft-bypass (Q24–Q27) | ✅ All 4 declined | ✅ 3/4 declined (Q27 FAIL) | ✅ All 4 declined |
+| Content filter on hostile prompts | n/a (Anthropic-side safety) | ✅ Azure content policy triggers 400 | ✅ Azure content policy triggers 400 |
+| Tool call support | ✅ Native | ✅ Responses API (`type=function_call`) | ✅ OpenAI-compat tool calls |
+| Average latency (live cases) | ~8–12s | ~8–14s | ~8–29s |
+
+**Why the A09 language compliance gap matters:**
+
+The eval case A09 submits a French question (`"Combien d'espèces ont été détectées en 2023?"`). The primary language gate in `app.py` rejects this **before it reaches the model** — so real users are never affected. A09 specifically tests the fallback secondary layer (model instruction in `schema.py`) for code paths that call `run_query()` directly, bypassing the UI gate (e.g. scripts, API integrations, future CLI). Claude Sonnet complied with the secondary instruction reliably; both Azure models do not. This is a known compliance gap in the secondary layer only.
+
+**Mitigation in place:** The primary gate (`app.py` `_check_language()`) enforces EN/ES for all UI users before any API call is made. The secondary instruction is retained as belt-and-suspenders. A language normalisation gate inside `run_query()` itself would close the gap permanently — deferred.
+
+**Re-enable Claude Sonnet:** Change `active: false` → `active: true` in `models.yaml` under the `claude-sonnet` entry and add credits to the account at console.anthropic.com. No code changes required. The `AnthropicClient` adapter is still present and tested.
+
+**Alternatives considered:**
+
+| Alternative | Why not chosen |
+|---|---|
+| Force-translate non-EN responses at application layer | Adds translation latency and cost; changes the answer text in non-verifiable ways; treats a symptom not the cause |
+| Use a smaller, cheaper Anthropic model (e.g. Haiku) | Haiku billing is also per-token on the API (not covered by Pro); quality gap for complex SQL would need re-eval |
+| Enforce language compliance with a post-processing filter | Would require a second LLM call or regex; brittle against code-switching; not worth the complexity for a secondary-layer fallback |
+
+> **Audit verdict — ⚠️ Caveat**
+>
+> The primary language gate holds. The SQL accuracy results are strong — gpt-5.1-2 matches or exceeds Claude Sonnet on ground-truth, and the content filter behaviour on Azure is an equivalent (if differently implemented) safety control. The genuine gap is secondary-layer language instruction compliance: both Azure models failed A09 in independent benchmark runs, and the gap is structural (model behaviour, not a prompt issue). This is documented and accepted for the current billing cycle. Re-enabling Claude Sonnet or closing the gap with an in-loop language normaliser are the two remediation paths.
 
 ---
 

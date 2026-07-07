@@ -276,8 +276,6 @@ record of what is deployed on each resource.
 
 
 
-
-
 ### Key design decisions
 
 - **SELECT-only guard + read-only connection** — `execute_query()` rejects

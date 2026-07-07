@@ -101,7 +101,33 @@ Latitude and longitude columns are stripped before the AI model processes result
 Spatial queries (e.g. "which detections were within 5 km of reserve boundary")
 cannot be answered by Canopy.
 
-### 9. Cache staleness for live-count and time-anchored queries
+### 9. Language instruction compliance — secondary layer only (Azure models)
+
+**Severity:** Low — does not affect UI users; affects direct `run_query()` callers only.
+
+The primary language gate in `app.py` rejects non-English/Spanish questions before any
+model call is made. A secondary instruction in `schema.py` tells the model to respond in
+English if it detects another language — this is the fallback for code paths that call
+`run_query()` directly (scripts, integrations, future CLI).
+
+Claude Sonnet 4.6 followed this secondary instruction reliably. Both current Azure models
+(gpt-5.1-codex-mini, gpt-5.1-2) do not — a French question submitted via `run_query()`
+directly returns a French-language answer despite the instruction. This is confirmed by
+eval case A09 across multiple benchmark runs.
+
+**Who is affected:** UI users are fully protected — the primary gate fires first. Only
+callers that bypass `app.py` (direct `run_query()` calls) are exposed to this gap.
+
+**Workaround:** All queries routed through the Gradio UI are unaffected. For programmatic
+use, callers should enforce language on the input side before calling `run_query()`.
+
+**Long-term fix:** Add a language normalisation guard inside `run_query()` itself, upstream
+of the model call, so the secondary layer becomes structural rather than instructional.
+See DECISIONS.md § M1.
+
+---
+
+### 10. Cache staleness for live-count and time-anchored queries
 
 Responses are cached for 24 hours, keyed on question text. Queries whose correct
 answer changes within that window will return the same answer for up to 24 hours
@@ -127,6 +153,10 @@ cache invalidation webhook on data upload; shorter TTL for high-churn query patt
 | Gap | Priority | Status |
 |---|---|---|
 | No eval case checks that `validation_status = 'approved'` filter appears in SQL | High | ✅ Closed — Q31 added 2026-06-30 |
+| A09 secondary-layer language compliance fails on both Azure models | Medium | ✅ Documented — primary gate protects UI; secondary-layer gap acknowledged in DECISIONS.md § M1 |
+| Q27 guardrail soft-bypass fails on gpt-5.1-codex-mini (conservation priority framing) | Medium | Open — model-compliance issue; gpt-5.1-2 passes; no code fix available |
 | No eval case for common-name group queries (birds, frogs) | Medium | Open |
 | No eval case that verifies missing-year gaps are noted explicitly in model response | Low | Open |
-| Cache staleness handling for time-relative queries untested at the UI level | Medium | Open |
+| Cache staleness handling for time-relative queries untested at the UI level | Medium | Open — E2E mock suite added 2026-07-07, live cache test deferred |
+| No E2E test covering the language gate UI path (French question rejected) | Medium | ✅ Closed — added 2026-07-07 |
+| No E2E test covering guardrail response (conservation decline) | Medium | ✅ Closed — added 2026-07-07 |
