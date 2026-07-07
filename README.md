@@ -88,16 +88,19 @@ no secrets). Each connection points to an API key env var by name:
 
 ```yaml
 connections:
-  - id: claude-sonnet          # matches MODEL_BACKEND value
+  - id: gpt-5.1-codex-mini     # matches MODEL_BACKEND value
+    backend: azure
+    api_style: openai-responses
+    active: true
+    endpoint: https://your-resource.services.ai.azure.com/openai/v1/
+    api_key_env: AZURE_CAPA_API_KEY
+    models: [gpt-5.1-codex-mini]
+
+  - id: claude-sonnet           # re-enable when Anthropic API credits are available
     backend: anthropic
     api_key_env: ANTHROPIC_API_KEY
+    active: false
     models: [claude-sonnet-4-6]
-
-  - id: capa
-    backend: azure
-    endpoint: https://your-resource.services.ai.azure.com/models
-    api_key_env: AZURE_CAPA_API_KEY
-    models: []   # empty → discover deployed models at benchmark time (up to 5 tested)
 ```
 
 To add a second Azure resource: add a new `connections` entry to `models.yaml` and add the
@@ -257,20 +260,6 @@ deployments available, the extras are listed in the JSON output under `available
 and printed at the end of the run — they are not benchmarked but are tracked as a running
 record of what is deployed on each resource.
 
-### Available models — gpt-5.1-codex-mini
-
-<!-- Updated automatically by make benchmark. Do not edit by hand. -->
-| Status | Model |
-|--------|-------|
-| tested | `gpt-5.1-codex-mini` |
-
-### Available models — gpt-5.1-2
-
-<!-- Updated automatically by make benchmark. Do not edit by hand. -->
-| Status | Model |
-|--------|-------|
-| tested | `gpt-5.1-2` |
-
 ### Available models — gpt-5.1-2
 
 <!-- Updated automatically by make benchmark. Do not edit by hand. -->
@@ -284,6 +273,9 @@ record of what is deployed on each resource.
 | Status | Model |
 |--------|-------|
 | tested | `gpt-5.1-codex-mini` |
+
+
+
 
 
 ### Key design decisions

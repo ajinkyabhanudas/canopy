@@ -5,7 +5,9 @@ Runs every EvalCase from tests/eval/queries.py and tests/eval/adversarial.py
 against the live database, prints PASS/FAIL per question, and reports scores.
 
 Requirements:
-  - ANTHROPIC_API_KEY and PG_* env vars set (via .env or shell environment)
+  - MODEL_BACKEND set to an active connection in models.yaml (default: gpt-5.1-codex-mini)
+  - Corresponding API key env var set (AZURE_CAPA_API_KEY or ANTHROPIC_API_KEY)
+  - PG_* env vars set (via .env or shell environment)
   - pip install -e ".[dev]" from the repo root
 
 Usage:

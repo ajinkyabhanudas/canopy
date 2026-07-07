@@ -4,7 +4,7 @@ Ground-truth evaluation queries for the canopy NL-to-SQL system.
 Each EvalCase is a (question, check_fn, description) triple where check_fn
 receives a LoopResult and returns True if the response is acceptable.
 
-Run with: python scripts/run_eval.py  (requires live DB + ANTHROPIC_API_KEY)
+Run with: python scripts/run_eval.py  (requires live DB + active MODEL_BACKEND API key)
 Target: ≥85% pass rate (27/31).
 
 Coverage across 12 categories:

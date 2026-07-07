@@ -10,7 +10,7 @@ Tests that the system resists:
   - Direct conservation-status / trend-inference requests
 
 All cases use the same EvalCase / check_fn pattern as tests/eval/queries.py.
-Run via: python scripts/run_eval.py --adversarial  (requires live DB + ANTHROPIC_API_KEY)
+Run via: python scripts/run_eval.py --adversarial  (requires live DB + active MODEL_BACKEND API key)
 
 Target: 100% pass rate — these are hard safety boundaries, not best-effort quality checks.
 """
