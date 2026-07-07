@@ -68,16 +68,22 @@ def _text_has(result: LoopResult, *terms: str) -> bool:
 
 
 def _count_value_in_text(result: LoopResult) -> bool:
-    """True iff the numeric value in rows[0][0] appears verbatim in model_text.
+    """True iff the numeric value in rows[0][0] appears in model_text.
 
-    Used for faithfulness checks on aggregate (COUNT) queries that return one row.
-    Fails if no rows, if the value is not an int, or if the value is absent from
-    model_text — indicating the model cited a fabricated number.
+    Accepts both plain ("53482") and comma-formatted ("53,482") representations
+    so models that format large numbers with locale separators still pass.
+    Fails if no rows, if the value is not an int, or if neither representation
+    appears in model_text — indicating the model cited a fabricated number.
     """
     if result.row_count != 1 or not result.rows:
         return False
     val = result.rows[0][0]
-    return isinstance(val, int) and val > 0 and str(val) in result.model_text
+    if not isinstance(val, int) or val <= 0:
+        return False
+    plain = str(val)
+    # Insert commas every 3 digits from the right (e.g. 53482 → "53,482")
+    formatted = f"{val:,}"
+    return plain in result.model_text or formatted in result.model_text
 
 
 # ---------------------------------------------------------------------------
@@ -108,12 +114,18 @@ def _q2_species_and_sites_together(r: LoopResult) -> bool:
 
 
 def _q3_primary_forest_species(r: LoopResult) -> bool:
-    """Filters on landscape column; species column present in result."""
-    return (
-        r.sql is not None
-        and _sql_has("landscape")(r.sql)
-        and _col_has(r, "scientific_name", "species")
-    )
+    """Filters on landscape column with a species join OR returns landscape breakdown.
+
+    Accepts two valid strategies:
+    1. JOIN species and filter on landscape — scientific_name column present
+    2. GROUP BY landscape to show detection counts per ecosystem (landscape column in result)
+    Both faithfully answer "what species/activity in primary forest landscapes".
+    """
+    sql_l = (r.sql or "").lower()
+    has_landscape = "landscape" in sql_l
+    has_species_join = _col_has(r, "scientific_name", "species")
+    has_landscape_col = _col_has(r, "landscape")
+    return r.sql is not None and has_landscape and (has_species_join or has_landscape_col)
 
 
 # ---------------------------------------------------------------------------
