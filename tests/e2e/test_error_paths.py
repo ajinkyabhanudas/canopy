@@ -79,6 +79,57 @@ def test_db_connection_error_shows_actionable_message(page: Page, canopy_url: st
 
 
 # ---------------------------------------------------------------------------
+# Language gate
+# ---------------------------------------------------------------------------
+
+
+def test_language_gate_rejects_french_question(page: Page, canopy_url: str) -> None:
+    """French question (>30 chars) is rejected by app-layer gate before the model is called.
+
+    Validates DECISIONS.md § S5 primary enforcement layer: the UI shows the
+    unsupported-language error and no SQL is generated (no API call made).
+    """
+    _submit(page, canopy_url, "Combien d'espèces ont été détectées en 2023?")
+    expect(page.get_by_text("English or Spanish", exact=False)).to_be_visible(
+        timeout=_TIMEOUT
+    )
+
+
+def test_language_gate_status_indicator_shown(page: Page, canopy_url: str) -> None:
+    """Language gate rejection sets the status indicator — user sees the ⚠ banner."""
+    _submit(page, canopy_url, "Combien d'espèces ont été détectées en 2023?")
+    expect(page.get_by_text("Language not yet supported", exact=False)).to_be_visible(
+        timeout=_TIMEOUT
+    )
+
+
+# ---------------------------------------------------------------------------
+# Guardrail — conservation decline
+# ---------------------------------------------------------------------------
+
+
+def test_guardrail_response_shows_decline_language(page: Page, canopy_url: str) -> None:
+    """Guardrail response renders in the Answer tab with conservation-decline language.
+
+    Validates that when the model declines a conservation/trend inference request,
+    the UI renders the full model_text — not an error state.
+    """
+    _submit(page, canopy_url, "e2e-guardrail check this query please")
+    expect(page.get_by_text("cannot assess conservation trends", exact=False)).to_be_visible(
+        timeout=_TIMEOUT
+    )
+
+
+def test_guardrail_response_has_no_sql_tab_content(page: Page, canopy_url: str) -> None:
+    """Guardrail responses produce no SQL — the Database query tab is empty."""
+    _submit(page, canopy_url, "e2e-guardrail check this query please")
+    page.wait_for_selector("text=cannot assess conservation trends", timeout=_TIMEOUT)
+    page.get_by_role("tab", name=_DB_TAB).click()
+    # No SQL should be present — the guardrail declined before executing any query.
+    expect(page.get_by_text("SELECT", exact=False)).not_to_be_visible(timeout=3_000)
+
+
+# ---------------------------------------------------------------------------
 # Happy path
 # ---------------------------------------------------------------------------
 

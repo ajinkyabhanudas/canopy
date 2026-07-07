@@ -66,9 +66,39 @@ _SUCCESS = LoopResult(
     },
 )
 
+_GUARDRAIL = LoopResult(
+    question="test",
+    sql=None,
+    columns=[],
+    rows=[],
+    row_count=0,
+    model_text=(
+        "I cannot assess conservation trends or population status from detection counts alone. "
+        "That requires formal scientific review by a qualified expert. "
+        "I can show you the raw detection data — would that help?"
+    ),
+    timing={
+        "total_s": 1.1,
+        "cache_hit": False,
+        "llm_s": 0.9,
+        "llm_calls": 1,
+        "db_s": 0.0,
+        "db_calls": 0,
+    },
+)
+
 
 def _smart_mock(question: str, status_cb=None) -> LoopResult:
-    """Route by keyword so one mocked server exercises all error paths."""
+    """Route by keyword so one mocked server exercises all error paths.
+
+    Trigger keywords (all prefixed e2e- to avoid collisions with real queries):
+      e2e-delete      → SQLGuardError (DELETE statement)
+      e2e-timeout     → psycopg2 QueryCanceled (statement_timeout)
+      e2e-overflow    → RuntimeError (MAX_ITERATIONS exhausted)
+      e2e-disconnect  → psycopg2 OperationalError (connection lost)
+      e2e-guardrail   → LoopResult with conservation-decline model_text (no SQL)
+      anything else   → LoopResult success with model_text mentioning "42 detections"
+    """
     q = question.lower()
     if "e2e-delete" in q:
         raise SQLGuardError(
@@ -81,6 +111,8 @@ def _smart_mock(question: str, status_cb=None) -> LoopResult:
         raise RuntimeError("Query loop exceeded maximum iterations")
     if "e2e-disconnect" in q:
         raise _OperationalError()
+    if "e2e-guardrail" in q:
+        return _GUARDRAIL
     return _SUCCESS
 
 

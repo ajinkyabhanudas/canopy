@@ -386,12 +386,15 @@ def test_handler_unsupported_language_rejected(monkeypatch):
 def test_clear_handler_calls_clear_history(monkeypatch):
     called = []
     monkeypatch.setattr(ui_mod, "clear_history", lambda: called.append(True))
-    ui_mod._clear_handler()
+    ui_mod._clear_handler("some question")
     assert called == [True]
 
 
 def test_clear_handler_empties_question(monkeypatch):
     monkeypatch.setattr(ui_mod, "clear_history", lambda: None)
-    radio, question, response, state = ui_mod._clear_handler()
-    assert question == ""
+    # _clear_handler preserves the question box text passed in
+    radio, question, response, row_count, table, sql, timing, status, state = (
+        ui_mod._clear_handler("my question")
+    )
+    assert question == "my question"
     assert state == []
