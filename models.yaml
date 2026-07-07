@@ -43,15 +43,15 @@ connections:
     timeout: 60
 
   # ------------------------------------------------------------------
-  # Azure capa — gpt-5.1-2 (project endpoint, deferred)
-  # Correct api-version unknown — no working version found across 13+
-  # attempts. Marked inactive until admin provides the version string.
+  # Azure capa — gpt-5.1-2 (project-scoped openai/v1 path, active)
+  # Uses /api/projects/<id>/openai/v1/chat/completions — no api-version
+  # required. Requires max_completion_tokens instead of max_tokens.
   # ------------------------------------------------------------------
   - id: gpt-5.1-2
     backend: azure
-    api_style: azure-inference
-    active: false
-    endpoint: https://capa-4249-resource.services.ai.azure.com/api/projects/capa-4249
+    api_style: openai-compat
+    active: true
+    endpoint: https://capa-4249-resource.services.ai.azure.com/api/projects/capa-4249/openai/v1/
     api_key_env: AZURE_CAPA_API_KEY
     models:
       - gpt-5.1-2

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from canopy.models.azure_compat import AzureOpenAICompatClient, _to_oai_tools
 from canopy.models.azure_responses import (
@@ -14,7 +14,6 @@ from canopy.models.azure_responses import (
     _to_responses_tools,
 )
 from canopy.models.base import ModelResponse, ToolCall
-
 
 # ---------------------------------------------------------------------------
 # AzureOpenAICompatClient helpers

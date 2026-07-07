@@ -19,7 +19,7 @@ from .base import ModelClient, ModelResponse, ToolCall
 
 _log = logging.getLogger("canopy.models.azure_compat")
 
-DEFAULT_MAX_TOKENS = 4096
+DEFAULT_MAX_COMPLETION_TOKENS = 4096
 
 
 def _to_oai_tools(tools: list[dict]) -> list[dict]:
@@ -52,7 +52,7 @@ class AzureOpenAICompatClient(ModelClient):
         kwargs: dict = {
             "model": self._model,
             "messages": all_messages,
-            "max_tokens": DEFAULT_MAX_TOKENS,
+            "max_completion_tokens": DEFAULT_MAX_COMPLETION_TOKENS,
             "timeout": self._timeout,
         }
         if tools:
