@@ -102,6 +102,8 @@ def run_query(
     response = None
     llm_times: list[float] = []
     db_times: list[float] = []
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
 
     for iteration in range(MAX_ITERATIONS):
         if status_cb:
@@ -113,6 +115,8 @@ def run_query(
             tools=[EXECUTE_SQL_TOOL],
         )
         llm_times.append(time.perf_counter() - t_llm)
+        total_input_tokens += response.input_tokens
+        total_output_tokens += response.output_tokens
         _log.debug("llm call %d: %.2fs", iteration + 1, llm_times[-1])
         if iteration == 0 and response.text and status_cb:
             status_cb(f"INTENT:{response.text.strip()}")
@@ -152,6 +156,8 @@ def run_query(
         "db_calls": len(db_times),
         "connection_id": conn.id,
         "model": active_model,
+        "input_tokens": total_input_tokens,
+        "output_tokens": total_output_tokens,
     }
     _log.info(
         "run_query complete — backend=%s model=%s rows=%d total=%.1fs"
