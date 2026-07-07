@@ -232,16 +232,15 @@ startup warnings, and HTTP availability. Run it after any Dockerfile or Gradio c
 `make benchmark` runs all active connections declared in `models.yaml` against the full
 eval suite and prints a comparison table:
 
-| Connection | Model | GT% | ADV% | Lat(s) | Tokens | $ (run) | $/1K in | $/1K out |
-|---|---|---|---|---|---|---|---|---|
-| gpt-5.1-codex-mini | gpt-5.1-codex-mini | 90% | 80% | 13.5 | 18 420 | $0.037 | $0.00075 | $0.003 |
-| gpt-5.1-2 | gpt-5.1-2 | 90% | 80% | 12.8 | 17 910 | $0.036 | $0.003 | $0.012 |
+| Connection | Model | GT% | ADV% | Lat(s) | $/1K in | $/1K out | Cost ratio |
+|---|---|---|---|---|---|---|---|
+| gpt-5.1-codex-mini | gpt-5.1-codex-mini | 90% | 80% | 13.5 | $0.00075 | $0.003 | **1×** (baseline) |
+| gpt-5.1-2 | gpt-5.1-2 | 90% | 80% | 12.8 | $0.003 | $0.012 | ~4× more expensive |
 
-> **Why does codex-mini cost slightly more on this run?** Per-token rates are 4× cheaper
-> than gpt-5.1-2, but this 41-case run happened to generate ~500 more tokens (reasoning
-> traces are verbose on some cases). At scale the per-token gap dominates — codex-mini
-> costs roughly 4× less per query. The `$` column reflects run totals; the `$/1K` columns
-> show the actual unit economics.
+> **Run cost (`$`) is omitted** — prior benchmark runs hit the query cache for most cases,
+> producing zero token counts and meaningless totals. `make benchmark` now clears the cache
+> before each model run. Re-run to get accurate per-model totals. The per-token rates above
+> are the ground truth; at any token volume codex-mini is ~4× cheaper than gpt-5.1-2.
 
 Connections marked `active: false` in `models.yaml` are skipped. Currently inactive:
 `claude-sonnet` (Anthropic API credits required — re-enable at console.anthropic.com),

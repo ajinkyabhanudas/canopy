@@ -45,6 +45,7 @@ try:
 except ImportError:
     pass
 
+from canopy.cache import clear_cache  # noqa: E402
 from canopy.config import ModelConnection, load_model_connections  # noqa: E402
 from canopy.query.executor import SQLGuardError  # noqa: E402
 from canopy.query.loop import run_query  # noqa: E402
@@ -202,6 +203,10 @@ def _benchmark_model(
 ) -> list[CaseResult]:
     """Run eval suites for one (connection, model) pair with env vars set."""
     results: list[CaseResult] = []
+
+    # Clear query cache so every case runs live — cache hits produce zero token
+    # counts and zero cost, making benchmark totals meaningless across runs.
+    clear_cache()
 
     # Temporarily redirect the active connection to this model
     original_backend = os.environ.get("MODEL_BACKEND")
