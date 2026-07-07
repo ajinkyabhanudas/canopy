@@ -122,9 +122,23 @@ else
     echo "$WARNINGS" | sed 's/^/          /'
 fi
 
+# ── Check 4: models.yaml is present and loadable ──────────────────────────
+echo "==> Check 4: models.yaml present and loadable inside container"
+if docker exec "$CONTAINER_NAME" python -c "
+import sys; sys.path.insert(0, '/app/src')
+from canopy.config import load_model_connections
+conns = load_model_connections()
+assert len(conns) > 0, 'no connections loaded'
+print(f'  {len(conns)} connection(s) loaded: {[c.id for c in conns]}')
+" 2>&1; then
+    _pass "models.yaml loaded successfully"
+else
+    _fail "models.yaml missing or unparseable inside container — check Dockerfile COPY"
+fi
+
 # ── Summary ────────────────────────────────────────────────────────────────
 echo ""
 echo "========================"
-echo "Smoke test: $PASS/3 passed"
+echo "Smoke test: $PASS/4 passed"
 echo ""
 [[ $FAIL -eq 0 ]]

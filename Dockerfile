@@ -12,6 +12,7 @@ RUN pip install --no-cache-dir -e ".[dev]"
 # Overwrite stub with real source (editable install picks it up via the .pth file)
 COPY src/ ./src/
 COPY scripts/ ./scripts/
+COPY models.yaml ./
 
 # Non-root user — /data must be chowned before USER switch so the volume
 # inherits canopy ownership when Docker initialises it on first run.
