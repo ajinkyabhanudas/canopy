@@ -235,6 +235,73 @@ def test_anthropic_format_tool_result_single():
     assert result["role"] == "user"
 
 
+def test_anthropic_generate_text_response():
+    client = _make_anthropic_client()
+    text_block = SimpleNamespace(type="text", text="Here is the answer.")
+    usage = SimpleNamespace(input_tokens=10, output_tokens=20)
+    mock_response = SimpleNamespace(content=[text_block], usage=usage)
+    client._client.messages.create.return_value = mock_response
+
+    resp = client.generate(
+        system_prompt="You are helpful.",
+        messages=[{"role": "user", "content": "Hello"}],
+    )
+
+    assert resp.text == "Here is the answer."
+    assert resp.tool_calls == []
+    assert resp.stop_reason == "end_turn"
+    assert resp.input_tokens == 10
+    assert resp.output_tokens == 20
+
+
+def test_anthropic_generate_tool_call_response():
+    client = _make_anthropic_client()
+    tool_block = SimpleNamespace(
+        type="tool_use",
+        id="toolu_01",
+        name="execute_sql",
+        input={"sql": "SELECT 1"},
+    )
+    usage = SimpleNamespace(input_tokens=50, output_tokens=30)
+    mock_response = SimpleNamespace(content=[tool_block], usage=usage)
+    client._client.messages.create.return_value = mock_response
+
+    resp = client.generate(
+        system_prompt="You are helpful.",
+        messages=[{"role": "user", "content": "How many species?"}],
+        tools=[{"name": "execute_sql", "description": "Run SQL", "input_schema": {}}],
+    )
+
+    assert resp.text is None
+    assert len(resp.tool_calls) == 1
+    assert resp.tool_calls[0].id == "toolu_01"
+    assert resp.tool_calls[0].name == "execute_sql"
+    assert resp.tool_calls[0].arguments == {"sql": "SELECT 1"}
+    assert resp.stop_reason == "tool_use"
+
+
+def test_anthropic_format_assistant_turn_text_only():
+    client = _make_anthropic_client()
+    response = ModelResponse(text="Plain answer.", tool_calls=[])
+    turn = client.format_assistant_turn(response)
+    assert turn["role"] == "assistant"
+    assert turn["content"] == [{"type": "text", "text": "Plain answer."}]
+
+
+def test_anthropic_format_assistant_turn_with_tool_call():
+    client = _make_anthropic_client()
+    tc = ToolCall(id="toolu_01", name="execute_sql", arguments={"sql": "SELECT 1"})
+    response = ModelResponse(text=None, tool_calls=[tc])
+    turn = client.format_assistant_turn(response)
+    assert turn["role"] == "assistant"
+    assert len(turn["content"]) == 1
+    block = turn["content"][0]
+    assert block["type"] == "tool_use"
+    assert block["id"] == "toolu_01"
+    assert block["name"] == "execute_sql"
+    assert block["input"] == {"sql": "SELECT 1"}
+
+
 # ---------------------------------------------------------------------------
 # Registry: azure backend is registered
 # ---------------------------------------------------------------------------
