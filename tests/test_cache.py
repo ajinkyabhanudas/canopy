@@ -341,3 +341,37 @@ def test_datetime_roundtrip_via_cache(tmp_path, monkeypatch):
     )
     assert row[0] == dt_value
     assert row[1] == "Grallaria gigantea"  # non-datetime values unchanged
+
+
+# ---------------------------------------------------------------------------
+# write_cache — expired entry pruning
+# ---------------------------------------------------------------------------
+
+
+def test_write_prunes_expired_entries_before_capacity_check(tmp_path, monkeypatch):
+    """Expired entries are removed during write so they don't consume capacity slots."""
+    from canopy.cache import _MAX_ENTRIES
+
+    cache_path = tmp_path / "cache.json"
+    monkeypatch.setattr("canopy.cache._cache_file", lambda: cache_path)
+
+    # Fill cache with MAX_ENTRIES entries that are all already expired.
+    pre_data = {}
+    for i in range(_MAX_ENTRIES):
+        q = f"expired question {i}"
+        key = _make_key(q)
+        past = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+        pre_data[key] = {
+            "question": q,
+            "created_at": past,
+            "expires_at": past,
+            "sql": None, "columns": [], "rows": [], "row_count": 0, "model_text": "",
+        }
+    cache_path.write_text(json.dumps(pre_data))
+
+    # Writing a new entry should prune all expired ones first — result is 1 live entry.
+    write_cache(_result(question="fresh question"))
+
+    data = json.loads(cache_path.read_text())
+    assert len(data) == 1
+    assert _make_key("fresh question") in data
