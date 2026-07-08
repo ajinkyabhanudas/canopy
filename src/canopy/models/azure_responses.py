@@ -129,8 +129,8 @@ class AzureResponsesClient(ModelClient):
         try:
             data = self._post(body)
         except urllib.error.HTTPError as exc:
-            body = exc.read().decode()[:300]
-            raise RuntimeError(f"Responses API error {exc.code}: {body}") from exc
+            err_body = exc.read().decode()[:300]
+            raise RuntimeError(f"Responses API error {exc.code}: {err_body}") from exc
 
         output = data.get("output", [])
         text = _extract_text(output)
