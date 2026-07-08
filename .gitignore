@@ -8,3 +8,5 @@ __pycache__/
 .DS_Store
 .playwright-mcp/
 benchmark_results/
+.coverage
+htmlcov/
