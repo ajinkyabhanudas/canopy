@@ -71,10 +71,20 @@ def _models_yaml_path() -> Path:
 
 
 def load_model_connections(path: str | Path | None = None) -> list[ModelConnection]:
-    """Parse models.yaml and resolve api_key_env → actual key value from env."""
+    """Parse models.yaml and resolve api_key_env → actual key value from env.
+
+    Result is cached by resolved file path — re-reads when a non-default path is given
+    or when the caller explicitly passes a path (benchmark runs).
+    """
     import yaml  # lazy import — only needed when multi-model path is used
 
     yaml_path = Path(path) if path else _models_yaml_path()
+
+    # Avoid re-parsing yaml on every LLM iteration (called once per model.generate call).
+    cache_key = str(yaml_path)
+    if cache_key in _connections_cache:
+        return _connections_cache[cache_key]
+
     raw: dict[str, Any] = yaml.safe_load(yaml_path.read_text()) or {}
     connections: list[ModelConnection] = []
 
@@ -96,7 +106,12 @@ def load_model_connections(path: str | Path | None = None) -> list[ModelConnecti
 
     if not connections:
         raise ValueError(f"models.yaml at {yaml_path} has no connections defined.")
+
+    _connections_cache[cache_key] = connections
     return connections
+
+
+_connections_cache: dict[str, list[ModelConnection]] = {}
 
 
 def get_active_connection(model_override: str | None = None) -> ModelConnection:
