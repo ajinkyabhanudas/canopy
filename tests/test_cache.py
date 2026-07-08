@@ -70,9 +70,9 @@ def test_make_key_spanish_and_english_different_keys():
     assert _make_key("How many detections?") != _make_key("¿Cuántas detecciones?")
 
 
-def test_make_key_returns_16_hex_chars():
+def test_make_key_returns_32_hex_chars():
     key = _make_key("any question")
-    assert len(key) == 16
+    assert len(key) == 32
     assert all(c in "0123456789abcdef" for c in key)
 
 

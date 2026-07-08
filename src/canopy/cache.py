@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import threading
 import unicodedata
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -27,6 +28,7 @@ _ISO_RE = re.compile(
 
 _DEFAULT_TTL_HOURS = 24
 _MAX_ENTRIES = 200
+_write_lock = threading.Lock()
 
 
 def _cache_file() -> Path:
@@ -42,7 +44,7 @@ def _make_key(question: str, connection_id: str = "", model: str = "") -> str:
     q = unicodedata.normalize("NFC", question)
     normalised = re.sub(r"\s+", " ", q.casefold().strip())
     payload = f"{connection_id}\x00{model}\x00{normalised}"
-    return hashlib.sha256(payload.encode()).hexdigest()[:16]
+    return hashlib.sha256(payload.encode()).hexdigest()[:32]
 
 
 def _read_cache() -> dict:
@@ -102,28 +104,34 @@ def lookup_cache(question: str, connection_id: str = "", model: str = "") -> Loo
 
 
 def write_cache(result: LoopResult, connection_id: str = "", model: str = "") -> None:
-    """Write a LoopResult to the cache, evicting oldest entries beyond _MAX_ENTRIES."""
+    """Write a LoopResult to the cache, evicting oldest/expired entries beyond _MAX_ENTRIES."""
     key = _make_key(result.question, connection_id, model)
-    data = _read_cache()
+    with _write_lock:
+        data = _read_cache()
 
-    # LRU eviction: remove oldest entries if at capacity
-    if len(data) >= _MAX_ENTRIES:
-        sorted_keys = sorted(data, key=lambda k: data[k].get("created_at", ""))
-        for old_key in sorted_keys[: len(data) - _MAX_ENTRIES + 1]:
-            del data[old_key]
+        # Prune expired entries first so capacity check reflects live entries only.
+        now = datetime.now(timezone.utc)
+        expired = [k for k, v in data.items() if datetime.fromisoformat(v["expires_at"]) <= now]
+        for k in expired:
+            del data[k]
 
-    now = datetime.now(timezone.utc)
-    data[key] = {
-        "question": result.question,
-        "created_at": now.isoformat(),
-        "expires_at": (now + timedelta(hours=_ttl_hours())).isoformat(),
-        "sql": result.sql,
-        "columns": result.columns,
-        "rows": [list(row) for row in result.rows],
-        "row_count": result.row_count,
-        "model_text": result.model_text,
-    }
-    _write_cache_dict(data)
+        # LRU eviction: remove oldest entries if still at capacity after expiry pruning.
+        if len(data) >= _MAX_ENTRIES:
+            sorted_keys = sorted(data, key=lambda k: data[k].get("created_at", ""))
+            for old_key in sorted_keys[: len(data) - _MAX_ENTRIES + 1]:
+                del data[old_key]
+
+        data[key] = {
+            "question": result.question,
+            "created_at": now.isoformat(),
+            "expires_at": (now + timedelta(hours=_ttl_hours())).isoformat(),
+            "sql": result.sql,
+            "columns": result.columns,
+            "rows": [list(row) for row in result.rows],
+            "row_count": result.row_count,
+            "model_text": result.model_text,
+        }
+        _write_cache_dict(data)
 
 
 def clear_cache() -> None:
