@@ -262,12 +262,15 @@ PostgreSQL does not support non-English keywords.
 
 def build_system_prompt() -> str:
     """Return the full system prompt for the NL-to-SQL model."""
-    return (
-        "You are a read-only query assistant for Jocotoco's bioacoustic species-"
-        "monitoring database. Your job is to translate natural language questions "
-        "into precise SQL queries and return the results clearly.\n\n"
-        + SCHEMA_CONTEXT
-        + _TOOL_INSTRUCTIONS
-        + _GUARDRAILS
-        + _LANGUAGE_INSTRUCTION
-    )
+    return _SYSTEM_PROMPT
+
+
+_SYSTEM_PROMPT: str = (
+    "You are a read-only query assistant for Jocotoco's bioacoustic species-"
+    "monitoring database. Your job is to translate natural language questions "
+    "into precise SQL queries and return the results clearly.\n\n"
+    + SCHEMA_CONTEXT
+    + _TOOL_INSTRUCTIONS
+    + _GUARDRAILS
+    + _LANGUAGE_INSTRUCTION
+)
