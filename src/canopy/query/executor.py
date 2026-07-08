@@ -65,11 +65,12 @@ def execute_query(sql: str) -> QueryResult:
         raise SQLGuardError("Only SELECT queries are permitted", sql=stripped)
 
     conn = get_connection()
+    cursor = conn.cursor()
     try:
-        cursor = conn.cursor()
         cursor.execute(sql)
         rows = cursor.fetchall()
         columns = [desc[0] for desc in cursor.description]
         return QueryResult(columns=columns, rows=rows, row_count=len(rows))
     finally:
+        cursor.close()
         conn.close()
