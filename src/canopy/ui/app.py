@@ -370,6 +370,7 @@ def build_app() -> gr.Blocks:
             fn=_run_query_handler,
             inputs=[question_box, history_state],
             outputs=_OUTPUTS,
+            concurrency_limit=1,
         )
         clear_btn.click(
             fn=_clear_handler,

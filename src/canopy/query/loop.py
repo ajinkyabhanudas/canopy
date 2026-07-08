@@ -185,7 +185,6 @@ def run_query(
         append_history(result)
     except Exception as exc:
         _log.warning("history write failed (check CANOPY_DATA_DIR): %s", exc)
-    _log.info("run_query complete: %d rows returned", result.row_count)
     return result
 
 
