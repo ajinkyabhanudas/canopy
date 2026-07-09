@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import queue
 import threading
-from typing import Generator
+from collections.abc import Generator
 
 import gradio as gr
 import psycopg2
@@ -27,6 +27,9 @@ set_locale(get_ui_lang())
 
 _PLACEHOLDER = t("placeholder")
 _IDLE_PROMPT = t("idle_prompt")
+
+# langdetect is unreliable on very short strings; skip detection below this length
+_MIN_LANG_DETECT_LEN = 30
 
 CSS = """
 /* Status bar — typographic only, no box */
@@ -71,7 +74,7 @@ _Output = tuple
 
 def _check_language(question: str) -> bool:
     """Return True if the question is in a language other than English or Spanish."""
-    if len(question.strip()) < 30:
+    if len(question.strip()) < _MIN_LANG_DETECT_LEN:
         return False  # too short for reliable detection — pass through
     try:
         return _lang_detect(question) not in ("en", "es")
@@ -89,6 +92,20 @@ def _empty_result(message: str, session_history: list, status: str = "") -> _Out
         gr.Radio(choices=session_history),
         "",
         status,
+        session_history,
+    )
+
+
+def _status_yield(response_text: str, status_text: str, session_history: list) -> _Output:
+    """Return a blank 8-tuple with only status/response text set (for streaming updates)."""
+    return (
+        "",
+        gr.Dataframe(value=None),
+        response_text,
+        "",
+        gr.Radio(choices=session_history),
+        "",
+        status_text,
         session_history,
     )
 
@@ -136,16 +153,7 @@ def _run_query_handler(
             status_q.put(None)
 
     # Immediate feedback before the thread even starts
-    yield (
-        "",
-        gr.Dataframe(value=None),
-        t("status_reading"),
-        "",
-        gr.Radio(choices=session_history),
-        "",
-        t("status_reading"),
-        session_history,
-    )
+    yield _status_yield(t("status_reading"), t("status_reading"), session_history)
 
     thread = threading.Thread(target=_worker, daemon=True)
     thread.start()
@@ -155,16 +163,7 @@ def _run_query_handler(
         if msg is None:
             break
         if msg == "CACHE_HIT":
-            yield (
-                "",
-                gr.Dataframe(value=None),
-                t("status_cache_hit"),
-                "",
-                gr.Radio(choices=session_history),
-                "",
-                t("status_cache_hit"),
-                session_history,
-            )
+            yield _status_yield(t("status_cache_hit"), t("status_cache_hit"), session_history)
             continue
         if msg.startswith("INTENT:"):
             intent_text[0] = msg[7:].strip()
@@ -177,16 +176,7 @@ def _run_query_handler(
                 else ""
             )
             status_text = msg
-        yield (
-            "",
-            gr.Dataframe(value=None),
-            response_text,
-            "",
-            gr.Radio(choices=session_history),
-            "",
-            status_text,
-            session_history,
-        )
+        yield _status_yield(response_text, status_text, session_history)
 
     thread.join()
 
