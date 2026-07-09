@@ -23,6 +23,7 @@ import ssl
 import urllib.error
 import urllib.request
 
+from ._openai_format import openai_format_assistant_turn, openai_format_tool_result, openai_format_tool_results
 from .base import ModelClient, ModelResponse, ToolCall
 
 _log = logging.getLogger("canopy.models.azure_responses")
@@ -131,6 +132,10 @@ class AzureResponsesClient(ModelClient):
         except urllib.error.HTTPError as exc:
             err_body = exc.read().decode()[:300]
             raise RuntimeError(f"Responses API error {exc.code}: {err_body}") from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"Responses API network error: {exc.reason}") from exc
+        except TimeoutError as exc:
+            raise RuntimeError(f"Responses API timed out after {self._timeout}s") from exc
 
         output = data.get("output", [])
         text = _extract_text(output)
@@ -150,24 +155,11 @@ class AzureResponsesClient(ModelClient):
         )
 
     def format_tool_result(self, tool_call_id: str, content: str) -> dict:
-        # Stored as a raw dict; _build_input converts it to function_call_output
-        return {"role": "tool", "tool_call_id": tool_call_id, "content": content}
+        # Stored as a raw dict; generate() converts it to function_call_output on replay
+        return openai_format_tool_result(tool_call_id, content)
 
     def format_tool_results(self, results: list[tuple[str, str]]) -> list[dict]:
-        return [self.format_tool_result(tid, content) for tid, content in results]
+        return openai_format_tool_results(results)
 
     def format_assistant_turn(self, response: ModelResponse) -> dict:
-        msg: dict = {"role": "assistant", "content": response.text or ""}
-        if response.tool_calls:
-            msg["tool_calls"] = [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {
-                        "name": tc.name,
-                        "arguments": json.dumps(tc.arguments),
-                    },
-                }
-                for tc in response.tool_calls
-            ]
-        return msg
+        return openai_format_assistant_turn(response)

@@ -68,6 +68,8 @@ def execute_query(sql: str) -> QueryResult:
     cursor = conn.cursor()
     try:
         cursor.execute(sql)
+        if cursor.description is None:
+            raise SQLGuardError("Query produced no result set — only SELECT is permitted", sql=sql)
         rows = cursor.fetchall()
         columns = [desc[0] for desc in cursor.description]
         return QueryResult(columns=columns, rows=rows, row_count=len(rows))
