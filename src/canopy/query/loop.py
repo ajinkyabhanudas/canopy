@@ -39,7 +39,7 @@ EXECUTE_SQL_TOOL: dict = {
 }
 
 _ROW_DISPLAY_LIMIT = 200
-_SENSITIVE_COLUMNS = frozenset({"latitude", "longitude"})
+_SENSITIVE_COLUMNS = frozenset({"latitude", "longitude", "hashed_password"})
 
 
 @dataclass(frozen=True)
