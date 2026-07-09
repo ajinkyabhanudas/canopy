@@ -28,6 +28,7 @@ from azure.ai.inference.models import (
 )
 from azure.core.credentials import AzureKeyCredential
 
+from ._openai_format import openai_format_assistant_turn, openai_format_tool_result, openai_format_tool_results
 from .base import ModelClient, ModelResponse, ToolCall
 
 _log = logging.getLogger("canopy.models.azure")
@@ -121,23 +122,10 @@ class AzureFoundryClient(ModelClient):
         )
 
     def format_tool_result(self, tool_call_id: str, content: str) -> dict:
-        return {"role": "tool", "tool_call_id": tool_call_id, "content": content}
+        return openai_format_tool_result(tool_call_id, content)
 
     def format_tool_results(self, results: list[tuple[str, str]]) -> list[dict]:
-        return [self.format_tool_result(tid, content) for tid, content in results]
+        return openai_format_tool_results(results)
 
     def format_assistant_turn(self, response: ModelResponse) -> dict:
-        msg: dict = {"role": "assistant", "content": response.text or ""}
-        if response.tool_calls:
-            msg["tool_calls"] = [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {
-                        "name": tc.name,
-                        "arguments": json.dumps(tc.arguments),
-                    },
-                }
-                for tc in response.tool_calls
-            ]
-        return msg
+        return openai_format_assistant_turn(response)
