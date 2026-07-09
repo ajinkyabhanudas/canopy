@@ -11,17 +11,15 @@ from __future__ import annotations
 
 import anthropic
 
-from ..config import get_model_config
 from .base import ModelClient, ModelResponse, ToolCall
 
 DEFAULT_MAX_TOKENS = 4096
 
 
 class AnthropicClient(ModelClient):
-    def __init__(self) -> None:
-        cfg = get_model_config()
-        self._client = anthropic.Anthropic(api_key=cfg.api_key, timeout=cfg.timeout)
-        self._model = cfg.model
+    def __init__(self, model: str, api_key: str, timeout: float = 60.0) -> None:
+        self._client = anthropic.Anthropic(api_key=api_key, timeout=timeout)
+        self._model = model
 
     def generate(
         self,

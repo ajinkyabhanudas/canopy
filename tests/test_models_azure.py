@@ -205,15 +205,8 @@ def test_format_assistant_turn_with_tool_calls():
 
 
 def _make_anthropic_client() -> AnthropicClient:
-    from canopy.config import ModelConfig
-
-    with patch("canopy.models.anthropic.anthropic.Anthropic"), patch(
-        "canopy.models.anthropic.get_model_config"
-    ) as mock_cfg:
-        mock_cfg.return_value = ModelConfig(
-            backend="anthropic", api_key="fake", model="claude-sonnet-4-6", timeout=60.0
-        )
-        return AnthropicClient()
+    with patch("canopy.models.anthropic.anthropic.Anthropic"):
+        return AnthropicClient(model="claude-sonnet-4-6", api_key="fake", timeout=60.0)
 
 
 def test_anthropic_format_tool_results_returns_list():

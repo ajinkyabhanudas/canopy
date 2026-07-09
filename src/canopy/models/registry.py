@@ -25,37 +25,39 @@ def get_model_client(model_override: str | None = None) -> ModelClient:
     to iterate over discovered Azure deployments.
     """
     conn = get_active_connection(model_override=model_override)
+    if conn.backend not in _BACKENDS:
+        raise ValueError(
+            f"Unknown backend '{conn.backend}' for connection '{conn.id}'. "
+            f"Available: {sorted(_BACKENDS)}"
+        )
     if conn.backend == "anthropic":
-        return AnthropicClient()
-    if conn.backend == "azure":
         model = model_override or (conn.models[0] if conn.models else "")
-        if not model:
-            raise ValueError(
-                f"Connection '{conn.id}' has no model specified and model_override was not given. "
-                "Run the benchmark (make benchmark) to auto-discover available deployments."
-            )
-        if conn.api_style == "openai-compat":
-            return AzureOpenAICompatClient(
-                model=model,
-                api_key=conn.api_key,
-                endpoint=conn.endpoint,
-                timeout=conn.timeout,
-            )
-        if conn.api_style == "openai-responses":
-            return AzureResponsesClient(
-                model=model,
-                api_key=conn.api_key,
-                endpoint=conn.endpoint,
-                timeout=conn.timeout,
-            )
-        # Default: "azure-inference" — azure-ai-inference SDK against /models endpoint
-        return AzureFoundryClient(
+        return AnthropicClient(model=model, api_key=conn.api_key, timeout=conn.timeout)
+    # conn.backend == "azure"
+    model = model_override or (conn.models[0] if conn.models else "")
+    if not model:
+        raise ValueError(
+            f"Connection '{conn.id}' has no model specified and model_override was not given. "
+            "Run the benchmark (make benchmark) to auto-discover available deployments."
+        )
+    if conn.api_style == "openai-compat":
+        return AzureOpenAICompatClient(
             model=model,
             api_key=conn.api_key,
             endpoint=conn.endpoint,
             timeout=conn.timeout,
         )
-    raise ValueError(
-        f"Unknown backend '{conn.backend}' for connection '{conn.id}'. "
-        f"Available: {sorted(_BACKENDS)}"
+    if conn.api_style == "openai-responses":
+        return AzureResponsesClient(
+            model=model,
+            api_key=conn.api_key,
+            endpoint=conn.endpoint,
+            timeout=conn.timeout,
+        )
+    # Default: "azure-inference" — azure-ai-inference SDK against /models endpoint
+    return AzureFoundryClient(
+        model=model,
+        api_key=conn.api_key,
+        endpoint=conn.endpoint,
+        timeout=conn.timeout,
     )

@@ -280,16 +280,10 @@ def test_parallel_tool_calls_bundled_into_one_message(monkeypatch, mock_model, m
 
 
 def _make_anthropic_client_for_loop_tests(monkeypatch) -> "AnthropicClient":
-    """Build AnthropicClient with config patched — avoids models.yaml lookup."""
-    from canopy.config import ModelConfig
+    """Build AnthropicClient with mocked SDK — avoids real API key requirement."""
     from canopy.models.anthropic import AnthropicClient
     monkeypatch.setattr("canopy.models.anthropic.anthropic", MagicMock())
-    monkeypatch.setattr(
-        "canopy.models.anthropic.get_model_config",
-        lambda: ModelConfig(backend="anthropic", api_key="test-key",
-                            model="claude-sonnet-4-6", timeout=60.0),
-    )
-    return AnthropicClient()
+    return AnthropicClient(model="claude-sonnet-4-6", api_key="test-key", timeout=60.0)
 
 
 def test_anthropic_format_tool_results_single(monkeypatch):
