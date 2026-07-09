@@ -8,6 +8,7 @@ handling stays auditable in one file.
 
 from __future__ import annotations
 
+import dataclasses
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -125,16 +126,7 @@ def get_active_connection(model_override: str | None = None) -> ModelConnection:
     for conn in connections:
         if conn.id == active_id:
             if model_override:
-                conn = ModelConnection(
-                    id=conn.id,
-                    backend=conn.backend,
-                    api_key=conn.api_key,
-                    models=[model_override],
-                    endpoint=conn.endpoint,
-                    timeout=conn.timeout,
-                    api_style=conn.api_style,
-                    active=conn.active,
-                )
+                conn = dataclasses.replace(conn, models=[model_override])
             return conn
     available = [c.id for c in connections]
     raise ValueError(
