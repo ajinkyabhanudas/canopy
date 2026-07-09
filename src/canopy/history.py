@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -53,9 +54,11 @@ def load_history(n: int = 20) -> list[dict]:
     path = _history_file()
     if n <= 0 or not path.exists():
         return []
-    lines = path.read_text().splitlines()
+    buf: deque[str] = deque(maxlen=n)
+    with path.open() as f:
+        buf.extend(f)
     entries = []
-    for line in lines[-n:]:
+    for line in buf:
         try:
             entries.append(json.loads(line))
         except json.JSONDecodeError:

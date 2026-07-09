@@ -25,6 +25,7 @@ _log = logging.getLogger("canopy.cache")
 _ISO_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?)?$"
 )
+_WS_RE = re.compile(r"\s+")
 
 _DEFAULT_TTL_HOURS = 24
 _MAX_ENTRIES = 200
@@ -42,7 +43,7 @@ def _ttl_hours() -> int:
 
 def _make_key(question: str, connection_id: str = "", model: str = "") -> str:
     q = unicodedata.normalize("NFC", question)
-    normalised = re.sub(r"\s+", " ", q.casefold().strip())
+    normalised = _WS_RE.sub(" ", q.casefold().strip())
     payload = f"{connection_id}\x00{model}\x00{normalised}"
     return hashlib.sha256(payload.encode()).hexdigest()[:32]
 
