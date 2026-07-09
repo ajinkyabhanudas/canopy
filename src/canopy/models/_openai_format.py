@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 
-from .base import ModelResponse, ToolCall
+from .base import ModelResponse
 
 
 def openai_format_tool_result(tool_call_id: str, content: str) -> dict:

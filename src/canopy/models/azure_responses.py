@@ -23,7 +23,11 @@ import ssl
 import urllib.error
 import urllib.request
 
-from ._openai_format import openai_format_assistant_turn, openai_format_tool_result, openai_format_tool_results
+from ._openai_format import (
+    openai_format_assistant_turn,
+    openai_format_tool_result,
+    openai_format_tool_results,
+)
 from .base import ModelClient, ModelResponse, ToolCall
 
 _log = logging.getLogger("canopy.models.azure_responses")
