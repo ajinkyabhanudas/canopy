@@ -304,3 +304,62 @@ def test_registry_has_azure_backend():
     from canopy.models.registry import _BACKENDS
 
     assert "azure" in _BACKENDS
+
+
+# ---------------------------------------------------------------------------
+# _to_sdk_messages — assistant with tool_calls (lines 63-75) + unknown role (line 81)
+# ---------------------------------------------------------------------------
+
+
+def test_to_sdk_messages_assistant_with_tool_calls():
+    from azure.ai.inference.models import AssistantMessage
+
+    raw = [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "tc-99",
+                    "type": "function",
+                    "function": {"name": "execute_sql", "arguments": '{"sql":"SELECT 1"}'},
+                }
+            ],
+        }
+    ]
+    msgs = _to_sdk_messages(raw)
+    assert len(msgs) == 1
+    assert isinstance(msgs[0], AssistantMessage)
+    assert msgs[0].tool_calls is not None
+    assert len(msgs[0].tool_calls) == 1
+    assert msgs[0].tool_calls[0].id == "tc-99"
+    assert msgs[0].tool_calls[0].function.name == "execute_sql"
+
+
+def test_to_sdk_messages_unknown_role_falls_back_to_user():
+    from azure.ai.inference.models import UserMessage
+
+    msgs = _to_sdk_messages([{"role": "system", "content": "ignored"}])
+    assert len(msgs) == 1
+    assert isinstance(msgs[0], UserMessage)
+
+
+# ---------------------------------------------------------------------------
+# registry — unknown backend (line 29)
+# ---------------------------------------------------------------------------
+
+
+def test_get_model_client_raises_on_unknown_backend(monkeypatch):
+    import pytest
+
+    from canopy.config import ModelConnection
+    from canopy.models import get_model_client
+
+    bad_conn = ModelConnection(
+        id="bad-conn", backend="unknown-backend", api_key="k",
+        models=["m"], endpoint="", timeout=30.0
+    )
+    monkeypatch.setattr("canopy.models.registry.get_active_connection", lambda **_: bad_conn)
+
+    with pytest.raises(ValueError, match="Unknown backend"):
+        get_model_client()
