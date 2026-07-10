@@ -375,3 +375,33 @@ def test_write_prunes_expired_entries_before_capacity_check(tmp_path, monkeypatc
     data = json.loads(cache_path.read_text())
     assert len(data) == 1
     assert _make_key("fresh question") in data
+
+
+# ---------------------------------------------------------------------------
+# _maybe_datetime — ValueError branch (lines 75-76)
+# ---------------------------------------------------------------------------
+
+
+def test_maybe_datetime_invalid_iso_string_returns_value():
+    """A string that matches the ISO regex but can't be parsed returns unchanged."""
+    from canopy.cache import _maybe_datetime
+
+    # Construct a string that matches the regex but is an invalid date
+    bad = "9999-99-99"
+    result = _maybe_datetime(bad)
+    assert result == bad
+
+
+# ---------------------------------------------------------------------------
+# _cache_file — exercises the import path (lines 36-37)
+# ---------------------------------------------------------------------------
+
+
+def test_cache_file_uses_data_dir(tmp_path, monkeypatch):
+    """_cache_file() returns a path inside the configured data dir."""
+    import canopy.cache as cache_mod
+
+    monkeypatch.setattr("canopy.config.get_data_dir", lambda: tmp_path)
+    # Clear module-level function reference so it re-calls get_data_dir
+    result = cache_mod._cache_file()
+    assert result == tmp_path / "cache.json"
