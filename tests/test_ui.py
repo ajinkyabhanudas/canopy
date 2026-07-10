@@ -42,15 +42,17 @@ def _all_yields(question: str, session_history: list | None = None) -> list[tupl
 
 
 def test_empty_result_structure():
+    import gradio as gr
     result = ui_mod._empty_result("some message", [])
-    assert len(result) == 8
-    sql, df, response, count_md, radio, timing, status, state = result
+    assert len(result) == 9
+    sql, df, response, count_md, radio, timing, status, state, tabs = result
     assert sql == ""
     assert count_md == ""
     assert response == "some message"
     assert timing == ""
     assert status == ""
     assert state == []
+    assert isinstance(tabs, gr.Tabs)
 
 
 def test_empty_result_with_status():
@@ -73,8 +75,8 @@ def test_handler_first_yield_is_loading(monkeypatch):
     """User should see loading state immediately before any model call."""
     monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: _make_result())
     first, *_ = _all_yields("How many detections?")
-    assert len(first) == 8
-    _, _, response, _, _, _, status_md, state = first
+    assert len(first) == 9
+    _, _, response, _, _, _, status_md, state, *_ = first
     assert t("status_reading") in response
     assert t("status_reading") in status_md
 
@@ -85,7 +87,7 @@ def test_handler_first_yield_is_loading(monkeypatch):
 
 
 def test_handler_empty_question(monkeypatch):
-    sql, df, response, count_md, radio, timing, status, state = _run("   ")
+    sql, df, response, count_md, radio, timing, status, state, *_ = _run("   ")
     assert sql == ""
     assert count_md == ""
     assert t("error_empty_question") in response
@@ -95,7 +97,7 @@ def test_handler_empty_question(monkeypatch):
 
 def test_handler_valid_question(monkeypatch):
     monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: _make_result())
-    sql, df, response, count_md, radio, timing, status, state = _run("How many detections?")
+    sql, df, response, count_md, radio, timing, status, state, *_ = _run("How many detections?")
     assert sql.startswith("SELECT COUNT(*) FROM detections")
     assert response == "There are 5 detections."
     assert "5" in count_md
@@ -104,7 +106,7 @@ def test_handler_valid_question(monkeypatch):
 
 def test_handler_timing_line(monkeypatch):
     monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: _make_result())
-    sql, _, _, _, _, timing, _, _ = _run("q")
+    sql, _, _, _, _, timing, _, _, *_ = _run("q")
     assert t("timing_live", total=1.0)[:14] in timing
     # dev metrics moved to sql comment
     assert "LLM" in sql
@@ -115,7 +117,7 @@ def test_handler_singular_row_count(monkeypatch):
     monkeypatch.setattr(
         ui_mod, "run_query", lambda q, status_cb=None: _make_result(row_count=1, rows=[(1,)])
     )
-    _, _, _, count_md, _, _, _, _ = _run("q")
+    _, _, _, count_md, _, _, _, _, *_ = _run("q")
     assert t("count_row_singular", n=1) in count_md
     assert "rows" not in count_md
 
@@ -126,14 +128,14 @@ def test_handler_plural_row_count(monkeypatch):
         "run_query",
         lambda q, status_cb=None: _make_result(row_count=3, rows=[(1,), (2,), (3,)]),
     )
-    _, _, _, count_md, _, _, _, _ = _run("q")
+    _, _, _, count_md, _, _, _, _, *_ = _run("q")
     assert t("count_row_plural", n=3) in count_md
 
 
 def test_handler_rows_converted_to_lists(monkeypatch):
     result = _make_result(rows=[(1, "a"), (2, "b")], columns=["id", "name"], row_count=2)
     monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: result)
-    _, df, _, _, _, _, _, _ = _run("q")
+    _, df, _, _, _, _, _, _, *_ = _run("q")
     import gradio as gr
     assert isinstance(df, gr.Dataframe)
 
@@ -144,7 +146,7 @@ def test_handler_null_sql(monkeypatch):
         "run_query",
         lambda q, status_cb=None: _make_result(sql=None, rows=[], row_count=0),
     )
-    sql, _, _, _, _, _, _, _ = _run("q")
+    sql, _, _, _, _, _, _, _, *_ = _run("q")
     assert sql == ""
 
 
@@ -156,7 +158,7 @@ def test_handler_null_sql(monkeypatch):
 def test_handler_appends_question_to_session_history(monkeypatch):
     """Successful query prepends the question to session history."""
     monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: _make_result())
-    _, _, _, _, radio, _, _, new_state = _run("new question")
+    _, _, _, _, radio, _, _, new_state, *_ = _run("new question")
     import gradio as gr
     assert isinstance(radio, gr.Radio)
     assert "new question" in new_state
@@ -165,7 +167,7 @@ def test_handler_appends_question_to_session_history(monkeypatch):
 def test_handler_prepends_to_existing_history(monkeypatch):
     """New question goes to the front; previous entries are preserved."""
     monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: _make_result())
-    _, _, _, _, _, _, _, new_state = _run("new question", session_history=["old question"])
+    _, _, _, _, _, _, _, new_state, *_ = _run("new question", session_history=["old question"])
     assert new_state == ["new question", "old question"]
 
 
@@ -173,7 +175,7 @@ def test_handler_caps_history_at_20(monkeypatch):
     """History is capped at 20 entries — oldest entries are dropped."""
     monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: _make_result())
     initial = [f"q{i}" for i in range(20)]
-    _, _, _, _, _, _, _, new_state = _run("new question", session_history=initial)
+    _, _, _, _, _, _, _, new_state, *_ = _run("new question", session_history=initial)
     assert len(new_state) == 20
     assert new_state[0] == "new question"
     assert "q19" not in new_state  # oldest dropped
@@ -183,7 +185,7 @@ def test_handler_deduplicates_repeated_question(monkeypatch):
     """Re-running a question moves it to the top instead of adding a duplicate."""
     monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: _make_result())
     initial = ["repeated q", "other q"]
-    _, _, _, _, _, _, _, new_state = _run("repeated q", session_history=initial)
+    _, _, _, _, _, _, _, new_state, *_ = _run("repeated q", session_history=initial)
     assert new_state.count("repeated q") == 1
     assert new_state[0] == "repeated q"
     assert "other q" in new_state
@@ -199,7 +201,7 @@ def test_handler_run_query_raises(monkeypatch):
         raise RuntimeError("DB is down")
 
     monkeypatch.setattr(ui_mod, "run_query", _boom)
-    sql, df, response, count_md, _, timing, status, state = _run("anything")
+    sql, df, response, count_md, _, timing, status, state, *__ = _run("anything")
     assert sql == ""
     assert count_md == ""
     # Human-readable — no internal exception text exposed to user
@@ -217,7 +219,7 @@ def test_handler_sql_guard_error_shows_sql(monkeypatch):
         raise SQLGuardError("Only SELECT queries are permitted", sql=bad_sql)
 
     monkeypatch.setattr(ui_mod, "run_query", _guard_fail)
-    sql, df, response, count_md, _, timing, status, state = _run("drop something")
+    sql, df, response, count_md, _, timing, status, state, *__ = _run("drop something")
     assert sql == bad_sql
     assert "DROP" in response
     assert "Database query" in response
@@ -236,7 +238,7 @@ def test_handler_guard_names_delete_operation(monkeypatch):
         raise SQLGuardError("Only SELECT queries are permitted", sql=bad_sql)
 
     monkeypatch.setattr(ui_mod, "run_query", _guard_fail)
-    _, _, response, _, _, _, status, _ = _run("delete that detection")
+    _, _, response, _, _, _, status, _, *__ = _run("delete that detection")
     assert "DELETE" in response
     assert "DELETE" in status
 
@@ -249,7 +251,7 @@ def test_handler_statement_timeout_gives_actionable_message(monkeypatch):
         raise psycopg2.errors.QueryCanceled("canceling statement due to statement timeout")
 
     monkeypatch.setattr(ui_mod, "run_query", _timeout)
-    _, _, response, _, _, _, status, _ = _run("huge query")
+    _, _, response, _, _, _, status, _, *__ = _run("huge query")
     assert "too long" in response.lower()
     assert "⚠" in status
     assert "timed out" in status.lower()
@@ -263,7 +265,7 @@ def test_handler_db_connection_error_message(monkeypatch):
         raise psycopg2.OperationalError("could not connect to server")
 
     monkeypatch.setattr(ui_mod, "run_query", _conn_fail)
-    _, _, response, _, _, _, status, _ = _run("any question")
+    _, _, response, _, _, _, status, _, *__ = _run("any question")
     assert "database" in response.lower()
     assert "⚠" in status
     assert "unreachable" in status.lower()
@@ -276,7 +278,7 @@ def test_handler_loop_exhausted_message(monkeypatch):
         raise RuntimeError("Query loop exceeded maximum iterations")
 
     monkeypatch.setattr(ui_mod, "run_query", _exhaust)
-    _, _, response, _, _, _, status, _ = _run("very complex question")
+    _, _, response, _, _, _, status, _, *__ = _run("very complex question")
     assert "steps" in response.lower()
     assert "⚠" in status
     assert "complex" in status.lower()
@@ -367,7 +369,7 @@ def test_handler_unsupported_language_rejected(monkeypatch):
         "run_query",
         lambda q, status_cb=None: spy_calls.append(q) or _make_result(),
     )
-    sql, df, response, count_md, radio, timing, status, state = _run(
+    sql, df, response, count_md, radio, timing, status, state, *_ = _run(
         "Combien d'espèces ont été détectées en 2023?"
     )
     assert spy_calls == [], "run_query must not be called — language gate is a cost gate"
@@ -456,7 +458,7 @@ def test_handler_timing_shows_conn_slash_model_when_different(monkeypatch):
     )
     monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: result)
 
-    _, _, _, _, _, timing_md, _, _ = _run("q")
+    _, _, _, _, _, timing_md, _, _, *_ = _run("q")
     assert "my-azure-conn/gpt-4o-mini" in timing_md
 
 
@@ -472,6 +474,6 @@ def test_handler_timing_shows_conn_only_when_same(monkeypatch):
     )
     monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: result)
 
-    _, _, _, _, _, timing_md, _, _ = _run("q")
+    _, _, _, _, _, timing_md, _, _, *_ = _run("q")
     assert "· gpt-4o" in timing_md
     assert "gpt-4o/gpt-4o" not in timing_md
