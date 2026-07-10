@@ -66,9 +66,9 @@ CSS = """
 }
 """
 
-# Type alias for the 8-tuple every handler output must match:
+# Type alias for the 9-tuple every handler output must match:
 # [sql_box, results_table, response_box, row_count_md, history_radio,
-#  timing_md, status_md, history_state]
+#  timing_md, status_md, history_state, result_tabs]
 _Output = tuple
 
 
@@ -83,7 +83,7 @@ def _check_language(question: str) -> bool:
 
 
 def _empty_result(message: str, session_history: list, status: str = "") -> _Output:
-    """Return a blank 8-tuple with only the response message and optional status set."""
+    """Return a blank 9-tuple with only the response message and optional status set."""
     return (
         "",
         gr.Dataframe(value=None),
@@ -93,11 +93,12 @@ def _empty_result(message: str, session_history: list, status: str = "") -> _Out
         "",
         status,
         session_history,
+        gr.Tabs(selected=0),
     )
 
 
 def _status_yield(response_text: str, status_text: str, session_history: list) -> _Output:
-    """Return a blank 8-tuple with only status/response text set (for streaming updates)."""
+    """Return a blank 9-tuple with only status/response text set (for streaming updates)."""
     return (
         "",
         gr.Dataframe(value=None),
@@ -107,6 +108,7 @@ def _status_yield(response_text: str, status_text: str, session_history: list) -
         "",
         status_text,
         session_history,
+        gr.Tabs(selected=0),
     )
 
 
@@ -193,6 +195,7 @@ def _run_query_handler(
                 "",
                 t("error_guard_readonly_status", operation=exc.operation),
                 session_history,
+                gr.Tabs(selected=0),
             )
         elif isinstance(exc, psycopg2.errors.QueryCanceled):
             _log.warning("statement_timeout exceeded for question: %r", question[:60])
@@ -237,11 +240,12 @@ def _run_query_handler(
         n_calls = timing.get("llm_calls", 0)
         if result.sql:
             call_s = "calls" if n_calls != 1 else "call"
+            dev_label = conn_id if conn_id == model_name else f"{conn_id}/{model_name}"
             dev_comment = (
                 f"\n-- {total:.1f}s total · "
                 f"LLM {timing.get('llm_s', 0):.1f}s ({n_calls} {call_s}) · "
                 f"DB {timing.get('db_s', 0):.3f}s"
-                f" · {timing.get('connection_id', '')}/{timing.get('model', '')}"
+                f" · {dev_label}"
             )
             sql_display = result.sql + dev_comment
         else:
@@ -260,6 +264,7 @@ def _run_query_handler(
         timing_md,
         "",
         new_history,
+        gr.Tabs(selected=0),
     )
 
 
@@ -310,7 +315,7 @@ def build_app() -> gr.Blocks:
             # ── Right panel ────────────────────────────────────────────────────
             with gr.Column(scale=2):
                 status_md = gr.Markdown("", elem_id="canopy-status")
-                with gr.Tabs():
+                with gr.Tabs() as result_tabs:
                     with gr.Tab(t("tab_answer")):
                         response_box = gr.Markdown(_IDLE_PROMPT)
                     with gr.Tab(t("tab_data")):
@@ -330,7 +335,7 @@ def build_app() -> gr.Blocks:
 
         _OUTPUTS = [
             sql_box, results_table, response_box, row_count_md,
-            history_radio, timing_md, status_md, history_state,
+            history_radio, timing_md, status_md, history_state, result_tabs,
         ]
 
         # Restore history sidebar from localStorage on every page load
