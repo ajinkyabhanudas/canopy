@@ -178,3 +178,12 @@ def test_connection_closed_on_db_error(monkeypatch, mock_conn):
         execute_query("SELECT 1")
 
     mock_conn.close.assert_called_once()
+
+
+def test_none_description_raises_guard_error(monkeypatch, mock_conn):
+    """cursor.description is None after non-result-producing query → SQLGuardError."""
+    mock_conn.cursor.return_value.description = None
+    monkeypatch.setattr("canopy.query.executor.get_connection", lambda: mock_conn)
+
+    with pytest.raises(SQLGuardError, match="no result set"):
+        execute_query("SELECT 1")
