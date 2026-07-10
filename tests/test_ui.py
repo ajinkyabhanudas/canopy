@@ -398,3 +398,80 @@ def test_clear_handler_empties_question(monkeypatch):
     )
     assert question == "my question"
     assert state == []
+
+
+# ---------------------------------------------------------------------------
+# Streaming INTENT: message branch (lines 168-179)
+# ---------------------------------------------------------------------------
+
+
+def test_handler_yields_intent_status_message(monkeypatch):
+    """When run_query sends INTENT: message, a status with the intent text is yielded."""
+
+    result = _make_result()
+
+    def _emit_intent(q, status_cb=None):
+        if status_cb:
+            status_cb("INTENT:Looking for species counts")
+        return result
+
+    monkeypatch.setattr(ui_mod, "run_query", _emit_intent)
+    yields = _all_yields("How many species?")
+
+    # One of the intermediate yields should contain the intent text
+    responses = [y[2] for y in yields]
+    assert any("Looking for species counts" in r for r in responses)
+
+
+def test_handler_yields_other_status_messages(monkeypatch):
+    """Non-CACHE_HIT, non-INTENT status messages are passed through as status text."""
+    result = _make_result()
+
+    def _emit_status(q, status_cb=None):
+        if status_cb:
+            status_cb("Querying the database...")
+        return result
+
+    monkeypatch.setattr(ui_mod, "run_query", _emit_status)
+    yields = _all_yields("How many species?")
+
+    statuses = [y[6] for y in yields]
+    assert any("Querying" in s for s in statuses)
+
+
+# ---------------------------------------------------------------------------
+# model_label — conn_id != model_name branch (line 229)
+# ---------------------------------------------------------------------------
+
+
+def test_handler_timing_shows_conn_slash_model_when_different(monkeypatch):
+    """When connection_id differs from model name, timing shows conn_id/model_name."""
+    result = _make_result(
+        timing={
+            "total_s": 1.0, "llm_s": 0.9, "llm_calls": 1,
+            "db_s": 0.05, "db_calls": 1,
+            "connection_id": "my-azure-conn",
+            "model": "gpt-4o-mini",
+        }
+    )
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: result)
+
+    _, _, _, _, _, timing_md, _, _ = _run("q")
+    assert "my-azure-conn/gpt-4o-mini" in timing_md
+
+
+def test_handler_timing_shows_conn_only_when_same(monkeypatch):
+    """When connection_id equals model name, timing shows just conn_id."""
+    result = _make_result(
+        timing={
+            "total_s": 1.0, "llm_s": 0.9, "llm_calls": 1,
+            "db_s": 0.05, "db_calls": 1,
+            "connection_id": "gpt-4o",
+            "model": "gpt-4o",
+        }
+    )
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: result)
+
+    _, _, _, _, _, timing_md, _, _ = _run("q")
+    assert "· gpt-4o" in timing_md
+    assert "gpt-4o/gpt-4o" not in timing_md
