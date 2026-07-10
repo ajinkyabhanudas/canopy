@@ -93,7 +93,7 @@ def _empty_result(message: str, session_history: list, status: str = "") -> _Out
         "",
         status,
         session_history,
-        gr.Tabs(selected=0),
+        gr.update(selected=0),
     )
 
 
@@ -108,7 +108,7 @@ def _status_yield(response_text: str, status_text: str, session_history: list) -
         "",
         status_text,
         session_history,
-        gr.Tabs(selected=0),
+        gr.update(selected=0),
     )
 
 
@@ -195,7 +195,7 @@ def _run_query_handler(
                 "",
                 t("error_guard_readonly_status", operation=exc.operation),
                 session_history,
-                gr.Tabs(selected=0),
+                gr.update(selected=0),
             )
         elif isinstance(exc, psycopg2.errors.QueryCanceled):
             _log.warning("statement_timeout exceeded for question: %r", question[:60])
@@ -264,7 +264,7 @@ def _run_query_handler(
         timing_md,
         "",
         new_history,
-        gr.Tabs(selected=0),
+        gr.update(selected=0),
     )
 
 
@@ -316,16 +316,16 @@ def build_app() -> gr.Blocks:
             with gr.Column(scale=2):
                 status_md = gr.Markdown("", elem_id="canopy-status")
                 with gr.Tabs() as result_tabs:
-                    with gr.Tab(t("tab_answer")):
+                    with gr.Tab(t("tab_answer"), id=0):
                         response_box = gr.Markdown(_IDLE_PROMPT)
-                    with gr.Tab(t("tab_data")):
+                    with gr.Tab(t("tab_data"), id=1):
                         row_count_md = gr.Markdown("")
                         results_table = gr.Dataframe(
                             label="",
                             wrap=True,
                             interactive=False,
                         )
-                    with gr.Tab(t("tab_sql")):
+                    with gr.Tab(t("tab_sql"), id=2):
                         sql_box = gr.Code(
                             label="",
                             language="sql",

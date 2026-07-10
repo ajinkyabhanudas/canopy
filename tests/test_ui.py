@@ -42,7 +42,6 @@ def _all_yields(question: str, session_history: list | None = None) -> list[tupl
 
 
 def test_empty_result_structure():
-    import gradio as gr
     result = ui_mod._empty_result("some message", [])
     assert len(result) == 9
     sql, df, response, count_md, radio, timing, status, state, tabs = result
@@ -52,7 +51,7 @@ def test_empty_result_structure():
     assert timing == ""
     assert status == ""
     assert state == []
-    assert isinstance(tabs, gr.Tabs)
+    assert tabs == {"selected": 0, "__type__": "update"}
 
 
 def test_empty_result_with_status():
