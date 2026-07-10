@@ -277,7 +277,7 @@ There is no explicit rejection status in the current dataset. Detections not app
 
 > **Audit verdict — ⚠️ Caveat**
 >
-> **Challenge:** The number 5 has no empirical basis. It was chosen without measurement. The eval set (`tests/eval/`) contains 30+ ground-truth queries but does not currently log iteration counts. It is possible that real queries never need more than 3, which means 5 is safe-but-opaque, or that some legitimate complex queries need 4–5, which means the ceiling is tighter than it appears.
+> **Challenge:** The number 5 has no empirical basis. It was chosen without measurement. The eval set (`tests/eval/`) contains 31 ground-truth queries but does not currently log iteration counts. It is possible that real queries never need more than 3, which means 5 is safe-but-opaque, or that some legitimate complex queries need 4–5, which means the ceiling is tighter than it appears.
 >
 > **Recommended fix:** Log `iteration` count at INFO level for every completed query (already present in `_log.info`). After 20–30 real-world queries, inspect the distribution. If P99 ≤ 3, lower `MAX_ITERATIONS` to 4. If any query hits 5 and fails, raise it to 6. Make the number data-driven.
 
@@ -606,7 +606,7 @@ Second, hallucination tests depend on the DB not having the test entity. "Fictus
 
 **Consequences:**
 - UI customisation is bounded by Gradio's component model. Complex interactions (map visualisations, multi-step workflows, drag-and-drop uploads) require hacking around Gradio or are impossible.
-- **No authentication.** Gradio offers HTTP basic auth (username/password in `.launch(auth=...)`), but no per-user session isolation. All users of the same instance share one query history, one cache, and see each other's recent queries in the history radio. If Jocotoco deploys this for multiple staff, they will see each other's queries.
+- **No authentication.** Gradio offers HTTP basic auth (username/password in `.launch(auth=...)`), but no per-user session isolation. Query history is per-browser via `gr.BrowserState` (localStorage) — each device maintains its own history. The result cache is intentionally instance-wide (answers are deterministic reads; sharing is correct). If Jocotoco deploys this for multiple staff, query history is isolated but there is no user-level audit log of who asked what.
 - **No audit logging.** There is no record of which user asked which question. JSONL history logs questions but not who asked them.
 
 > **Audit verdict — 🔄 Revisit**

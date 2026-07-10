@@ -4,7 +4,7 @@
 > inconsistencies, and design boundaries that a user or administrator
 > should understand before relying on Canopy outputs for decision-making.
 >
-> Last updated: 2026-06-30. Update this file when a limitation is resolved or a new one is found.
+> Last updated: 2026-07-11. Update this file when a limitation is resolved or a new one is found.
 
 ---
 
