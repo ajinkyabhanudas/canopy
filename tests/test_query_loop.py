@@ -484,3 +484,85 @@ def test_status_cb_detection_count_uses_singular(monkeypatch, mock_model, mock_c
     run_query("One row.", status_cb=statuses.append)
 
     assert t("found_detections_singular", n=1) in statuses
+
+
+def test_status_cb_emits_cache_hit_on_cache_hit(monkeypatch, mock_model):
+    """When lookup_cache returns a hit and status_cb is given, 'CACHE_HIT' is emitted."""
+    from canopy.query.loop import LoopResult
+
+    cached = LoopResult(
+        question="cached question",
+        sql="SELECT 1",
+        columns=["n"],
+        rows=[(1,)],
+        row_count=1,
+        model_text="One.",
+        timing={"cache_hit": True, "cached_at": "2026-01-01T00:00:00+00:00"},
+    )
+    # Override the autouse _bypass_cache fixture for this test
+    monkeypatch.setattr("canopy.query.loop.lookup_cache", lambda q, **_kw: cached)
+    monkeypatch.setattr("canopy.query.loop.get_model_client", lambda: mock_model)
+
+    statuses: list[str] = []
+    run_query("cached question", status_cb=statuses.append)
+
+    assert "CACHE_HIT" in statuses
+    mock_model.generate.assert_not_called()
+
+
+def test_status_cb_emits_intent_on_first_text_response(monkeypatch, mock_model, mock_conn):
+    """When model returns text on iteration 0, INTENT:<text> is sent via status_cb."""
+    intent_text = "Looking for species counts"
+    # First generate returns text (intent) + tool call
+    first_response = ModelResponse(
+        text=intent_text,
+        tool_calls=[ToolCall(id="tc1", name="execute_sql", arguments={"sql": "SELECT 1"})],
+        stop_reason="tool_use",
+    )
+    mock_model.generate.side_effect = [first_response, _text_response("Done.")]
+    monkeypatch.setattr("canopy.query.loop.get_model_client", lambda: mock_model)
+    monkeypatch.setattr("canopy.query.executor.get_connection", lambda: mock_conn)
+
+    statuses: list[str] = []
+    run_query("A question.", status_cb=statuses.append)
+
+    intent_msgs = [s for s in statuses if s.startswith("INTENT:")]
+    assert intent_msgs, "Expected at least one INTENT: status message"
+    assert intent_text.strip() in intent_msgs[0]
+
+
+# ---------------------------------------------------------------------------
+# cache/history write failure — warning path (lines 182-183, 186-187)
+# ---------------------------------------------------------------------------
+
+
+def test_cache_write_failure_logs_warning_and_still_returns(monkeypatch, mock_model, mock_conn):
+    """A cache write failure must not propagate — result still returned."""
+
+    monkeypatch.setattr("canopy.query.loop.lookup_cache", lambda q, **_kw: None)
+    monkeypatch.setattr(
+        "canopy.query.loop.write_cache",
+        lambda r, **_kw: (_ for _ in ()).throw(OSError("disk full")),
+    )
+    mock_model.generate.side_effect = [_tool_response("SELECT 1"), _text_response("Done.")]
+    monkeypatch.setattr("canopy.query.loop.get_model_client", lambda: mock_model)
+    monkeypatch.setattr("canopy.query.executor.get_connection", lambda: mock_conn)
+
+    result = run_query("A question.")
+    assert result.model_text == "Done."
+
+
+def test_history_write_failure_logs_warning_and_still_returns(monkeypatch, mock_model, mock_conn):
+    """A history write failure must not propagate — result still returned."""
+    monkeypatch.setattr("canopy.query.loop.lookup_cache", lambda q, **_kw: None)
+    monkeypatch.setattr("canopy.query.loop.write_cache", lambda r, **_kw: None)
+    monkeypatch.setattr(
+        "canopy.query.loop.append_history",
+        lambda r: (_ for _ in ()).throw(OSError("disk full")),
+    )
+    mock_model.generate.side_effect = [_tool_response("SELECT 1"), _text_response("Done.")]
+    monkeypatch.setattr("canopy.query.loop.get_model_client", lambda: mock_model)
+    monkeypatch.setattr("canopy.query.executor.get_connection", lambda: mock_conn)
+
+    result = run_query("A question.")
+    assert result.model_text == "Done."
