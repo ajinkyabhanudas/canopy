@@ -141,7 +141,9 @@ def _run_query_handler(
     status_q: queue.Queue[str | None] = queue.Queue()
     result_holder: list = [None]
     error_holder: list[BaseException | None] = [None]
-    intent_text: list[str] = [""]
+    # Pre-populate with the question so the "I understood" message shows
+    # even when the model goes straight to a tool call (no response.text).
+    intent_text: list[str] = [question]
 
     def _status_cb(msg: str) -> None:
         status_q.put(msg)
