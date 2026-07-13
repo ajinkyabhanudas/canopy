@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -39,7 +40,12 @@ EXECUTE_SQL_TOOL: dict = {
 }
 
 _ROW_DISPLAY_LIMIT = 200
-_SENSITIVE_COLUMNS = frozenset({"latitude", "longitude", "hashed_password"})
+
+def _load_sensitive_columns() -> frozenset[str]:
+    raw = os.environ.get("CANOPY_SENSITIVE_COLUMNS", "latitude,longitude,hashed_password")
+    return frozenset(c.strip() for c in raw.split(",") if c.strip())
+
+_SENSITIVE_COLUMNS = _load_sensitive_columns()
 
 
 @dataclass(frozen=True)

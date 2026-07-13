@@ -317,6 +317,48 @@ def test_anthropic_format_tool_results_multiple(monkeypatch):
     assert msg["content"][1]["content"] == "r2"
 
 
+# ---------------------------------------------------------------------------
+# CANOPY_SENSITIVE_COLUMNS env var override
+# ---------------------------------------------------------------------------
+
+
+def test_sensitive_columns_env_override(monkeypatch, mock_model, mock_conn):
+    """CANOPY_SENSITIVE_COLUMNS env var overrides the hardcoded default set.
+
+    When set, only the listed columns are stripped — not the defaults.
+    This verifies the config-driven path works end-to-end through _format_result.
+    """
+    import importlib
+    import canopy.query.loop as loop_mod
+
+    # Override: strip only 'secret_col', leave lat/lon visible
+    monkeypatch.setenv("CANOPY_SENSITIVE_COLUMNS", "secret_col")
+    monkeypatch.setattr(loop_mod, "_SENSITIVE_COLUMNS", loop_mod._load_sensitive_columns())
+
+    mock_conn.cursor.return_value.description = [
+        ("scientific_name",), ("latitude",), ("secret_col",)
+    ]
+    mock_conn.cursor.return_value.fetchall.return_value = [
+        ("Grallaria gigantea", -1.23, "TOP_SECRET")
+    ]
+    mock_model.generate.side_effect = [
+        _tool_response("SELECT scientific_name, latitude, secret_col FROM detections"),
+        _text_response("Done."),
+    ]
+    monkeypatch.setattr("canopy.query.loop.get_model_client", lambda: mock_model)
+    monkeypatch.setattr("canopy.query.executor.get_connection", lambda: mock_conn)
+
+    run_query("Test sensitive override.")
+
+    _, result_str = mock_model.format_tool_results.call_args[0][0][0]
+    # secret_col stripped
+    assert "secret_col" not in result_str
+    assert "TOP_SECRET" not in result_str
+    # latitude now visible (not in override list)
+    assert "latitude" in result_str
+    assert "-1.23" in result_str
+
+
 def test_anthropic_format_tool_result_singular_delegates(monkeypatch):
     """format_tool_result (singular) returns a single dict with one content block."""
     client = _make_anthropic_client_for_loop_tests(monkeypatch)
