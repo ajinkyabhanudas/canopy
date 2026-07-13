@@ -18,6 +18,7 @@ from .anthropic import AnthropicClient
 from .azure import AzureFoundryClient
 from .azure_compat import AzureOpenAICompatClient
 from .azure_responses import AzureResponsesClient
+from .azure_responses_llm import AzureResponsesLLM
 from .base import ModelClient
 from .llamaindex_compat import build_openai_compat_llm
 
@@ -53,9 +54,11 @@ def get_llm(model_override: str | None = None) -> FunctionCallingLLM:
         )
 
     if conn.api_style == "openai-responses":
-        raise NotImplementedError(
-            "AzureResponsesLLM (Phase 2b) not yet implemented. "
-            "Set MODEL_BACKEND=gpt-5.1-2 to use the openai-compat path."
+        return AzureResponsesLLM(
+            model=model,
+            api_key=conn.api_key,
+            endpoint=conn.endpoint,
+            timeout=conn.timeout,
         )
 
     raise ValueError(
