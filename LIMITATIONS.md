@@ -4,7 +4,7 @@
 > inconsistencies, and design boundaries that a user or administrator
 > should understand before relying on Canopy outputs for decision-making.
 >
-> Last updated: 2026-07-11. Update this file when a limitation is resolved or a new one is found.
+> Last updated: 2026-07-13. Update this file when a limitation is resolved or a new one is found.
 
 ---
 
@@ -29,9 +29,7 @@ There is no rejection status in the current dataset.
 (`ALWAYS filter on validation_status = 'approved'`) will not pick up new statuses
 automatically.
 
-**Long-term fix:** A CI integration test should query
-`SELECT DISTINCT validation_status FROM detections` and assert the results match
-what `schema.py` documents. See DECISIONS.md § D1.
+**✅ Resolved (2026-07-13):** `tests/test_schema_drift.py` now queries `information_schema` and `SELECT DISTINCT validation_status FROM detections` at CI time. Schema drift is caught automatically. See DECISIONS.md § D1.
 
 ---
 
@@ -101,6 +99,8 @@ Latitude and longitude columns are stripped before the AI model processes result
 Spatial queries (e.g. "which detections were within 5 km of reserve boundary")
 cannot be answered by Canopy.
 
+The set of withheld columns is configurable via `CANOPY_SENSITIVE_COLUMNS` (comma-separated env var, defaults to `latitude,longitude,hashed_password`). Adding a new sensitive column is a `.env` change — no code deploy required.
+
 ### 9. Language instruction compliance — secondary layer only (Azure models)
 
 **Severity:** Low — does not affect UI users; affects direct `run_query()` callers only.
@@ -145,6 +145,22 @@ answer is being served.
 
 **Long-term fix candidates:** Per-query TTL based on detected time-relative language;
 cache invalidation webhook on data upload; shorter TTL for high-churn query patterns.
+
+---
+
+## Internal Engineering Guarantees (as of 2026-07-13)
+
+The following properties are actively enforced — not aspirational.
+
+| Property | Mechanism | Status |
+|---|---|---|
+| Schema drift detection | `tests/test_schema_drift.py` — live DB vs `schema.py` | ✅ Enforced |
+| Result immutability | `LoopResult` / `QueryResult` use `tuple` types — `append` raises `AttributeError` | ✅ Enforced |
+| Sensitive column coverage | `CANOPY_SENSITIVE_COLUMNS` env var — config, not source | ✅ Enforced |
+| Loop iteration visibility | `loop_iterations=N` logged per query; `iterations` in `timing` dict | ✅ Instrumented |
+| Mutation guard (SQL) | Dual-layer: regex guard + PostgreSQL `readonly=True` session | ✅ Enforced |
+
+**What "enforced" means here:** a test fails, an exception is raised, or a log entry is emitted automatically — not a process requirement that depends on a developer remembering to do something.
 
 ---
 
