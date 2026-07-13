@@ -1,4 +1,4 @@
-.PHONY: help test lint check build run smoke ui eval eval-spanish eval-adversarial benchmark clean playwright-install e2e
+.PHONY: help test lint check build run smoke ui eval eval-spanish eval-adversarial benchmark clean playwright-install e2e screenshots
 
 # Default target
 help:
@@ -15,6 +15,7 @@ help:
 	@echo "  make build             Build the Docker image (canopy:dev)"
 	@echo "  make run               Build and run in Docker (needs .env)"
 	@echo "  make smoke             Build image and run Docker smoke test"
+	@echo "  make screenshots       Build image, start container, capture UI screenshots, stop"
 	@echo ""
 	@echo "  Eval (needs live DB + ANTHROPIC_API_KEY)"
 	@echo "  make eval              Ground-truth + adversarial eval suites"
@@ -56,6 +57,16 @@ run: build
 
 smoke:
 	./scripts/smoke_test_docker.sh
+
+screenshots: build
+	@echo "Starting canopy:dev container on :7860 …"
+	./scripts/docker_run.sh -d --name canopy-screenshots
+	@echo "Waiting for Gradio to start …"
+	@until curl -sf http://localhost:7860 >/dev/null 2>&1; do sleep 2; done
+	@echo "Capturing screenshots …"
+	python scripts/capture_screenshots.py --url http://localhost:7860
+	docker stop canopy-screenshots
+	@echo "Done. Screenshots saved to docs/screenshots/"
 
 # ── Eval ─────────────────────────────────────────────────────────────────────
 
