@@ -33,16 +33,22 @@ from tests.eval.queries import (
 
 def _make_result(
     sql: str | None = "SELECT 1",
-    columns: list[str] | None = None,
-    rows: list[tuple] | None = None,
+    columns: list[str] | tuple[str, ...] | None = None,
+    rows: list[tuple] | tuple[tuple, ...] | None = None,
     row_count: int = 1,
     model_text: str = "",
 ) -> LoopResult:
+    _cols = columns if columns is not None else []
+    _rows = rows if rows is not None else [(1,)]
+    if isinstance(_cols, list):
+        _cols = tuple(_cols)
+    if isinstance(_rows, list):
+        _rows = tuple(tuple(r) if isinstance(r, list) else r for r in _rows)
     return LoopResult(
         question="test question",
         sql=sql,
-        columns=columns if columns is not None else [],
-        rows=rows if rows is not None else [(1,)],
+        columns=_cols,
+        rows=_rows,
         row_count=row_count,
         model_text=model_text,
     )

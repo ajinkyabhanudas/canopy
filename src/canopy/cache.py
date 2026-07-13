@@ -96,8 +96,8 @@ def lookup_cache(question: str, connection_id: str = "", model: str = "") -> Loo
     return LoopResult(
         question=entry["question"],
         sql=entry["sql"],
-        columns=entry["columns"],
-        rows=[tuple(_maybe_datetime(v) for v in row) for row in entry["rows"]],
+        columns=tuple(entry["columns"]),
+        rows=tuple(tuple(_maybe_datetime(v) for v in row) for row in entry["rows"]),
         row_count=entry["row_count"],
         model_text=entry["model_text"],
         timing={"cache_hit": True, "cached_at": entry["created_at"]},

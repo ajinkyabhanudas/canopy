@@ -22,15 +22,20 @@ def _patch_history_file(tmp_path, monkeypatch):
 
 
 def _make_result(**overrides) -> LoopResult:
-    defaults = dict(
+    defaults: dict = dict(
         question="How many detections at Buenaventura?",
         sql="SELECT COUNT(*) FROM detections WHERE site_id = 1",
-        columns=["count"],
-        rows=[(42,)],
+        columns=("count",),
+        rows=((42,),),
         row_count=1,
         model_text="There are 42 detections at Buenaventura.",
     )
-    return LoopResult(**{**defaults, **overrides})
+    merged = {**defaults, **overrides}
+    if isinstance(merged.get("columns"), list):
+        merged["columns"] = tuple(merged["columns"])
+    if isinstance(merged.get("rows"), list):
+        merged["rows"] = tuple(tuple(r) if isinstance(r, list) else r for r in merged["rows"])
+    return LoopResult(**merged)
 
 
 # ---------------------------------------------------------------------------
@@ -51,7 +56,7 @@ def test_append_writes_valid_json():
     entry = json.loads(raw)
     assert entry["question"] == result.question
     assert entry["sql"] == result.sql
-    assert entry["columns"] == result.columns
+    assert entry["columns"] == list(result.columns)
     assert entry["row_count"] == result.row_count
     assert entry["model_text"] == result.model_text
 

@@ -54,8 +54,8 @@ class LoopResult:
 
     question: str
     sql: str | None
-    columns: list[str]
-    rows: list[tuple]
+    columns: tuple[str, ...]
+    rows: tuple[tuple, ...]
     row_count: int
     model_text: str
     timing: dict = field(default_factory=dict)
@@ -177,8 +177,8 @@ def run_query(
     result = LoopResult(
         question=question,
         sql=last_sql,
-        columns=last_query_result.columns if last_query_result else [],
-        rows=last_query_result.rows if last_query_result else [],
+        columns=last_query_result.columns if last_query_result else (),
+        rows=last_query_result.rows if last_query_result else (),
         row_count=last_query_result.row_count if last_query_result else 0,
         model_text=response.text or "",
         timing=timing,

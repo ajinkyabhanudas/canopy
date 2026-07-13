@@ -79,8 +79,8 @@ def test_single_tool_call_round_trip(monkeypatch, mock_model, mock_conn):
     assert result.question == "How many rows are in the detections table?"
     assert result.sql == "SELECT 1"
     assert result.row_count == 1
-    assert result.rows == [(1,)]
-    assert result.columns == ["n"]
+    assert result.rows == ((1,),)
+    assert result.columns == ("n",)
     assert result.model_text == "Found 1 result."
 
 
@@ -95,8 +95,8 @@ def test_direct_text_response(monkeypatch, mock_model):
 
     assert result.sql is None
     assert result.row_count == 0
-    assert result.columns == []
-    assert result.rows == []
+    assert result.columns == ()
+    assert result.rows == ()
     assert result.model_text == "I cannot answer that from this database."
 
 
@@ -399,8 +399,8 @@ def test_cache_hit_skips_llm_call(monkeypatch, mock_model, tmp_path):
     cached = LoopResult(
         question="How many detections?",
         sql="SELECT COUNT(*) FROM detections",
-        columns=["count"],
-        rows=[(42,)],
+        columns=("count",),
+        rows=((42,),),
         row_count=42,
         model_text="There are 42 detections.",
         timing={"cache_hit": True, "cached_at": "2026-06-26T00:00:00+00:00"},
@@ -535,8 +535,8 @@ def test_status_cb_emits_cache_hit_on_cache_hit(monkeypatch, mock_model):
     cached = LoopResult(
         question="cached question",
         sql="SELECT 1",
-        columns=["n"],
-        rows=[(1,)],
+        columns=("n",),
+        rows=((1,),),
         row_count=1,
         model_text="One.",
         timing={"cache_hit": True, "cached_at": "2026-01-01T00:00:00+00:00"},

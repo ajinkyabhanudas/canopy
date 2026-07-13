@@ -133,8 +133,8 @@ def test_result_shape(monkeypatch, mock_conn):
 
     result = execute_query("SELECT col_a, col_b FROM detections")
 
-    assert result.columns == ["col_a", "col_b"]
-    assert result.rows == [("a1", "b1"), ("a2", "b2"), ("a3", "b3")]
+    assert result.columns == ("col_a", "col_b")
+    assert result.rows == (("a1", "b1"), ("a2", "b2"), ("a3", "b3"))
     assert result.row_count == 3
 
 
@@ -146,8 +146,8 @@ def test_empty_result(monkeypatch, mock_conn):
     result = execute_query("SELECT id FROM species WHERE id = -1")
 
     assert result.row_count == 0
-    assert result.rows == []
-    assert result.columns == ["id"]
+    assert result.rows == ()
+    assert result.columns == ("id",)
 
 
 def test_result_is_immutable(monkeypatch, mock_conn):
