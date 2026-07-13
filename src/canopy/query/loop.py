@@ -153,6 +153,9 @@ def run_query(
     else:
         raise RuntimeError("Query loop exceeded maximum iterations")
 
+    iterations_used = iteration + 1
+    _log.info("loop_iterations=%d question=%r", iterations_used, question[:60])
+
     total_s = time.perf_counter() - t_total
     timing = {
         "total_s": round(total_s, 2),
@@ -160,6 +163,7 @@ def run_query(
         "llm_calls": len(llm_times),
         "db_s": round(sum(db_times), 3),
         "db_calls": len(db_times),
+        "iterations": iterations_used,
         "connection_id": conn.id,
         "model": active_model,
         "input_tokens": total_input_tokens,
