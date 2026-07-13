@@ -29,6 +29,8 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+testpaths = ["tests"]
+norecursedirs = ["tests/e2e"]
 markers = ["e2e: end-to-end browser tests — require: make playwright-install"]
 filterwarnings = [
     # Gradio uses a renamed Starlette constant — not actionable from canopy's code.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 import os
 import time
@@ -186,9 +187,10 @@ def run_query(
         "iterations": 0,
     }
 
-    model_text = asyncio.run(
-        _run_agent(question, status_cb, state, conn.id, active_model)
-    )
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
+        model_text = _pool.submit(
+            asyncio.run, _run_agent(question, status_cb, state, conn.id, active_model)
+        ).result()
 
     last_query_result: QueryResult | None = state["last_query_result"]
     total_s = time.perf_counter() - t_total

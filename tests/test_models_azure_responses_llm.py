@@ -7,6 +7,7 @@ don't call _post() at all.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 from unittest.mock import patch
 
@@ -21,6 +22,13 @@ from llama_index.core.llms.llm import ToolSelection
 from llama_index.core.tools import FunctionTool
 
 from canopy.models.azure_responses_llm import _DEFAULT_CONTEXT_WINDOW, AzureResponsesLLM
+
+
+def _run(coro):
+    """Run a coroutine in a dedicated thread so Playwright's loop never interferes."""
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(asyncio.run, coro)
+        return future.result()
 
 
 def _llm(**kwargs) -> AzureResponsesLLM:
@@ -362,12 +370,12 @@ def test_stream_chat_raises():
 
 def test_acomplete_raises():
     with pytest.raises(NotImplementedError):
-        asyncio.run(_llm().acomplete("prompt"))
+        _run(_llm().acomplete("prompt"))
 
 
 def test_astream_complete_raises():
     with pytest.raises(NotImplementedError):
-        asyncio.run(_llm().astream_complete("prompt"))
+        _run(_llm().astream_complete("prompt"))
 
 
 # ---------------------------------------------------------------------------
@@ -379,7 +387,7 @@ def test_achat_delegates_to_chat():
     llm = _llm()
     msgs = [ChatMessage(role=MessageRole.USER, content="hi")]
     with patch.object(llm, "_post", return_value=_text_response("async answer")):
-        resp = asyncio.run(llm.achat(msgs))
+        resp = _run(llm.achat(msgs))
     text_blocks = [b for b in resp.message.blocks if isinstance(b, TextBlock)]
     assert text_blocks[0].text == "async answer"
 
@@ -394,7 +402,7 @@ def test_astream_chat_yields_full_response():
             chunks = [chunk async for chunk in gen]
         return chunks
 
-    chunks = asyncio.run(run())
+    chunks = _run(run())
     assert len(chunks) == 1
     text_blocks = [b for b in chunks[0].message.blocks if isinstance(b, TextBlock)]
     assert text_blocks[0].text == "streamed"

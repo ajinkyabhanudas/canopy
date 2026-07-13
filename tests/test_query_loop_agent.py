@@ -7,10 +7,18 @@ test_query_loop.py skips by mocking _run_agent at the boundary.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from canopy.query.executor import QueryResult
 from canopy.query.loop import _build_sql_tool, _run_agent
+
+
+def _run(coro):
+    """Run a coroutine in a dedicated thread so Playwright's loop never interferes."""
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(asyncio.run, coro)
+        return future.result()
 
 
 def _make_state() -> dict:
@@ -142,7 +150,7 @@ def test_run_agent_returns_string():
     with patch("canopy.query.loop.FunctionAgent") as mock_fa_cls, \
          patch("canopy.query.loop.get_llm", return_value=mock_llm):
         mock_fa_cls.return_value = _mock_agent_run("Species found: 3")
-        result = asyncio.run(
+        result = _run(
             _run_agent("how many species?", None, state, "conn-1", "model-1")
         )
     assert result == "Species found: 3"
@@ -153,7 +161,7 @@ def test_run_agent_populates_llm_times():
     with patch("canopy.query.loop.FunctionAgent") as mock_fa_cls, \
          patch("canopy.query.loop.get_llm", return_value=MagicMock()):
         mock_fa_cls.return_value = _mock_agent_run("done")
-        asyncio.run(_run_agent("q", None, state, "c", "m"))
+        _run(_run_agent("q", None, state, "c", "m"))
     assert len(state["llm_times"]) == 1
     assert state["llm_times"][0] >= 0.0
 
@@ -164,7 +172,7 @@ def test_run_agent_calls_status_cb_understanding():
     with patch("canopy.query.loop.FunctionAgent") as mock_fa_cls, \
          patch("canopy.query.loop.get_llm", return_value=MagicMock()):
         mock_fa_cls.return_value = _mock_agent_run("done")
-        asyncio.run(_run_agent("q", lambda msg: calls.append(msg), state, "c", "m"))
+        _run(_run_agent("q", lambda msg: calls.append(msg), state, "c", "m"))
     assert len(calls) == 1
     assert calls[0]  # some status message was emitted
 
@@ -175,7 +183,7 @@ def test_run_agent_no_status_cb():
     with patch("canopy.query.loop.FunctionAgent") as mock_fa_cls, \
          patch("canopy.query.loop.get_llm", return_value=MagicMock()):
         mock_fa_cls.return_value = _mock_agent_run("ok")
-        result = asyncio.run(_run_agent("q", None, state, "c", "m"))
+        result = _run(_run_agent("q", None, state, "c", "m"))
     assert result == "ok"
 
 
@@ -190,7 +198,7 @@ def test_run_agent_builds_agent_with_system_prompt():
 
     with patch("canopy.query.loop.FunctionAgent", side_effect=capture_agent), \
          patch("canopy.query.loop.get_llm", return_value=MagicMock()):
-        asyncio.run(_run_agent("q", None, state, "c", "m"))
+        _run(_run_agent("q", None, state, "c", "m"))
 
     assert "system_prompt" in captured_kwargs
     assert len(captured_kwargs["system_prompt"]) > 100  # non-trivial prompt
@@ -206,7 +214,7 @@ def test_run_agent_builds_agent_with_max_iterations():
 
     with patch("canopy.query.loop.FunctionAgent", side_effect=capture_agent), \
          patch("canopy.query.loop.get_llm", return_value=MagicMock()):
-        asyncio.run(_run_agent("q", None, state, "c", "m"))
+        _run(_run_agent("q", None, state, "c", "m"))
 
     from canopy.query.loop import MAX_ITERATIONS
     assert captured_kwargs["max_iterations"] == MAX_ITERATIONS
