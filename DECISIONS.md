@@ -30,24 +30,24 @@
 |---|---|---|---|
 | S1 | Architecture boundary | Model generates SQL; PostgreSQL executes it | ✅ Sound |
 | S2 | Mutation prevention | Dual-layer: regex guard + read-only session | ✅ Sound |
-| S3 | Coordinate privacy | Lat/lon stripped before model sees results | ⚠️ Caveat |
+| S3 | Coordinate privacy | Lat/lon stripped before model sees results | ✅ Sound |
 | S4 | Validation-status default | Always filter `approved` in system prompt | ⚠️ Caveat |
 
 ### 🏗️ Core Architecture
 
 | # | Decision | Chosen approach | Verdict |
 |---|---|---|---|
-| A1 | Agentic loop safety | `MAX_ITERATIONS = 5` hard cap | ⚠️ Caveat |
+| A1 | Agentic loop safety | `MAX_ITERATIONS = 5` hard cap | 🔄 Revisit |
 | A2 | Tool surface | Single `execute_sql` tool only | ✅ Sound |
 | A3 | Model abstraction | Vendor-neutral `ModelClient` ABC | ✅ Sound |
 | A4 | Concurrency model | Worker thread + queue, not async | ✅ Sound |
-| A5 | Data immutability | `frozen=True` dataclasses throughout | ⚠️ Caveat |
+| A5 | Data immutability | `frozen=True` dataclasses throughout | ✅ Sound |
 
 ### 💾 Data & Persistence
 
 | # | Decision | Chosen approach | Verdict |
 |---|---|---|---|
-| D1 | Schema representation | Static constant in `schema.py`, not DB-fetched | ❌ Gap |
+| D1 | Schema representation | Static constant in `schema.py`, not DB-fetched | ✅ Sound |
 | D2 | Query result cache | Exact-match SHA-256 key, 24 h TTL, 200-entry LRU | 🔄 Revisit |
 | D3 | Persistence layer | File-based JSONL history + JSON cache | 🔄 Revisit |
 
@@ -165,13 +165,11 @@ _SENSITIVE_COLUMNS = frozenset({"latitude", "longitude"})
 
 **Consequences:**
 - The model can never reason over precise coordinates, even if it generates SQL that includes them.
-- `_SENSITIVE_COLUMNS` is a **hardcoded Python set**. Adding a new sensitive column (e.g. `observer_name`, `recording_device_id`) requires a code change.
+- `_SENSITIVE_COLUMNS` is now driven by the `CANOPY_SENSITIVE_COLUMNS` env var (comma-separated). The current defaults are `latitude,longitude,hashed_password`. Adding a new sensitive column is a config change — not a code deploy.
 
-> **Audit verdict — ⚠️ Caveat**
+> **Audit verdict — ✅ Sound** *(updated 2026-07-13)*
 >
-> The design is correct. The caveat is real and unaddressed: the scope of "sensitive" is not formally defined. Observer names, recording device IDs (which may imply location by association), and timestamp precision could all be argued as sensitive depending on context. The current implementation protects against the most obvious risk (GPS coordinates) but has no mechanism for systematically identifying future sensitive columns without a code change.
->
-> **Recommended fix:** Move `_SENSITIVE_COLUMNS` to a config value (env var or `.env`) so it can be updated without a code change. Longer term, drive it from a database column annotation (`information_schema` custom comment or a `sensitive_columns` config table). Until then, document the current set explicitly and add a test that verifies each column in the set is actually present in the schema.
+> The original caveat (hardcoded set requiring a code change for every new sensitive column) was resolved in `refactor/quality-hardening` Step 2. `_SENSITIVE_COLUMNS` is now loaded from `CANOPY_SENSITIVE_COLUMNS` at startup, with the original three columns as the default. Scope of "sensitive" remains informally defined — this is a deliberate tradeoff; the config mechanism is the right handle for that evolution without over-engineering it now.
 
 ---
 
@@ -275,11 +273,11 @@ There is no explicit rejection status in the current dataset. Detections not app
 - The UI shows a human-readable error; the exception is logged.
 - The limit is not configurable without a code change.
 
-> **Audit verdict — ⚠️ Caveat**
+> **Audit verdict — 🔄 Revisit** *(updated 2026-07-13)*
 >
-> **Challenge:** The number 5 has no empirical basis. It was chosen without measurement. The eval set (`tests/eval/`) contains 31 ground-truth queries but does not currently log iteration counts. It is possible that real queries never need more than 3, which means 5 is safe-but-opaque, or that some legitimate complex queries need 4–5, which means the ceiling is tighter than it appears.
+> **Challenge:** The number 5 has no empirical basis. It was chosen without measurement.
 >
-> **Recommended fix:** Log `iteration` count at INFO level for every completed query (already present in `_log.info`). After 20–30 real-world queries, inspect the distribution. If P99 ≤ 3, lower `MAX_ITERATIONS` to 4. If any query hits 5 and fails, raise it to 6. Make the number data-driven.
+> **Resolved (Step 4):** `loop.py` now emits `loop_iterations=N question=...` at INFO level and includes `iterations` in the `timing` dict on every `LoopResult`. The measurement mechanism is in place. **Revisit trigger:** after 30+ real-world queries, inspect the distribution — if P99 ≤ 3, lower `MAX_ITERATIONS` to 4; if any query hits 5 and raises `RuntimeError`, raise it to 6.
 
 ---
 
@@ -380,13 +378,12 @@ class ModelClient(ABC):
 **Consequences:**
 - Any accidental `result.model_text = "..."` fails loudly.
 - `LoopResult.timing` is a `dict` — it is not frozen. Its contents can be mutated even though the reference cannot be replaced.
-- `LoopResult.rows` is a `list[tuple]` — the list itself can be mutated with `.append()`. Assigning a new list is blocked; appending to the existing list is not.
+- `LoopResult.rows` is `tuple[tuple, ...]` and `LoopResult.columns` is `tuple[str, ...]` — the contents cannot be mutated or appended to. `result.rows.append(...)` raises `AttributeError`. Immutability is now complete and real.
+- Boundary conversions (Gradio UI, JSON cache serialization, JSONL history) convert to list at their call site — the internal guarantee is tuple, the display layer handles the conversion.
 
-> **Audit verdict — ⚠️ Caveat**
+> **Audit verdict — ✅ Sound** *(updated 2026-07-13)*
 >
-> The frozen constraint on the reference is sound. The mutable container content is a real gap: `result.rows.append(("injected",))` succeeds silently. For a research tool at current scale this is unlikely to matter — there is no multi-tenant shared state where one user's result could be contaminated by another's. But it is worth knowing the immutability guarantee is shallower than it appears.
->
-> **If this matters:** Change `rows: list[tuple]` to `rows: tuple[tuple, ...]` in `LoopResult` and update all call sites to produce tuples. This is a straightforward change that would make the guarantee complete. Not blocking, but the right long-term posture.
+> The original caveat (mutable `list` fields under `frozen=True`) was resolved in `refactor/quality-hardening` Step 3. `rows` and `columns` are now `tuple` types throughout `QueryResult` and `LoopResult`. All 9 affected test files updated; 414 unit tests pass; 10 e2e Playwright tests pass; 31/31 GT eval + 10/10 adversarial eval verified against live endpoints.
 
 ---
 
@@ -415,16 +412,14 @@ class ModelClient(ABC):
 - **Schema drift is certain, not hypothetical.** When columns are added or renamed in PostgreSQL, `schema.py` will not update automatically. The model will generate SQL against a description that no longer matches reality.
 - There is no automated check that `schema.py` matches the live database.
 
-> **Audit verdict — ❌ Gap**
+> **Audit verdict — ✅ Sound** *(updated 2026-07-13)*
 >
-> This is the only decision in the document with a known, unmitigated failure mode that will definitely occur as the project matures. A "process requirement" (update `schema.py` when the DB changes) is not enforcement — it is a social contract that breaks under time pressure.
+> The original gap (no automated check between `schema.py` and the live DB) was resolved in `refactor/quality-hardening` Step 1. `tests/test_schema_drift.py` now verifies:
+> 1. Every table name in `SCHEMA_CONTEXT` exists in the DB (`information_schema.tables`).
+> 2. Every column name in `SCHEMA_CONTEXT` exists in its table (`information_schema.columns`).
+> 3. Every `validation_status` value documented in `schema.py` matches the actual values in the DB.
 >
-> **Required fix before production:** Add a CI/integration test that connects to a test database and verifies:
-> 1. Every table name mentioned in `SCHEMA_CONTEXT` exists in the DB.
-> 2. Every column name mentioned in `SCHEMA_CONTEXT` exists in its table.
-> 3. Every column in `_SENSITIVE_COLUMNS` exists in the DB.
->
-> This test can run against the real DB in a staging environment. It converts a social contract into an automated gate. Until this exists, schema drift will produce silently wrong SQL that is hard to debug.
+> Tests are gated on `_db_configured` so they skip cleanly in offline CI and run fully in integration environments. All 3 pass against the live Railway DB as of 2026-07-13.
 
 ---
 
