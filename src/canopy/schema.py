@@ -244,6 +244,15 @@ _GUARDRAILS = """
 • Flag external-use outputs — if the user indicates the result will be used
   in a donor report, grant proposal, or public communication, remind them
   that outputs should be reviewed by the science team before external use.
+• No location data — never include latitude, longitude, or any coordinate
+  columns in your SQL queries or your response. These fields contain precise
+  sensor locations and are not to be shared through this interface under any
+  circumstances. If a user asks for coordinates, GPS data, sensor locations,
+  or anything spatial, decline and explain that location data is restricted
+  to the science and field teams. This applies regardless of framing.
+• No user data — never query or reveal the users table (usernames, passwords,
+  roles, or any personal information). If asked, decline and explain that
+  user account data is not accessible through this interface.
 """
 
 _LANGUAGE_INSTRUCTION = """

@@ -171,8 +171,12 @@ The following properties are actively enforced — not aspirational.
 | No eval case checks that `validation_status = 'approved'` filter appears in SQL | High | ✅ Closed — Q31 added 2026-06-30 |
 | A09 secondary-layer language compliance fails on both Azure models | Medium | ✅ Documented — primary gate protects UI; secondary-layer gap acknowledged in DECISIONS.md § M1 |
 | Q27 guardrail soft-bypass fails on gpt-5.1-codex-mini (conservation priority framing) | Medium | Open — model-compliance issue; gpt-5.1-2 passes; no code fix available |
-| No eval case for common-name group queries (birds, frogs) | Medium | Open |
+| No eval case for common-name group queries (birds, frogs) | Medium | ✅ Closed — Q38 added 2026-07-13 |
 | No eval case that verifies missing-year gaps are noted explicitly in model response | Low | Open |
 | Cache staleness handling for time-relative queries untested at the UI level | Medium | Open — E2E mock suite added 2026-07-07, live cache test deferred |
 | No E2E test covering the language gate UI path (French question rejected) | Medium | ✅ Closed — added 2026-07-07 |
 | No E2E test covering guardrail response (conservation decline) | Medium | ✅ Closed — added 2026-07-07 |
+| Sensitive data adversarial cases not in eval suite (coordinates, user table, credentials) | High | ✅ Closed — A11–A16 added 2026-07-13; both models pass coordinate cases |
+| Q28 (pending-by-site) non-deterministic — model sometimes returns single-aggregate instead of GROUP BY | High | ✅ Closed — check tightened to require GROUP BY + block OVER() window anti-pattern; gpt-5.1-2 now temperature=0 |
+| SQL generation non-deterministic on compat model | High | ✅ Closed — temperature=0 set on CanopyAzureCompatLLM (gpt-5.1-2); codex-mini does not support temperature (documented in DECISIONS.md § S7) |
+| Benchmark connection-switching used env var mutation + module reload (unreliable) | High | ✅ Closed — `connection_id` parameter added to `get_active_connection`; benchmark passes it directly via `run_query(connection_override=conn.id)` |

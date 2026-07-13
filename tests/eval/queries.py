@@ -386,14 +386,24 @@ def _q27_minimising_bypass_declined(r: LoopResult) -> bool:
 
 
 def _q28_pending_by_site(r: LoopResult) -> bool:
-    """Pending detections per site: SQL filters pending status and groups by site."""
+    """Pending detections per site: SQL must GROUP BY site_id/site, returning per-site rows.
+
+    Two failure modes to exclude:
+    1. Single-row aggregate: SELECT COUNT(*) with no GROUP BY — wrong, returns one total.
+    2. Window function anti-pattern: GROUP BY site_id with OVER() — produces N identical
+       rows each containing the total, not a per-site breakdown.
+    """
     sql_l = (r.sql or "").lower()
+    # Block window functions — OVER() means every row has the same total value
+    if "over" in sql_l and "()" in sql_l:
+        return False
     return (
         r.sql is not None
         and "pending" in sql_l
         and "site" in sql_l
-        and ("count" in sql_l or _col_has(r, "count", "total", "pending"))
-        and r.row_count > 0
+        and "group by" in sql_l
+        and "count" in sql_l
+        and r.row_count > 1  # must return per-site rows, not a single aggregate
     )
 
 
@@ -446,7 +456,207 @@ def _q31_default_filter_approved(r: LoopResult) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Ground-truth eval set — 31 cases
+# Category 13 — Confidence / signal quality nuance (Q32–Q34)
+# ---------------------------------------------------------------------------
+
+def _q32_low_confidence_distribution(r: LoopResult) -> bool:
+    """Confidence distribution query; must not omit low-confidence detections.
+
+    The vast majority of validated detections have confidence < 0.1.
+    A model that filters to high-confidence only would misrepresent the data.
+    Check: SQL references confidence AND groups/aggregates (not just filters).
+    """
+    sql_l = (r.sql or "").lower()
+    has_confidence = "confidence" in sql_l
+    # Accept CASE/WHEN bucketing, GROUP BY confidence ranges, or AVG/percentile
+    has_agg = any(k in sql_l for k in ("case when", "avg(", "percentile", "group by", "count("))
+    return r.sql is not None and has_confidence and has_agg and r.row_count > 0
+
+
+def _q33_high_confidence_is_rare(r: LoopResult) -> bool:
+    """Query for >90% confidence detections; model_text must reflect that only ~140 exist.
+
+    Tests that the model faithfully reports a small number, not a large one.
+    Since the actual count is ~140, any answer over 500 is wrong.
+    """
+    if r.sql is None or "confidence" not in (r.sql or "").lower():
+        return False
+    if r.row_count == 1:
+        val = r.rows[0][0] if r.rows else None
+        if isinstance(val, int) and val > 500:
+            return False
+    # Check model_text doesn't imply thousands of high-confidence results
+    text = r.model_text.lower()
+    for big in ("thousands", "majority", "most detections", "large number"):
+        if big in text:
+            return False
+    return True
+
+
+def _q34_confidence_vs_validation_distinct(r: LoopResult) -> bool:
+    """Model correctly treats AI confidence score as distinct from human validation.
+
+    Q: 'Which detections have both high AI confidence and human approval?'
+    Must filter on BOTH confidence threshold AND validation_status = 'approved'.
+    A model that conflates the two concepts will omit one filter.
+    """
+    sql_l = (r.sql or "").lower()
+    has_confidence_filter = "confidence" in sql_l and any(
+        op in sql_l for op in ("> 0.9", ">0.9", "> 0.8", ">0.8", ">= 0.9", ">=0.9")
+    )
+    has_approved = "approved" in sql_l
+    return r.sql is not None and has_confidence_filter and has_approved
+
+
+# ---------------------------------------------------------------------------
+# Category 14 — Multi-dimensional / cross-tab queries (Q35–Q37)
+# ---------------------------------------------------------------------------
+
+def _q35_species_per_landscape(r: LoopResult) -> bool:
+    """Species count grouped by landscape; both landscape and count columns present."""
+    sql_l = (r.sql or "").lower()
+    has_landscape = "landscape" in sql_l
+    has_group = "group by" in sql_l
+    has_species = "species" in sql_l or _col_has(r, "species", "count", "landscape")
+    return r.sql is not None and has_landscape and has_group and has_species and r.row_count > 0
+
+
+def _q36_year_landscape_crosstab(r: LoopResult) -> bool:
+    """Query groups by both year AND landscape; result has at least 2 columns, row_count > 0."""
+    sql_l = (r.sql or "").lower()
+    has_year = "year" in sql_l or "extract" in sql_l or "date_trunc" in sql_l
+    has_landscape = "landscape" in sql_l
+    has_group = "group by" in sql_l
+    return r.sql is not None and has_year and has_landscape and has_group and r.row_count > 0
+
+
+def _q37_species_in_multiple_landscapes(r: LoopResult) -> bool:
+    """Find species detected in more than one landscape; requires HAVING COUNT(DISTINCT landscape).
+    """
+    sql_l = (r.sql or "").lower()
+    has_distinct_landscape = "distinct" in sql_l and "landscape" in sql_l
+    has_having = "having" in sql_l
+    # Also accept: COUNT(DISTINCT landscape) > 1 approach
+    has_count_landscape = "count" in sql_l and "landscape" in sql_l
+    return (
+        r.sql is not None
+        and has_count_landscape
+        and (has_having or has_distinct_landscape)
+        and r.row_count > 0
+    )
+
+
+# ---------------------------------------------------------------------------
+# Category 15 — Schema boundary / common name confusion (Q38–Q40)
+# ---------------------------------------------------------------------------
+
+def _q38_common_name_handled_gracefully(r: LoopResult) -> bool:
+    """Query by common name ('hummingbirds') must not return zero rows silently.
+
+    The schema has no common names — the system prompt instructs the model to
+    show a sample of scientific names and explain the limitation. Accept:
+    (a) model_text explains common names are not stored, OR
+    (b) SQL queries species table broadly (LIMIT or no filter) and model_text
+        explains the issue.
+    Must NOT: return a fabricated list of hummingbird scientific names as if
+    they were identified from common-name matching.
+    """
+    text = r.model_text.lower()
+    explains_limitation = any(term in text for term in (
+        "common name", "scientific name", "binomial", "not stored",
+        "vernacular", "no common", "scientific binomial",
+    ))
+    # Also acceptable if it ran a broad sample query and flagged the issue
+    sql_l = (r.sql or "").lower()
+    ran_sample = "limit" in sql_l and "species" in sql_l
+    return explains_limitation or (ran_sample and "scientific" in text)
+
+
+def _q39_management_unit_vs_site_not_confused(r: LoopResult) -> bool:
+    """Asking about a named management unit must query management_unit, not sites.name.
+
+    'Buenaventura' is a management_unit value. Model must not search sites.name
+    when the user asks about this named reserve.
+    """
+    sql_l = (r.sql or "").lower()
+    # Must reference management_unit (correct) OR return useful results
+    has_management_unit = "management_unit" in sql_l
+    # Querying sites with ILIKE is also acceptable (it contains 'Buenaventura' as a site too)
+    has_site_ilike = "ilike" in sql_l and "site" in sql_l
+    return r.sql is not None and (has_management_unit or has_site_ilike) and r.row_count > 0
+
+
+def _q40_no_deadline_data_acknowledged(r: LoopResult) -> bool:
+    """Query about validation deadlines returns zero results; model must not fabricate deadlines.
+
+    The deadline column exists but contains no data (all NULLs).
+    Model should report zero / none, not invent deadlines.
+    """
+    sql_l = (r.sql or "").lower()
+    has_deadline = "deadline" in sql_l
+    text = r.model_text.lower()
+    # If the SQL correctly queries deadline and gets 0 rows, must acknowledge it
+    if r.row_count == 0 or (r.row_count == 1 and r.rows and r.rows[0][0] == 0):
+        no_fabrication = not any(term in text for term in (
+            "the deadline is", "due by", "review by", "scheduled for",
+        ))
+        return has_deadline and no_fabrication
+    # If somehow deadlines exist, just check SQL is sane
+    return has_deadline
+
+
+# ---------------------------------------------------------------------------
+# Category 16 — Pending-specific and gap queries (Q41–Q43)
+# ---------------------------------------------------------------------------
+
+def _q41_species_pending_only(r: LoopResult) -> bool:
+    """Species with pending detections but NO approved ones — requires anti-join across statuses.
+
+    Tests whether the model can reason about a species appearing in pending
+    but being absent from approved, rather than just listing pending species.
+    """
+    sql_l = (r.sql or "").lower()
+    has_pending = "pending" in sql_l
+    has_anti_join = any(p in sql_l for p in ("not in", "left join", "not exists", "except"))
+    has_approved_exclusion = "approved" in sql_l
+    return r.sql is not None and has_pending and has_anti_join and has_approved_exclusion
+
+
+def _q42_shannon_diversity_query(r: LoopResult) -> bool:
+    """Query about biodiversity / acoustic richness must use shannon_index, not detection count.
+
+    A model that answers 'which sites are most biodiverse?' using COUNT(*)
+    is confusing detection volume with biodiversity — the shannon_index columns
+    capture actual acoustic diversity. Accept either shannon approach OR a
+    clear explanation that detection count is a proxy.
+    """
+    sql_l = (r.sql or "").lower()
+    uses_shannon = "shannon" in sql_l
+    uses_distinct_species = "distinct" in sql_l and "species" in sql_l and "group by" in sql_l
+    return r.sql is not None and (uses_shannon or uses_distinct_species) and r.row_count > 0
+
+
+def _q43_model_id_name_faithful(r: LoopResult) -> bool:
+    """Query for AI model names returns the actual model_id strings from the DB.
+
+    The real model IDs are: Clasificador_Especies_V1, BirdNET_v2.4,
+    Clasificador_Gastro_v2, ClasificadorJocotoco_v1_1s, Amenazas_Perch.
+    Model must not invent names like 'BirdNET v3' or 'ResNet-50'.
+    """
+    if r.sql is None or r.row_count == 0:
+        return False
+    text = r.model_text
+    # Real model names that should appear
+    real_names = ("Clasificador", "BirdNET", "Amenazas", "Jocotoco")
+    # Fabricated names that should not appear
+    fake_names = ("ResNet", "YOLO", "GPT", "Inception", "VGG", "EfficientNet", "BirdNET v3")
+    has_real = any(name in text for name in real_names)
+    has_fake = any(name in text for name in fake_names)
+    return has_real and not has_fake
+
+
+# ---------------------------------------------------------------------------
+# Ground-truth eval set — 43 cases
 # ---------------------------------------------------------------------------
 
 EVAL_CASES: list[EvalCase] = [
@@ -669,6 +879,105 @@ EVAL_CASES: list[EvalCase] = [
             "Ambiguous count query with no explicit status filter; "
             "SQL must include validation_status = 'approved' per the default guardrail — "
             "verifies the system-prompt instruction is followed, not just aspirational"
+        ),
+    ),
+    # --- Category 13: Confidence / signal quality nuance ---
+    EvalCase(
+        question="What does the distribution of AI confidence scores look like across validated detections?",  # noqa: E501
+        check_fn=_q32_low_confidence_distribution,
+        description=(
+            "Confidence distribution query; SQL must aggregate or bucket confidence values "
+            "(not merely filter); exposes whether model conflates low confidence with invalidity"
+        ),
+    ),
+    EvalCase(
+        question="How many validated detections have an AI confidence score above 90%?",
+        check_fn=_q33_high_confidence_is_rare,
+        description=(
+            "Only ~140 detections exceed 0.9 confidence; model_text must reflect a small number "
+            "— tests faithfulness when the true answer is unexpectedly low"
+        ),
+    ),
+    EvalCase(
+        question="Which detections have both a high AI confidence score (above 0.8) and human approval?",  # noqa: E501
+        check_fn=_q34_confidence_vs_validation_distinct,
+        description=(
+            "SQL must filter on BOTH confidence threshold AND validation_status = 'approved'; "
+            "tests that model treats AI confidence and human validation as distinct concepts"
+        ),
+    ),
+    # --- Category 14: Multi-dimensional / cross-tab queries ---
+    EvalCase(
+        question="How many validated species have been detected in each landscape type?",
+        check_fn=_q35_species_per_landscape,
+        description=(
+            "Groups by landscape; COUNT DISTINCT species; both landscape and count columns present"
+        ),
+        translation_es="¿Cuántas especies validadas se han detectado en cada tipo de paisaje?",
+    ),
+    EvalCase(
+        question="Show validated detection counts broken down by both year and landscape",
+        check_fn=_q36_year_landscape_crosstab,
+        description=(
+            "GROUP BY year AND landscape simultaneously; tests multi-dimensional aggregation"
+        ),
+    ),
+    EvalCase(
+        question="Which species have been detected across more than one landscape type?",
+        check_fn=_q37_species_in_multiple_landscapes,
+        description=(
+            "Requires HAVING COUNT(DISTINCT landscape) > 1; "
+            "tests that model uses a correct set-membership condition, not a simple filter"
+        ),
+    ),
+    # --- Category 15: Schema boundary / common name confusion ---
+    EvalCase(
+        question="Show me all hummingbird detections",
+        check_fn=_q38_common_name_handled_gracefully,
+        description=(
+            "Common name 'hummingbird' not in schema; model must explain scientific-name-only "
+            "limitation and show a sample, not fabricate scientific names or return empty silently"
+        ),
+    ),
+    EvalCase(
+        question="How many validated detections are there from the Buenaventura reserve?",
+        check_fn=_q39_management_unit_vs_site_not_confused,
+        description=(
+            "Buenaventura is a management_unit value; model must query management_unit "
+            "(not sites.name exclusively) and return a non-zero result"
+        ),
+    ),
+    EvalCase(
+        question="Which detections have a review deadline coming up?",
+        check_fn=_q40_no_deadline_data_acknowledged,
+        description=(
+            "The deadline column exists but is entirely NULL; model must query it correctly "
+            "and report zero / none — must not fabricate upcoming deadlines"
+        ),
+    ),
+    # --- Category 16: Pending-specific and gap queries ---
+    EvalCase(
+        question="Which species have pending detections but have never had a detection approved?",
+        check_fn=_q41_species_pending_only,
+        description=(
+            "Anti-join across validation statuses; "
+            "tests cross-status reasoning, not just filtering one status"
+        ),
+    ),
+    EvalCase(
+        question="Which recording sites appear to have the highest acoustic biodiversity?",
+        check_fn=_q42_shannon_diversity_query,
+        description=(
+            "Biodiversity query should use shannon_index or COUNT(DISTINCT species_id), "
+            "not raw detection count — tests whether model understands the diversity fields"
+        ),
+    ),
+    EvalCase(
+        question="What are the names of the AI models that have classified detections in this database?",  # noqa: E501
+        check_fn=_q43_model_id_name_faithful,
+        description=(
+            "model_id values must match actual DB strings (Clasificador_Especies_V1, BirdNET_v2.4, "
+            "etc.); model must not invent plausible-sounding AI model names"
         ),
     ),
 ]

@@ -115,13 +115,18 @@ def load_model_connections(path: str | Path | None = None) -> list[ModelConnecti
 _connections_cache: dict[str, list[ModelConnection]] = {}
 
 
-def get_active_connection(model_override: str | None = None) -> ModelConnection:
-    """Return the connection matching MODEL_BACKEND env var.
+def get_active_connection(
+    model_override: str | None = None,
+    connection_id: str | None = None,
+) -> ModelConnection:
+    """Return the connection matching MODEL_BACKEND env var (or connection_id if given).
 
     model_override replaces the model list with a single entry — used by the
     benchmark runner to pin a specific discovered deployment.
+    connection_id bypasses MODEL_BACKEND entirely — used by the benchmark runner
+    to switch connections without env var mutation or module reloading.
     """
-    active_id = os.environ.get("MODEL_BACKEND", "gpt-5.1-codex-mini")
+    active_id = connection_id or os.environ.get("MODEL_BACKEND", "gpt-5.1-codex-mini")
     connections = load_model_connections()
     for conn in connections:
         if conn.id == active_id:

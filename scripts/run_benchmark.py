@@ -9,7 +9,7 @@ At most MAX_TESTED_MODELS models are benchmarked per connection. If more are
 available, the extras are recorded in the JSON output and README but not run
 (they are too expensive and slow to test on every run).
 
-Runs ground-truth (31 cases) + adversarial (10 cases) eval suites against
+Runs ground-truth (43 cases) + adversarial (16 cases) eval suites against
 every (connection, model) pair. Prints a comparison table to stdout and writes
 benchmark_results.json and benchmark_results.csv next to this script.
 
@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import csv
 import json
-import os
 import sys
 import time
 from dataclasses import dataclass
@@ -149,7 +148,7 @@ def _run_case(
 ) -> CaseResult:
     t0 = time.monotonic()
     try:
-        result = run_query(case.question)
+        result = run_query(case.question, connection_override=conn_id)
         latency = time.monotonic() - t0
         passed = case.check_fn(result)
         in_tok = result.timing.get("input_tokens", 0) if result.timing else 0
@@ -201,52 +200,39 @@ def _benchmark_model(
     run_gt: bool,
     run_adv: bool,
 ) -> list[CaseResult]:
-    """Run eval suites for one (connection, model) pair with env vars set."""
+    """Run eval suites for one (connection, model) pair.
+
+    Uses connection_override so the active connection is switched at the run_query
+    call level — no env var mutation or module reloading required.
+    """
     results: list[CaseResult] = []
 
     # Clear query cache so every case runs live — cache hits produce zero token
     # counts and zero cost, making benchmark totals meaningless across runs.
     clear_cache()
 
-    # Temporarily redirect the active connection to this model
-    original_backend = os.environ.get("MODEL_BACKEND")
-    os.environ["MODEL_BACKEND"] = conn.id
-    # Clear the module-level cache in config so get_active_connection() re-reads
-    import importlib  # noqa: PLC0415
+    label = f"{conn.id}/{model}"
+    print(f"\n{'─' * 70}")
+    print(f"  {label}")
+    print(f"{'─' * 70}")
 
-    import canopy.config as cfg_mod  # noqa: PLC0415
-    importlib.reload(cfg_mod)
+    if run_gt:
+        for i, case in enumerate(EVAL_CASES, 1):
+            cid = f"Q{i:02d}"
+            r = _run_case(conn.id, conn.backend, model, "ground-truth", cid, case)
+            status = "PASS" if r.passed else "FAIL"
+            print(f"  {cid}  [{status}]  {r.latency_s:.1f}s  {case.question[:60]}")
+            results.append(r)
 
-    try:
-        label = f"{conn.id}/{model}"
-        print(f"\n{'─' * 70}")
-        print(f"  {label}")
-        print(f"{'─' * 70}")
-
-        if run_gt:
-            for i, case in enumerate(EVAL_CASES, 1):
-                cid = f"Q{i:02d}"
-                r = _run_case(conn.id, conn.backend, model, "ground-truth", cid, case)
-                status = "PASS" if r.passed else "FAIL"
-                print(f"  {cid}  [{status}]  {r.latency_s:.1f}s  {case.question[:60]}")
-                results.append(r)
-
-        if run_adv:
-            for i, case in enumerate(ADVERSARIAL_CASES, 1):
-                cid = f"A{i:02d}"
-                r = _run_case(
-                    conn.id, conn.backend, model, "adversarial", cid, case, guard_pass=True
-                )
-                status = "PASS" if r.passed else "FAIL"
-                print(f"  {cid}  [{status}]  {r.latency_s:.1f}s  {case.question[:60]}")
-                results.append(r)
-
-    finally:
-        if original_backend is None:
-            os.environ.pop("MODEL_BACKEND", None)
-        else:
-            os.environ["MODEL_BACKEND"] = original_backend
-        importlib.reload(cfg_mod)
+    if run_adv:
+        for i, case in enumerate(ADVERSARIAL_CASES, 1):
+            cid = f"A{i:02d}"
+            r = _run_case(
+                conn.id, conn.backend, model, "adversarial", cid, case, guard_pass=True
+            )
+            status = "PASS" if r.passed else "FAIL"
+            print(f"  {cid}  [{status}]  {r.latency_s:.1f}s  {case.question[:60]}")
+            results.append(r)
 
     return results
 
