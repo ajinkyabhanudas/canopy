@@ -28,8 +28,8 @@ class SQLGuardError(ValueError):
 class QueryResult:
     """Immutable result of a single SQL query execution."""
 
-    columns: list[str]
-    rows: list[tuple]
+    columns: tuple[str, ...]
+    rows: tuple[tuple, ...]
     row_count: int
 
 
@@ -70,8 +70,8 @@ def execute_query(sql: str) -> QueryResult:
         cursor.execute(sql)
         if cursor.description is None:
             raise SQLGuardError("Query produced no result set — only SELECT is permitted", sql=sql)
-        rows = cursor.fetchall()
-        columns = [desc[0] for desc in cursor.description]
+        rows = tuple(cursor.fetchall())
+        columns = tuple(desc[0] for desc in cursor.description)
         return QueryResult(columns=columns, rows=rows, row_count=len(rows))
     finally:
         cursor.close()

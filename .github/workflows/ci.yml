@@ -2,9 +2,16 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: ["**"]
   pull_request:
-    branches: [main]
+    branches: ["**"]
+
+# Branch protection note:
+# Go to Settings → Branches → Add rule for "main":
+#   ✅ Require status checks to pass before merging
+#       Required checks: check, e2e
+#   ✅ Require branches to be up to date before merging
+#   ✅ Do not allow bypassing the above settings
 
 jobs:
   check:

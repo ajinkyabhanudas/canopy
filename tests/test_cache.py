@@ -17,13 +17,19 @@ def _result(**overrides) -> LoopResult:
     defaults = dict(
         question="Which species were detected?",
         sql="SELECT * FROM species",
-        columns=["scientific_name"],
-        rows=[("Grallaria gigantea",)],
+        columns=("scientific_name",),
+        rows=(("Grallaria gigantea",),),
         row_count=1,
         model_text="One species was detected.",
         timing={"total_s": 5.0, "llm_s": 4.8, "llm_calls": 1, "db_s": 0.1, "db_calls": 1},
     )
-    return LoopResult(**{**defaults, **overrides})
+    merged = {**defaults, **overrides}
+    # Normalise to tuples so tests that pass lists still construct correctly
+    if isinstance(merged.get("columns"), list):
+        merged["columns"] = tuple(merged["columns"])
+    if isinstance(merged.get("rows"), list):
+        merged["rows"] = tuple(tuple(r) if isinstance(r, list) else r for r in merged["rows"])
+    return LoopResult(**merged)
 
 
 # ---------------------------------------------------------------------------
@@ -148,8 +154,8 @@ def test_lookup_returns_loop_result_on_hit(tmp_path, monkeypatch):
     assert result is not None
     assert result.question == question
     assert result.sql == "SELECT scientific_name FROM species"
-    assert result.columns == ["scientific_name"]
-    assert result.rows == [("Grallaria gigantea",)]
+    assert result.columns == ("scientific_name",)
+    assert result.rows == (("Grallaria gigantea",),)
     assert result.row_count == 1
     assert result.model_text == "One species found."
 

@@ -9,16 +9,21 @@ from canopy.query.loop import LoopResult
 
 
 def _make_result(**overrides) -> LoopResult:
-    defaults = dict(
+    defaults: dict = dict(
         question="How many detections?",
         sql="SELECT COUNT(*) FROM detections",
-        columns=["count"],
-        rows=[(5,)],
+        columns=("count",),
+        rows=((5,),),
         row_count=5,
         model_text="There are 5 detections.",
         timing={"total_s": 1.2, "llm_s": 1.1, "llm_calls": 1, "db_s": 0.05, "db_calls": 1},
     )
-    return LoopResult(**{**defaults, **overrides})
+    merged = {**defaults, **overrides}
+    if isinstance(merged.get("columns"), list):
+        merged["columns"] = tuple(merged["columns"])
+    if isinstance(merged.get("rows"), list):
+        merged["rows"] = tuple(tuple(r) if isinstance(r, list) else r for r in merged["rows"])
+    return LoopResult(**merged)
 
 
 def _run(question: str, session_history: list | None = None) -> tuple:

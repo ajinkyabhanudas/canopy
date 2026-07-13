@@ -52,8 +52,8 @@ class _OperationalError(psycopg2.OperationalError):
 _SUCCESS = LoopResult(
     question="test",
     sql="SELECT COUNT(*) FROM detections",
-    columns=["count"],
-    rows=[(42,)],
+    columns=("count",),
+    rows=((42,),),
     row_count=1,
     model_text="There are 42 detections in the database.",
     timing={
@@ -69,8 +69,8 @@ _SUCCESS = LoopResult(
 _GUARDRAIL = LoopResult(
     question="test",
     sql=None,
-    columns=[],
-    rows=[],
+    columns=(),
+    rows=(),
     row_count=0,
     model_text=(
         "I cannot assess conservation trends or population status from detection counts alone. "

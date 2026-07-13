@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -39,7 +40,12 @@ EXECUTE_SQL_TOOL: dict = {
 }
 
 _ROW_DISPLAY_LIMIT = 200
-_SENSITIVE_COLUMNS = frozenset({"latitude", "longitude", "hashed_password"})
+
+def _load_sensitive_columns() -> frozenset[str]:
+    raw = os.environ.get("CANOPY_SENSITIVE_COLUMNS", "latitude,longitude,hashed_password")
+    return frozenset(c.strip() for c in raw.split(",") if c.strip())
+
+_SENSITIVE_COLUMNS = _load_sensitive_columns()
 
 
 @dataclass(frozen=True)
@@ -48,8 +54,8 @@ class LoopResult:
 
     question: str
     sql: str | None
-    columns: list[str]
-    rows: list[tuple]
+    columns: tuple[str, ...]
+    rows: tuple[tuple, ...]
     row_count: int
     model_text: str
     timing: dict = field(default_factory=dict)
@@ -147,6 +153,9 @@ def run_query(
     else:
         raise RuntimeError("Query loop exceeded maximum iterations")
 
+    iterations_used = iteration + 1
+    _log.info("loop_iterations=%d question=%r", iterations_used, question[:60])
+
     total_s = time.perf_counter() - t_total
     timing = {
         "total_s": round(total_s, 2),
@@ -154,6 +163,7 @@ def run_query(
         "llm_calls": len(llm_times),
         "db_s": round(sum(db_times), 3),
         "db_calls": len(db_times),
+        "iterations": iterations_used,
         "connection_id": conn.id,
         "model": active_model,
         "input_tokens": total_input_tokens,
@@ -171,8 +181,8 @@ def run_query(
     result = LoopResult(
         question=question,
         sql=last_sql,
-        columns=last_query_result.columns if last_query_result else [],
-        rows=last_query_result.rows if last_query_result else [],
+        columns=last_query_result.columns if last_query_result else (),
+        rows=last_query_result.rows if last_query_result else (),
         row_count=last_query_result.row_count if last_query_result else 0,
         model_text=response.text or "",
         timing=timing,
