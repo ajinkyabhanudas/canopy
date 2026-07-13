@@ -138,6 +138,7 @@ async def _run_agent(
 def run_query(
     question: str,
     status_cb: Callable[[str], None] | None = None,
+    connection_override: str | None = None,
 ) -> LoopResult:
     """Translate a natural language question into SQL, execute it, and return the result.
 
@@ -148,6 +149,8 @@ def run_query(
 
     Args:
         question: A natural language question about the species monitoring data.
+        connection_override: Optional connection ID to use instead of MODEL_BACKEND.
+            Used by the benchmark runner to switch connections without env var mutation.
 
     Returns:
         LoopResult containing the question, the SQL that was run, the raw query
@@ -157,7 +160,7 @@ def run_query(
         RuntimeError: If the model exceeds MAX_ITERATIONS.
         SQLGuardError: If the model generates a non-SELECT SQL statement.
     """
-    conn = get_active_connection()
+    conn = get_active_connection(connection_id=connection_override)
     active_model = conn.models[0] if conn.models else conn.id
     _log.info(
         "run_query started — backend=%s model=%s question=%r",
