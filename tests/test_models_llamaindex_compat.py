@@ -8,11 +8,10 @@ exercised here.
 from __future__ import annotations
 
 from canopy.models.llamaindex_compat import (
-    CanopyAzureCompatLLM,
     _DEFAULT_CONTEXT_WINDOW,
+    CanopyAzureCompatLLM,
     build_openai_compat_llm,
 )
-
 
 # ---------------------------------------------------------------------------
 # build_openai_compat_llm factory
