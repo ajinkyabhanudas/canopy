@@ -328,7 +328,6 @@ def test_sensitive_columns_env_override(monkeypatch, mock_model, mock_conn):
     When set, only the listed columns are stripped — not the defaults.
     This verifies the config-driven path works end-to-end through _format_result.
     """
-    import importlib
     import canopy.query.loop as loop_mod
 
     # Override: strip only 'secret_col', leave lat/lon visible
