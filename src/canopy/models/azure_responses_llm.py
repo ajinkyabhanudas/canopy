@@ -86,8 +86,20 @@ class AzureResponsesLLM(FunctionCallingLLM):
             with urllib.request.urlopen(req, timeout=self.timeout, context=ctx) as resp:
                 return json.loads(resp.read().decode())
         except urllib.error.HTTPError as exc:
-            err_body = exc.read().decode()[:400]
-            raise RuntimeError(f"Responses API error {exc.code}: {err_body}") from exc
+            err_body = exc.read().decode()
+            try:
+                err_json = json.loads(err_body)
+                if err_json.get("error", {}).get("code") == "content_filter":
+                    # Azure content filter blocked the request — return a synthetic
+                    # "refusal" response so the agent can report it gracefully.
+                    _log.info("responses_api: content filter blocked prompt (400)")
+                    return {"output": [{"type": "message", "content": [
+                        {"type": "output_text",
+                         "text": "I'm sorry, but I can't help with that request."}
+                    ]}]}
+            except (json.JSONDecodeError, KeyError):
+                pass
+            raise RuntimeError(f"Responses API error {exc.code}: {err_body[:400]}") from exc
         except urllib.error.URLError as exc:
             raise RuntimeError(f"Responses API network error: {exc.reason}") from exc
         except TimeoutError as exc:
@@ -295,9 +307,17 @@ class AzureResponsesLLM(FunctionCallingLLM):
     async def astream_chat(
         self, messages: Sequence[ChatMessage], **kwargs: Any
     ) -> ChatResponseAsyncGen:
-        raise NotImplementedError("AzureResponsesLLM does not support streaming.")
+        # FunctionAgent always calls astream_chat_with_tools, which routes here.
+        # The Responses API has no streaming path — yield the full response as
+        # a single "stream" chunk so FunctionAgent's streaming loop completes.
+        response = self.chat(messages, **kwargs)
+
+        async def _gen() -> ChatResponseAsyncGen:
+            yield response
+
+        return _gen()
 
     async def astream_complete(
         self, prompt: str, formatted: bool = False, **kwargs: Any
     ) -> CompletionResponseAsyncGen:
-        raise NotImplementedError("AzureResponsesLLM does not support streaming.")
+        raise NotImplementedError("AzureResponsesLLM only supports chat-style calls.")
