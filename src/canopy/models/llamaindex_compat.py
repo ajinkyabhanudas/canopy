@@ -73,5 +73,6 @@ def build_openai_compat_llm(
         api_key=api_key,
         api_base=endpoint,
         max_tokens=4096,
+        temperature=0.0,
         timeout=timeout,
     )
