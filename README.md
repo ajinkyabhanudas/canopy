@@ -63,7 +63,7 @@ SQL (shown in "Database query" tab):
   scientific review process, not automated inference.
 - Precise species coordinates are filtered before any data reaches the AI layer,
   keeping sensitive biodiversity locations out of the model context.
-- Vendor-neutral model interface: swapping the LLM means adding one adapter file.
+- Vendor-neutral model interface: swapping the LLM means adding one LlamaIndex `FunctionCallingLLM` subclass.
 
 ## Requirements
 
@@ -287,9 +287,6 @@ record of what is deployed on each resource.
   (always visible regardless of which tab is active). The model states what it
   understood from the question before executing SQL, so users can catch
   misinterpretations before waiting 90 seconds.
-- **Parallel tool calls** — if Claude returns multiple `tool_use` blocks,
-  all are executed and their results are bundled into a single user message
-  (Anthropic API requirement).
 - **System prompt is a constant** — `SCHEMA_CONTEXT` is a module-level string.
   `build_system_prompt()` is a function so runtime context (language preference,
   etc.) can be injected later without touching the schema constant.
@@ -315,7 +312,6 @@ behaviour boundaries.
 | Schema context + system prompt | Done |
 | SQL executor with SELECT-only guard | Done |
 | Agentic query loop | Done |
-| Parallel tool call handling | Done |
 | Ground-truth eval set (31 queries) | Done |
 | Query history (JSONL, Docker-safe) | Done |
 | Production hardening (logging, timeout, Dockerfile) | Done |

@@ -312,34 +312,31 @@ There is no explicit rejection status in the current dataset. Detections not app
 
 ### A3 — Vendor-neutral model interface
 
-> **Files:** `src/canopy/models/base.py` · `src/canopy/models/anthropic.py` · `src/canopy/models/__init__.py`
+> **Files:** `src/canopy/models/registry.py` · `src/canopy/models/llamaindex_compat.py` · `src/canopy/models/azure_responses_llm.py`
 
-**Decision:** All model interaction goes through the `ModelClient` abstract base class. The Anthropic SDK is fully encapsulated in `models/anthropic.py`. `get_model_client()` reads `MODEL_BACKEND` and returns the appropriate concrete class. Adding a new backend means adding one file — not modifying the loop.
+**Decision:** All model interaction goes through LlamaIndex's `FunctionCallingLLM` interface. `get_llm()` reads `models.yaml` and returns the appropriate concrete class. Adding a new backend means subclassing `FunctionCallingLLM` — the loop never knows the wire format.
 
-**Interface:**
-```python
-class ModelClient(ABC):
-    def generate(self, system_prompt, messages, tools) -> ModelResponse: ...
-    def format_assistant_turn(self, response) -> dict: ...
-    def format_tool_results(self, results: list[tuple[str, str]]) -> dict: ...
-```
+**Current implementations:**
+- `CanopyAzureCompatLLM` — wraps LlamaIndex's built-in OpenAI LLM for Azure OpenAI-compat endpoints (`api_style: openai-compat`)
+- `AzureResponsesLLM` — custom `FunctionCallingLLM` subclass for the Azure Responses API wire format (`api_style: openai-responses`); does not support `temperature`
 
 **Alternatives considered:**
 
 | Alternative | Why rejected |
 |---|---|
-| Anthropic SDK directly in the loop | Simplest today. Tight coupling makes future migration or testing expensive. |
-| LiteLLM | Unified interface library. Large dependency; adds version risk; provides what the ABC gives for free. |
+| Hand-rolled `ModelClient` ABC | Built and shipped in v1. Replaced: LlamaIndex's `FunctionCallingLLM` provides the same abstraction boundary with tool-calling loop orchestration included. |
+| LiteLLM | Unified interface library. Large dependency; adds version risk; does not support the Responses API wire format used by gpt-5.1-codex-mini. |
 
 **Consequences:**
-- Tests use `MagicMock` of `ModelClient` without importing the Anthropic SDK.
-- `format_tool_results()` returns a message dict — the internal format is vendor-specific (Anthropic's `tool_result` block), but the caller (`loop.py`) is insulated from it.
+- `FunctionAgent` in `loop.py` drives the tool-calling loop; canopy code only provides the `execute_sql` tool and the system prompt.
+- The Responses API adapter (`AzureResponsesLLM`) must not receive a `temperature` kwarg — the API returns HTTP 400. Callers must be aware of this constraint.
+- Switching to a new Azure backend requires a new `FunctionCallingLLM` subclass or a new `api_style` entry in `registry.py` — not modifying the loop.
 
 > **Audit verdict — ✅ Sound**
 >
-> **Challenge raised:** `format_tool_results()` returns a dict in Anthropic's specific `{"role": "user", "content": [{"type": "tool_result", ...}]}` format. An OpenAI backend would return a different structure. Does the abstraction leak?
+> **Challenge raised:** `AzureResponsesLLM` cannot fully hide all backend constraints — specifically, the `temperature` parameter leak. Does the abstraction hold?
 >
-> **Resolution:** No. The caller (`loop.py`) passes the returned dict directly to `messages.append()` without inspecting its contents. Each backend is responsible for producing a dict its `generate()` method understands on the next call. The caller never interprets the format. The abstraction holds.
+> **Resolution:** Partially. The interface contract (chat, tool calls, async) holds. The temperature constraint is documented and enforced at the call site (`llamaindex_compat.py` passes `temperature=0.0`; `AzureResponsesLLM` receives none). The abstraction is sound for the current backends; a future backend with different constraints would need the same treatment.
 
 ---
 
@@ -752,7 +749,7 @@ The eval case A09 submits a French question (`"Combien d'espèces ont été dét
 
 **Mitigation in place:** The primary gate (`app.py` `_check_language()`) enforces EN/ES for all UI users before any API call is made. The secondary instruction is retained as belt-and-suspenders. A language normalisation gate inside `run_query()` itself would close the gap permanently — deferred.
 
-**Re-enable Claude Sonnet:** Change `active: false` → `active: true` in `models.yaml` under the `claude-sonnet` entry and add credits to the account at console.anthropic.com. No code changes required. The `AnthropicClient` adapter is still present and tested.
+**Re-enable Claude Sonnet:** Change `active: false` → `active: true` in `models.yaml` under the `claude-sonnet` entry and add credits to the account at console.anthropic.com. A LlamaIndex `FunctionCallingLLM` subclass for Anthropic is required — `registry.py` currently raises `NotImplementedError` for `backend: anthropic`. This is a one-file addition.
 
 **Alternatives considered:**
 

@@ -23,7 +23,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from canopy.i18n import t
-from canopy.models.anthropic import AnthropicClient
 from canopy.query.executor import QueryResult
 from canopy.query.loop import (
     LoopResult,
@@ -354,49 +353,3 @@ def test_status_cb_emits_cache_hit(monkeypatch):
 
     assert "CACHE_HIT" in statuses
 
-
-# ---------------------------------------------------------------------------
-# AnthropicClient wire format — adapter unit tests (model-layer, not loop)
-# ---------------------------------------------------------------------------
-
-
-def _make_anthropic_client(monkeypatch) -> AnthropicClient:
-    monkeypatch.setattr("canopy.models.anthropic.anthropic", MagicMock())
-    return AnthropicClient(model="claude-sonnet-4-6", api_key="test-key", timeout=60.0)
-
-
-def test_anthropic_format_tool_results_single(monkeypatch):
-    client = _make_anthropic_client(monkeypatch)
-    msgs = client.format_tool_results([("id1", "result content")])
-
-    assert isinstance(msgs, list)
-    msg = msgs[0]
-    assert msg["role"] == "user"
-    assert len(msg["content"]) == 1
-    assert msg["content"][0] == {
-        "type": "tool_result",
-        "tool_use_id": "id1",
-        "content": "result content",
-    }
-
-
-def test_anthropic_format_tool_results_multiple(monkeypatch):
-    client = _make_anthropic_client(monkeypatch)
-    msgs = client.format_tool_results([("tc1", "r1"), ("tc2", "r2")])
-
-    assert isinstance(msgs, list)
-    msg = msgs[0]
-    assert msg["role"] == "user"
-    assert len(msg["content"]) == 2
-    assert msg["content"][0]["tool_use_id"] == "tc1"
-    assert msg["content"][1]["tool_use_id"] == "tc2"
-
-
-def test_anthropic_format_tool_result_singular(monkeypatch):
-    client = _make_anthropic_client(monkeypatch)
-    msg = client.format_tool_result("myid", "mycontent")
-
-    assert isinstance(msg, dict)
-    assert msg["role"] == "user"
-    assert msg["content"][0]["tool_use_id"] == "myid"
-    assert msg["content"][0]["content"] == "mycontent"
