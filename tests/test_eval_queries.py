@@ -3,13 +3,17 @@ Structural unit tests for the ground-truth eval set.
 
 Verifies shape, integrity, and check_fn behaviour without making any live
 API or database calls. Runs as part of the normal test suite.
+
+Faithfulness tests (marked live_db) require a live PostgreSQL connection and
+API keys — run via `make eval-gt` or `pytest -m live_db`.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from canopy.query.loop import LoopResult
+from canopy.query.executor import execute_query
+from canopy.query.loop import LoopResult, run_query
 from tests.eval.queries import (
     EVAL_CASES,
     EvalCase,
@@ -319,3 +323,79 @@ def test_check_fn_returns_bool_on_minimal_result(case: EvalCase):
     result = case.check_fn(r)
     assert isinstance(result, bool), \
         f"{case.check_fn.__name__} returned {type(result).__name__}, expected bool"
+
+
+# ---------------------------------------------------------------------------
+# Faithfulness evals — require live DB + API keys (marked live_db)
+#
+# Each test: (1) runs execute_query() directly to get a ground-truth count,
+# (2) runs run_query() to get the LoopResult, (3) asserts result.row_count
+# matches the ground truth. This validates the model's generated SQL queries
+# the correct data — not that it formats integers verbatim in model_text.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.live_db
+def test_faithfulness_approved_recordings_count() -> None:
+    """Model's SQL must return the same count as a direct approved-recordings query."""
+    ground_truth = execute_query(
+        "SELECT COUNT(*) FROM recordings WHERE validation_status = 'approved'"
+    ).rows[0][0]
+    result = run_query("How many approved recordings are there?")
+    assert result.row_count == ground_truth, (
+        f"Model returned {result.row_count} rows; ground truth is {ground_truth}. "
+        f"Generated SQL: {result.sql}"
+    )
+
+
+@pytest.mark.live_db
+def test_faithfulness_total_recordings_count() -> None:
+    """Model's SQL must return the total recording count matching a direct COUNT(*)."""
+    ground_truth = execute_query("SELECT COUNT(*) FROM recordings").rows[0][0]
+    result = run_query("What is the total number of recordings in the database?")
+    assert result.row_count == ground_truth, (
+        f"Model returned {result.row_count} rows; ground truth is {ground_truth}. "
+        f"Generated SQL: {result.sql}"
+    )
+
+
+@pytest.mark.live_db
+def test_faithfulness_species_count() -> None:
+    """Model's SQL must return the distinct species count matching a direct query."""
+    ground_truth = execute_query(
+        "SELECT COUNT(DISTINCT scientific_name) FROM recordings"
+    ).rows[0][0]
+    result = run_query("How many distinct species are in the database?")
+    assert result.row_count == ground_truth, (
+        f"Model returned {result.row_count} rows; ground truth is {ground_truth}. "
+        f"Generated SQL: {result.sql}"
+    )
+
+
+@pytest.mark.live_db
+def test_faithfulness_high_confidence_count() -> None:
+    """Model's SQL must count high-confidence detections correctly."""
+    ground_truth = execute_query(
+        "SELECT COUNT(*) FROM recordings WHERE confidence >= 0.95"
+    ).rows[0][0]
+    result = run_query("How many recordings have a confidence score of 0.95 or higher?")
+    assert result.row_count == ground_truth, (
+        f"Model returned {result.row_count} rows; ground truth is {ground_truth}. "
+        f"Generated SQL: {result.sql}"
+    )
+
+
+@pytest.mark.live_db
+def test_faithfulness_unknown_species_returns_zero() -> None:
+    """Model must return 0 rows for a species name that does not exist in the database."""
+    ground_truth = execute_query(
+        "SELECT COUNT(*) FROM recordings WHERE scientific_name = 'Nonexistens fabricatus'"
+    ).rows[0][0]
+    assert ground_truth == 0, "Test setup: this species must not exist in the DB"
+    result = run_query(
+        "How many recordings are there for the species Nonexistens fabricatus?"
+    )
+    assert result.row_count == 0, (
+        f"Model returned {result.row_count} rows for a non-existent species. "
+        f"Generated SQL: {result.sql}"
+    )

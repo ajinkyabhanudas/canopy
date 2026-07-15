@@ -40,7 +40,7 @@ lint:
 	ruff check src/ tests/ scripts/
 
 test:
-	pytest tests/ -q --ignore=tests/e2e/
+	pytest tests/ -q --ignore=tests/e2e/ -m "not live_db"
 
 check: lint test
 
