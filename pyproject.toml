@@ -31,7 +31,11 @@ where = ["src"]
 pythonpath = ["."]
 testpaths = ["tests"]
 norecursedirs = ["tests/e2e"]
-markers = ["e2e: end-to-end browser tests — require: make playwright-install"]
+addopts = "-m 'not live_db'"
+markers = [
+    "e2e: end-to-end browser tests — require: make playwright-install",
+    "live_db: requires a live PostgreSQL connection and API keys",
+]
 filterwarnings = [
     # Gradio uses a renamed Starlette constant — not actionable from canopy's code.
     "ignore:.*HTTP_422_UNPROCESSABLE_ENTITY.*:UserWarning",
@@ -45,4 +49,9 @@ line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "I"]   # pycodestyle errors, pyflakes, isort
+select = ["E", "F", "I", "ANN"]   # pycodestyle errors, pyflakes, isort, annotations
+ignore = ["ANN401"]                # **kwargs: Any is mandated by LlamaIndex base interfaces
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ANN"]    # pytest fixtures use untyped args by convention
+"scripts/**" = ["ANN"]  # scripts are not part of the public API

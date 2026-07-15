@@ -811,6 +811,40 @@ The eval case A09 submits a French question (`"Combien d'espèces ont été dét
 
 ---
 
+### O4 — Model/schema state verification for researchers
+
+> **Files:** `DECISIONS.md` · `README.md`
+
+**Decision:** Researchers verify which model and schema were active on a given date using git history and this document — not a separate CHANGELOG file.
+
+**Why:** Git log is the authoritative, always-in-sync record of every change. DECISIONS.md records *why* changes happened. A separate CHANGELOG would duplicate git log and go stale without CI enforcement. The combination of the two already answers the key research question: "Did this result use the same model and schema as today's result?"
+
+**Verification workflow for researchers:**
+
+```bash
+# Find all model or schema changes before a given date
+git log --before="2026-07-01" --grep="model\|schema\|temperature\|prompt" --oneline
+
+# See exactly what changed in a specific commit
+git show <commit-hash>
+```
+
+**Key commits that changed model behaviour:**
+| Date | Commit | Change |
+|------|--------|--------|
+| 2026-07-14 | `fb2a35a` | Async isolation fix (ThreadPoolExecutor) |
+| 2026-07-13 | `e753e68` | LlamaIndex migration complete; legacy model layer removed |
+| 2026-07-13 | `e94ec85` | `temperature=0` set on CanopyAzureCompatLLM for determinism |
+| 2026-07-13 | `f365fe3` | Guardrails extended: coordinate and user-data hard constraints |
+
+**Trigger for review:** If a researcher reports they cannot determine the active model or schema from git log + DECISIONS.md, update this entry to improve discoverability before adding tooling.
+
+> **Audit verdict — ✅ Sound**
+>
+> Git log is authoritative and always current. DECISIONS.md adds the "why" layer that commit messages omit. The combination is more reliable than a manually-maintained CHANGELOG.
+
+---
+
 ## Maintenance rules
 
 1. **Write before you build.** Add a section here before starting implementation. The discipline of articulating the decision first is the point — it prevents decisions made by inertia or deadline pressure from becoming invisible technical debt.

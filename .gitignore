@@ -9,4 +9,5 @@ __pycache__/
 .playwright-mcp/
 benchmark_results/
 .coverage
+coverage.xml
 htmlcov/

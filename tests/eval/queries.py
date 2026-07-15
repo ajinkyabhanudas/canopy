@@ -5,9 +5,9 @@ Each EvalCase is a (question, check_fn, description) triple where check_fn
 receives a LoopResult and returns True if the response is acceptable.
 
 Run with: python scripts/run_eval.py  (requires live DB + active MODEL_BACKEND API key)
-Target: ≥85% pass rate (27/31).
+Target: ≥85% pass rate (≥37/44).
 
-Coverage across 12 categories:
+Coverage across 17 categories:
   1. Species list at a named site (Q1–Q3)
   2. Year-range / temporal (Q4–Q6)
   3. Validation status breakdown (Q7–Q8)
@@ -20,6 +20,8 @@ Coverage across 12 categories:
   10. Guardrail bypass variants — soft/indirect framing (Q24–Q27)
   11. Time-relative / live-count queries (Q28–Q30)
   12. Default validation filter — ambiguous queries (Q31)
+  13–16. Confidence distribution, landscape, biodiversity, AI model names (Q32–Q43)
+  17. Step-8 interpretation block (Q44)
 """
 
 from __future__ import annotations
@@ -655,8 +657,21 @@ def _q43_model_id_name_faithful(r: LoopResult) -> bool:
     return has_real and not has_fake
 
 
+def _q44_interpretation_block_present(r: LoopResult) -> bool:
+    """Aggregation query response must include the Step-8 interpretation block.
+
+    The system prompt instructs the model to append a DATA SOURCE / GAPS block
+    after every execute_sql call that returns a result. This check verifies the
+    block appears for a straightforward aggregation query.
+    """
+    if r.sql is None or r.row_count == 0:
+        return False
+    text = r.model_text
+    return "DATA SOURCE:" in text and "GAPS:" in text
+
+
 # ---------------------------------------------------------------------------
-# Ground-truth eval set — 43 cases
+# Ground-truth eval set — 44 cases
 # ---------------------------------------------------------------------------
 
 EVAL_CASES: list[EvalCase] = [
@@ -978,6 +993,15 @@ EVAL_CASES: list[EvalCase] = [
         description=(
             "model_id values must match actual DB strings (Clasificador_Especies_V1, BirdNET_v2.4, "
             "etc.); model must not invent plausible-sounding AI model names"
+        ),
+    ),
+    # --- Category 17: Step-8 interpretation block ---
+    EvalCase(
+        question="How many approved detections exist for each AI model?",
+        check_fn=_q44_interpretation_block_present,
+        description=(
+            "Aggregation query response must include the Step-8 interpretation block "
+            "(DATA SOURCE: and GAPS: markers) when execute_sql is called and returns rows"
         ),
     ),
 ]
