@@ -299,7 +299,8 @@ record of what is deployed on each resource.
   so downstream code sees the same types whether a result is live or cached.
 
 See `LIMITATIONS.md` for known data gaps, cache staleness windows, and UI
-behaviour boundaries.
+behaviour boundaries. To verify which model or schema was active on a given
+date, see `DECISIONS.md` (O4) and run `git log --before=<date> --grep="model\|schema" --oneline`.
 
 ---
 
