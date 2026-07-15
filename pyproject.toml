@@ -31,6 +31,7 @@ where = ["src"]
 pythonpath = ["."]
 testpaths = ["tests"]
 norecursedirs = ["tests/e2e"]
+addopts = "-m 'not live_db and not e2e'"
 markers = [
     "e2e: end-to-end browser tests — require: make playwright-install",
     "live_db: requires a live PostgreSQL connection and API keys",
