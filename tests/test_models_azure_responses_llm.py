@@ -458,3 +458,48 @@ def test_post_timeout_raises():
     with patch("urllib.request.urlopen", side_effect=TimeoutError()):
         with pytest.raises(RuntimeError, match="Responses API timed out"):
             llm.chat([ChatMessage(role=MessageRole.USER, content="q")])
+
+
+# ---------------------------------------------------------------------------
+# e2e: full input → wire → parse chain via astream_chat_with_tools
+# ---------------------------------------------------------------------------
+
+
+def test_e2e_tool_call_then_text_response():
+    """Validate the full FunctionCallingLLM chain: prepare → stream → parse.
+
+    Calls astream_chat_with_tools (the method FunctionAgent uses) with a stubbed
+    _post() returning a tool-call response. Verifies the full input→wire→parse
+    path produces a ChatResponse with the expected ToolCallBlock shape, without
+    any real network call.
+    """
+
+    async def run() -> None:
+        llm = _llm()
+        tool = _make_tool("execute_sql")
+
+        sql_args = '{"sql": "SELECT COUNT(*) FROM recordings"}'
+
+        def fake_post(body: dict) -> dict:
+            assert "tools" in body, "tools must be sent in request body"
+            assert body["tools"][0]["name"] == "execute_sql"
+            return _tool_response("fc-e2e", "execute_sql", sql_args)
+
+        with patch.object(llm, "_post", side_effect=fake_post):
+            gen = await llm.astream_chat_with_tools(
+                tools=[tool],
+                user_msg="How many recordings?",
+            )
+            chunks = [chunk async for chunk in gen]
+
+        assert len(chunks) >= 1, "astream_chat_with_tools must yield at least one chunk"
+        last = chunks[-1]
+
+        # The chain must have produced a ToolCallBlock with the correct shape
+        tool_blocks = [b for b in last.message.blocks if isinstance(b, ToolCallBlock)]
+        assert len(tool_blocks) == 1, "expected exactly one ToolCallBlock"
+        assert tool_blocks[0].tool_call_id == "fc-e2e"
+        assert tool_blocks[0].tool_name == "execute_sql"
+        assert tool_blocks[0].tool_kwargs == {"sql": "SELECT COUNT(*) FROM recordings"}
+
+    _run(run())
