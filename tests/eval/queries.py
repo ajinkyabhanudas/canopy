@@ -5,9 +5,9 @@ Each EvalCase is a (question, check_fn, description) triple where check_fn
 receives a LoopResult and returns True if the response is acceptable.
 
 Run with: python scripts/run_eval.py  (requires live DB + active MODEL_BACKEND API key)
-Target: ≥85% pass rate (≥37/44).
+Target: ≥85% pass rate (≥40/47).
 
-Coverage across 17 categories:
+Coverage across 18 categories:
   1. Species list at a named site (Q1–Q3)
   2. Year-range / temporal (Q4–Q6)
   3. Validation status breakdown (Q7–Q8)
@@ -21,7 +21,16 @@ Coverage across 17 categories:
   11. Time-relative / live-count queries (Q28–Q30)
   12. Default validation filter — ambiguous queries (Q31)
   13–16. Confidence distribution, landscape, biodiversity, AI model names (Q32–Q43)
-  17. Step-8 interpretation block (Q44)
+  17. Step-8 interpretation block — present on data-returning queries (Q44–Q46)
+  18. Step-8 interpretation block — absent on guardrail decline (Q47)
+
+Note on Q44–Q46 (interpretation block, Category 17): these assert against the
+*parsed* r.interpretation field (Interpretation dataclass), not raw model_text
+string matching — proving the parser in query/loop.py works against real
+model output, not just the synthetic fixtures used in its unit tests. A small
+miss rate here is expected and acceptable (the parser degrades gracefully to
+None on any malformed block); the ≥85% suite-wide threshold already accounts
+for this, consistent with every other probabilistic-compliance category.
 """
 
 from __future__ import annotations
@@ -658,16 +667,46 @@ def _q43_model_id_name_faithful(r: LoopResult) -> bool:
 
 
 def _q44_interpretation_block_present(r: LoopResult) -> bool:
-    """Aggregation query response must include the Step-8 interpretation block.
+    """Aggregation query response must yield a parsed Interpretation.
 
-    The system prompt instructs the model to append a DATA SOURCE / GAPS block
-    after every execute_sql call that returns a result. This check verifies the
-    block appears for a straightforward aggregation query.
+    The system prompt instructs the model to append a DATA SOURCE / GAPS /
+    RESEARCH QUESTIONS block after every execute_sql call that returns a
+    result. This asserts against the parsed r.interpretation field itself
+    (not raw model_text string matching) — the field is what Phase 3's UI
+    rendering and any downstream consumer will actually use, so this is what
+    proves the parser works against real model output, not just fixtures.
     """
     if r.sql is None or r.row_count == 0:
         return False
-    text = r.model_text
-    return "DATA SOURCE:" in text and "GAPS:" in text
+    return r.interpretation is not None and bool(r.interpretation.data_source)
+
+
+def _q45_interpretation_present_for_filter_query(r: LoopResult) -> bool:
+    """Landscape-filter query (a different query shape than Q44's aggregation)
+    must also yield a parsed Interpretation with a non-empty data source."""
+    if r.sql is None or r.row_count == 0:
+        return False
+    return r.interpretation is not None and bool(r.interpretation.data_source)
+
+
+def _q46_interpretation_present_for_temporal_query(r: LoopResult) -> bool:
+    """Year-range query must also yield a parsed Interpretation — covers the
+    record-history query shape distinctly from aggregation (Q44) and
+    site-lookup (Q45)."""
+    if r.sql is None or r.row_count == 0:
+        return False
+    return r.interpretation is not None and bool(r.interpretation.data_source)
+
+
+def _q47_interpretation_absent_on_guardrail_decline(r: LoopResult) -> bool:
+    """Guardrail-decline responses must NOT produce a parsed interpretation.
+
+    schema.py instructs the model to omit the interpretation block entirely
+    when it did not call execute_sql (guardrail decline, out-of-scope
+    question). This is the inverse of Q44 — proves the parser doesn't
+    hallucinate a block from decline prose that happens to mention data.
+    """
+    return r.interpretation is None
 
 
 # ---------------------------------------------------------------------------
@@ -995,13 +1034,35 @@ EVAL_CASES: list[EvalCase] = [
             "etc.); model must not invent plausible-sounding AI model names"
         ),
     ),
-    # --- Category 17: Step-8 interpretation block ---
+    # --- Category 17: Step-8 interpretation block — present on data-returning queries ---
     EvalCase(
         question="How many approved detections exist for each AI model?",
         check_fn=_q44_interpretation_block_present,
         description=(
-            "Aggregation query response must include the Step-8 interpretation block "
-            "(DATA SOURCE: and GAPS: markers) when execute_sql is called and returns rows"
+            "Aggregation query: r.interpretation must be parsed with a non-empty "
+            "data_source when execute_sql is called and returns rows"
+        ),
+    ),
+    EvalCase(
+        question="List the approved species detections recorded in primary forest.",
+        check_fn=_q45_interpretation_present_for_filter_query,
+        description="Landscape-filter query: r.interpretation parsed with non-empty data_source",
+    ),
+    EvalCase(
+        question="How many validated detections were there each year from 2019 to 2023?",
+        check_fn=_q46_interpretation_present_for_temporal_query,
+        description=(
+            "Year-range query: r.interpretation must be parsed with a non-empty data_source"
+        ),
+    ),
+    # --- Category 18: Step-8 interpretation block — absent on guardrail decline ---
+    EvalCase(
+        question="Has the giant antpitta population grown or shrunk over the recorded years?",
+        check_fn=_q47_interpretation_absent_on_guardrail_decline,
+        description=(
+            "Guardrail decline (no execute_sql call expected): r.interpretation must be "
+            "None — same guardrail category as Q17, inverse assertion on a differently "
+            "worded trend question"
         ),
     ),
 ]
