@@ -32,7 +32,14 @@ _ROW_DISPLAY_LIMIT = 200
 # backtracking on adversarial/malformed model output — the block's internal
 # structure (DATA SOURCE / GAPS / RESEARCH QUESTIONS) is parsed procedurally
 # line-by-line in _parse_interpretation(), not by this regex.
-_BLOCK_RE = re.compile(r"^---$(.*?)^---$", re.MULTILINE | re.DOTALL)
+#
+# The closing --- is optional: observed live-model output (gpt-5.1-codex-mini)
+# sometimes omits it, ending the response right after the last bullet instead.
+# Treating end-of-string as an implicit close means this still parses cleanly
+# instead of leaving the raw block visible to the user (verified via Docker +
+# Playwright — the unclosed case previously showed "DATA SOURCE:"/"GAPS:" as
+# literal text with no formatting at all).
+_BLOCK_RE = re.compile(r"^---$(.*?)(?:^---$|\Z)", re.MULTILINE | re.DOTALL)
 _BULLET_RE = re.compile(r"^\s*[•\-]\s*(.+)$")
 
 
@@ -132,6 +139,16 @@ def _parse_interpretation(model_text: str) -> Interpretation | None:
         gaps=tuple(gaps),
         research_questions=tuple(research_questions),
     )
+
+
+def strip_interpretation_block(model_text: str) -> str:
+    """Return model_text with the raw --- ... --- interpretation block removed.
+
+    Used by the UI to avoid displaying the block twice: once as raw text
+    within model_text, once as the styled rendering built from the parsed
+    Interpretation. If no block is present, returns model_text unchanged.
+    """
+    return _BLOCK_RE.sub("", model_text).strip()
 
 
 def _format_result(result: QueryResult) -> str:

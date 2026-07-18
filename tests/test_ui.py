@@ -5,7 +5,7 @@ from __future__ import annotations
 import canopy.ui.app as ui_mod
 from canopy.i18n import t
 from canopy.query.executor import SQLGuardError
-from canopy.query.loop import LoopResult
+from canopy.query.loop import Interpretation, LoopResult
 
 
 def _make_result(**overrides) -> LoopResult:
@@ -481,3 +481,76 @@ def test_handler_timing_shows_conn_only_when_same(monkeypatch):
     _, _, _, _, _, timing_md, _, _, *_ = _run("q")
     assert "· gpt-4o" in timing_md
     assert "gpt-4o/gpt-4o" not in timing_md
+
+
+# ---------------------------------------------------------------------------
+# _render_interpretation / _render_response
+# ---------------------------------------------------------------------------
+
+
+def test_render_interpretation_returns_empty_string_for_none():
+    assert ui_mod._render_interpretation(None) == ""
+
+
+def test_render_interpretation_full_block():
+    interp = Interpretation(
+        data_source="detections · approved only",
+        gaps=("Some species absent",),
+        research_questions=("Do counts match last year?",),
+    )
+    rendered = ui_mod._render_interpretation(interp)
+    assert t("interpretation_heading") in rendered
+    assert "detections · approved only" in rendered
+    assert "Some species absent" in rendered
+    assert "Do counts match last year?" in rendered
+
+
+def test_render_interpretation_empty_gaps_shows_none_literal():
+    interp = Interpretation(data_source="sites · all rows", gaps=(), research_questions=())
+    rendered = ui_mod._render_interpretation(interp)
+    assert t("interpretation_gaps_none") in rendered
+
+
+def test_render_interpretation_omits_research_questions_when_empty():
+    interp = Interpretation(data_source="sites · all rows", gaps=(), research_questions=())
+    rendered = ui_mod._render_interpretation(interp)
+    assert t("interpretation_research") not in rendered
+
+
+def test_render_response_strips_raw_block_and_appends_rendering():
+    model_text = (
+        "**Headline:** 4 models used.\n\n"
+        "---\n"
+        "DATA SOURCE: detections · approved only\n"
+        "GAPS: none\n"
+        "---\n"
+    )
+    interp = Interpretation(
+        data_source="detections · approved only", gaps=(), research_questions=()
+    )
+    result = _make_result(model_text=model_text, interpretation=interp)
+    rendered = ui_mod._render_response(result)
+    assert "DATA SOURCE:" not in rendered  # raw block stripped
+    assert t("interpretation_heading") in rendered  # styled version present
+    assert "**Headline:** 4 models used." in rendered
+
+
+def test_render_response_unchanged_when_interpretation_none():
+    result = _make_result(model_text="Plain answer, no block.", interpretation=None)
+    assert ui_mod._render_response(result) == "Plain answer, no block."
+
+
+def test_handler_response_box_uses_rendered_interpretation(monkeypatch):
+    """End-to-end: the handler's final yield must use _render_response, not raw model_text."""
+    model_text = (
+        "Answer text.\n\n---\nDATA SOURCE: detections · approved only\nGAPS: none\n---\n"
+    )
+    interp = Interpretation(
+        data_source="detections · approved only", gaps=(), research_questions=()
+    )
+    result = _make_result(model_text=model_text, interpretation=interp)
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: result)
+
+    _, _, response, *_ = _run("q")
+    assert "DATA SOURCE:" not in response
+    assert t("interpretation_heading") in response

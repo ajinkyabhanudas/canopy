@@ -41,6 +41,12 @@ STRINGS: dict[str, str] = {
     # Result row count (app.py)
     "count_row_singular": "**{n} row returned**",
     "count_row_plural":   "**{n} rows returned**",
+    # Interpretation block labels (app.py)
+    "interpretation_heading":  "Interpretation",
+    "interpretation_source":   "Data source",
+    "interpretation_gaps":     "Gaps",
+    "interpretation_gaps_none": "none",
+    "interpretation_research": "Research questions",
     # Timing footer
     "timing_cached": "⚡ From your recent queries · instant",
     "timing_live":   "Answer ready in {total:.0f}s",
