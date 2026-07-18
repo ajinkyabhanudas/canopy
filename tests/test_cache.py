@@ -6,7 +6,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from canopy.cache import _make_key, clear_cache, lookup_cache, write_cache
-from canopy.query.loop import LoopResult
+from canopy.query.loop import Interpretation, LoopResult
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -245,6 +245,55 @@ def test_write_then_lookup_roundtrip(tmp_path, monkeypatch):
     assert result is not None
     assert result.model_text == r.model_text
     assert result.rows == r.rows
+
+
+def test_write_then_lookup_roundtrip_preserves_interpretation(tmp_path, monkeypatch):
+    cache_path = tmp_path / "cache.json"
+    monkeypatch.setattr("canopy.cache._cache_file", lambda: cache_path)
+    interp = Interpretation(
+        data_source="detections · approved only",
+        gaps=("Some species absent",),
+        research_questions=("Do counts match last year?",),
+    )
+    r = _result(interpretation=interp)
+    write_cache(r)
+    result = lookup_cache(r.question)
+    assert result is not None
+    assert result.interpretation == interp
+
+
+def test_write_then_lookup_roundtrip_preserves_none_interpretation(tmp_path, monkeypatch):
+    cache_path = tmp_path / "cache.json"
+    monkeypatch.setattr("canopy.cache._cache_file", lambda: cache_path)
+    r = _result(interpretation=None)
+    write_cache(r)
+    result = lookup_cache(r.question)
+    assert result is not None
+    assert result.interpretation is None
+
+
+def test_lookup_defaults_interpretation_to_none_for_old_format_entry(tmp_path, monkeypatch):
+    """Cache entries written before this field existed have no 'interpretation' key."""
+    question = "old format question"
+    key = _make_key(question)
+    future = datetime.now(timezone.utc) + timedelta(hours=24)
+    entry = {
+        "question": question,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "expires_at": future.isoformat(),
+        "sql": None,
+        "columns": [],
+        "rows": [],
+        "row_count": 0,
+        "model_text": "Nothing.",
+    }
+    cache_path = tmp_path / "cache.json"
+    cache_path.write_text(json.dumps({key: entry}))
+    monkeypatch.setattr("canopy.cache._cache_file", lambda: cache_path)
+
+    result = lookup_cache(question)
+    assert result is not None
+    assert result.interpretation is None
 
 
 def test_write_overwrites_existing_key(tmp_path, monkeypatch):

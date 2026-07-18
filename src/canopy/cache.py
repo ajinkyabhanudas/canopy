@@ -77,6 +77,19 @@ def _maybe_datetime(v: object) -> object:
     return v
 
 
+def _deserialize_interpretation(raw: dict | None) -> object | None:
+    """Reconstruct an Interpretation from its cached dict form, or None."""
+    from canopy.query.loop import Interpretation
+
+    if raw is None:
+        return None
+    return Interpretation(
+        data_source=raw["data_source"],
+        gaps=tuple(raw["gaps"]),
+        research_questions=tuple(raw["research_questions"]),
+    )
+
+
 def lookup_cache(question: str, connection_id: str = "", model: str = "") -> LoopResult | None:
     """Return a cached LoopResult for question, or None on miss/expiry."""
     from canopy.query.loop import LoopResult
@@ -101,6 +114,7 @@ def lookup_cache(question: str, connection_id: str = "", model: str = "") -> Loo
         row_count=entry["row_count"],
         model_text=entry["model_text"],
         timing={"cache_hit": True, "cached_at": entry["created_at"]},
+        interpretation=_deserialize_interpretation(entry.get("interpretation")),
     )
 
 
@@ -131,6 +145,15 @@ def write_cache(result: LoopResult, connection_id: str = "", model: str = "") ->
             "rows": [list(row) for row in result.rows],
             "row_count": result.row_count,
             "model_text": result.model_text,
+            "interpretation": (
+                {
+                    "data_source": result.interpretation.data_source,
+                    "gaps": list(result.interpretation.gaps),
+                    "research_questions": list(result.interpretation.research_questions),
+                }
+                if result.interpretation is not None
+                else None
+            ),
         }
         _write_cache_dict(data)
 

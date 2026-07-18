@@ -6,6 +6,7 @@ import asyncio
 import concurrent.futures
 import logging
 import os
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -26,6 +27,14 @@ _log = logging.getLogger("canopy")
 MAX_ITERATIONS = 5
 _ROW_DISPLAY_LIMIT = 200
 
+# Finds the outermost --- ... --- delimited block schema.py instructs the model
+# to emit. Deliberately simple (no nested quantifiers) to avoid catastrophic
+# backtracking on adversarial/malformed model output — the block's internal
+# structure (DATA SOURCE / GAPS / RESEARCH QUESTIONS) is parsed procedurally
+# line-by-line in _parse_interpretation(), not by this regex.
+_BLOCK_RE = re.compile(r"^---$(.*?)^---$", re.MULTILINE | re.DOTALL)
+_BULLET_RE = re.compile(r"^\s*[•\-]\s*(.+)$")
+
 
 def _load_sensitive_columns() -> frozenset[str]:
     raw = os.environ.get("CANOPY_SENSITIVE_COLUMNS", "latitude,longitude,hashed_password")
@@ -33,6 +42,19 @@ def _load_sensitive_columns() -> frozenset[str]:
 
 
 _SENSITIVE_COLUMNS = _load_sensitive_columns()
+
+
+@dataclass(frozen=True)
+class Interpretation:
+    """Structured breakdown of the model's interpretation block.
+
+    Parsed from model_text — see _parse_interpretation(). All fields are
+    immutable to match the rest of the loop's data-shape guarantees (A5).
+    """
+
+    data_source: str
+    gaps: tuple[str, ...]
+    research_questions: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -46,6 +68,70 @@ class LoopResult:
     row_count: int
     model_text: str
     timing: dict = field(default_factory=dict)
+    interpretation: Interpretation | None = None
+
+
+def _parse_interpretation(model_text: str) -> Interpretation | None:
+    """Extract the DATA SOURCE / GAPS / RESEARCH QUESTIONS block from model_text.
+
+    The outer --- ... --- block is located with a single bounded regex, then
+    its lines are walked procedurally (no regex over the bullet lists) — this
+    avoids the nested-quantifier backtracking that a monolithic regex over
+    unbounded, LLM-generated text would risk.
+
+    Conservative by design: any malformed or partial match returns None rather
+    than a partially-populated Interpretation. A missing block is expected and
+    valid (schema.py instructs the model to omit it when execute_sql was never
+    called), so a miss is logged at DEBUG; a present-but-malformed block is
+    logged at WARNING since it signals prompt-format drift worth tracking.
+    """
+    block_match = _BLOCK_RE.search(model_text)
+    if block_match is None:
+        _log.debug("no interpretation block found in model_text")
+        return None
+
+    lines = block_match.group(1).strip("\n").split("\n")
+
+    data_source: str | None = None
+    gaps: list[str] = []
+    research_questions: list[str] = []
+    gaps_is_none = False
+    section: str | None = None
+
+    for raw_line in lines:
+        line = raw_line.strip()
+        if line.startswith("DATA SOURCE:"):
+            data_source = line[len("DATA SOURCE:") :].strip()
+            section = None
+            continue
+        if line.startswith("GAPS:"):
+            rest = line[len("GAPS:") :].strip()
+            gaps_is_none = rest.casefold() == "none"
+            section = "gaps"
+            continue
+        if line.startswith("RESEARCH QUESTIONS:"):
+            section = "research_questions"
+            continue
+
+        bullet_match = _BULLET_RE.match(raw_line)
+        if bullet_match and section == "gaps":
+            gaps.append(bullet_match.group(1).strip())
+        elif bullet_match and section == "research_questions":
+            research_questions.append(bullet_match.group(1).strip())
+
+    if not data_source:
+        _log.warning("interpretation block malformed — empty DATA SOURCE: %r", model_text[:200])
+        return None
+
+    if not gaps_is_none and not gaps:
+        _log.warning("interpretation block malformed — no GAPS content: %r", model_text[:200])
+        return None
+
+    return Interpretation(
+        data_source=data_source,
+        gaps=tuple(gaps),
+        research_questions=tuple(research_questions),
+    )
 
 
 def _format_result(result: QueryResult) -> str:
@@ -222,6 +308,7 @@ def run_query(
         row_count=last_query_result.row_count if last_query_result else 0,
         model_text=model_text,
         timing=timing,
+        interpretation=_parse_interpretation(model_text),
     )
     try:
         write_cache(result, connection_id=conn.id, model=active_model)
