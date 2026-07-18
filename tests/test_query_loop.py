@@ -25,9 +25,11 @@ import pytest
 from canopy.i18n import t
 from canopy.query.executor import QueryResult
 from canopy.query.loop import (
+    Interpretation,
     LoopResult,
     _format_result,
     _load_sensitive_columns,
+    _parse_interpretation,
     run_query,
 )
 
@@ -353,3 +355,112 @@ def test_status_cb_emits_cache_hit(monkeypatch):
 
     assert "CACHE_HIT" in statuses
 
+
+
+# ---------------------------------------------------------------------------
+# _parse_interpretation — pure function, no DB/model needed
+# ---------------------------------------------------------------------------
+
+
+def test_parse_interpretation_full_block_with_gaps_and_research_questions():
+    text = (
+        "Found 63 species in 2023.\n\n"
+        "---\n"
+        "DATA SOURCE: detections · approved only · 2023 · joined to species\n"
+        "GAPS:\n"
+        "  • Species with zero 2023 approved detections are absent from this result\n"
+        "  • Sites with no recording activity in 2023 are not represented\n"
+        "RESEARCH QUESTIONS:\n"
+        "  • Do the top-detected species in 2023 match the 2022 ranking?\n"
+        "---\n"
+    )
+    result = _parse_interpretation(text)
+    assert result == Interpretation(
+        data_source="detections · approved only · 2023 · joined to species",
+        gaps=(
+            "Species with zero 2023 approved detections are absent from this result",
+            "Sites with no recording activity in 2023 are not represented",
+        ),
+        research_questions=("Do the top-detected species in 2023 match the 2022 ranking?",),
+    )
+
+
+def test_parse_interpretation_gaps_none_and_no_research_questions_line():
+    text = "12 sites found.\n\n---\nDATA SOURCE: sites · all rows\nGAPS: none\n---\n"
+    result = _parse_interpretation(text)
+    assert result == Interpretation(data_source="sites · all rows", gaps=(), research_questions=())
+
+
+def test_parse_interpretation_missing_block_returns_none():
+    text = "Trend interpretation requires the science team."
+    assert _parse_interpretation(text) is None
+
+
+def test_parse_interpretation_malformed_missing_gaps_returns_none():
+    text = "---\nDATA SOURCE: detections\n---\n"
+    assert _parse_interpretation(text) is None
+
+
+def test_parse_interpretation_dash_bullets_parse_same_as_bullet_char():
+    text = "---\nDATA SOURCE: detections · approved only\nGAPS:\n  - Some gap here\n---\n"
+    result = _parse_interpretation(text)
+    assert result is not None
+    assert result.gaps == ("Some gap here",)
+
+
+def test_parse_interpretation_never_raises_on_arbitrary_text(monkeypatch):
+    # Defensive: parser must degrade to None, never raise, regardless of input shape.
+    for garbage in ("", "---", "DATA SOURCE:\nGAPS:\n", "\n\n\n---\n---\n---\n"):
+        assert _parse_interpretation(garbage) is None
+
+
+def test_parse_interpretation_resists_redos_on_adversarial_bullet_flood():
+    # Regression test: an earlier monolithic-regex version of this parser had
+    # catastrophic backtracking on unbounded LLM-generated text with many
+    # dash-prefixed lines and no closing delimiter. Must resolve in well
+    # under a second, not hang.
+    import time
+
+    adversarial = "DATA SOURCE: x\n" + ("- a\n" * 5000)
+    start = time.monotonic()
+    result = _parse_interpretation(adversarial)
+    elapsed = time.monotonic() - start
+    assert elapsed < 1.0, f"parser took {elapsed:.2f}s — possible ReDoS regression"
+    assert result is None  # no closing --- delimiter present
+
+
+# ---------------------------------------------------------------------------
+# LoopResult.interpretation — integration with run_query()
+# ---------------------------------------------------------------------------
+
+
+def test_loop_result_interpretation_defaults_to_none_for_existing_call_sites():
+    # Existing call sites across the codebase construct LoopResult without
+    # interpretation= at all — must not break.
+    result = LoopResult(
+        question="q",
+        sql="SELECT 1",
+        columns=("n",),
+        rows=((1,),),
+        row_count=1,
+        model_text="One.",
+    )
+    assert result.interpretation is None
+
+
+def test_run_query_populates_interpretation_from_model_text(monkeypatch):
+    model_text = (
+        "Found 1 result.\n\n---\nDATA SOURCE: detections · all rows\nGAPS: none\n---\n"
+    )
+    with patch("canopy.query.loop._run_agent", new=_make_agent_mock(model_text, "SELECT 1")):
+        result = run_query("How many rows?")
+    assert result.interpretation == Interpretation(
+        data_source="detections · all rows", gaps=(), research_questions=()
+    )
+
+
+def test_run_query_interpretation_is_none_when_block_absent(monkeypatch):
+    mock = _make_agent_mock("Just a plain answer.", "SELECT 1")
+    with patch("canopy.query.loop._run_agent", new=mock):
+        result = run_query("How many rows?")
+    assert result.interpretation is None
