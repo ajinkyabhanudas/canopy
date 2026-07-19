@@ -683,6 +683,8 @@ Second, hallucination tests depend on the DB not having the test entity. "Fictus
 >
 > Sound at current load. The threshold table above makes the revisit condition concrete. Monitor PostgreSQL `pg_stat_activity` in production; if concurrent connection count routinely exceeds 10, add a pool. Log connection setup time if it starts appearing in query timing breakdowns.
 
+**Update (2026-07-19):** Gradio's `concurrency_limit` on every handler in `ui/app.py` was `1` — serializing the entire app to one query at a time globally, not per-user. That's a UX bug independent of this decision (no pooling), but it was hiding the fact that this decision's own "no action needed" band (1-5 concurrent) was never actually reachable. Raised to `3` (`_QUERY_CONCURRENCY_LIMIT` in `ui/app.py`), which stays inside the existing threshold table above — no new decision, no pool added. `cache.py`/`history.py` already guard their file writes with independent `threading.Lock()`s, so this doesn't introduce a race condition in shared state.
+
 ---
 
 ### O3 — Container security
