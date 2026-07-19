@@ -31,6 +31,14 @@ _IDLE_PROMPT = t("idle_prompt")
 # langdetect is unreliable on very short strings; skip detection below this length
 _MIN_LANG_DETECT_LEN = 30
 
+# Max simultaneous run_query() calls. Was 1 (serializing the whole app to one
+# query at a time, globally — not per-user), which would visibly queue during
+# the Week 8 multi-user handover session. 3 covers Jajean + reviewers
+# comfortably and stays inside DECISIONS.md § O2's own "1-5 concurrent
+# connections: no action needed" threshold — no connection pooling added,
+# since O2 already covers when that becomes necessary (revisit above 20).
+_QUERY_CONCURRENCY_LIMIT = 3
+
 CSS = """
 /* Status bar — typographic only, no box */
 #canopy-status {
@@ -406,13 +414,13 @@ def build_app() -> gr.Blocks:
             fn=_run_query_handler,
             inputs=[question_box, history_state],
             outputs=_OUTPUTS,
-            concurrency_limit=1,
+            concurrency_limit=_QUERY_CONCURRENCY_LIMIT,
         )
         question_box.submit(
             fn=_run_query_handler,
             inputs=[question_box, history_state],
             outputs=_OUTPUTS,
-            concurrency_limit=1,
+            concurrency_limit=_QUERY_CONCURRENCY_LIMIT,
         )
         history_radio.input(
             fn=lambda q: q or "",
@@ -422,7 +430,7 @@ def build_app() -> gr.Blocks:
             fn=_run_query_handler,
             inputs=[question_box, history_state],
             outputs=_OUTPUTS,
-            concurrency_limit=1,
+            concurrency_limit=_QUERY_CONCURRENCY_LIMIT,
         )
         clear_btn.click(
             fn=_clear_handler,
