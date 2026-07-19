@@ -55,8 +55,16 @@ Years with zero activity at a site return no row rather than a row with count = 
 A user comparing 2023 vs 2024 counts at a site that had no 2024 detections would
 see only a 2023 row — not a "2024: 0" row.
 
-The system prompt instructs the model to note gaps explicitly. This relies on model
-compliance — it is not enforced in SQL.
+The system prompt now requires a specific `generate_series` + `LEFT JOIN` +
+`COALESCE` pattern for any year-range query (see `schema.py`), so every
+requested year appears explicitly — including 0-count years — rather than
+being silently omitted by a plain `GROUP BY`. This is still model
+compliance, not a SQL-level guarantee: the executor has no knowledge of
+query intent and cannot itself detect or fill gaps (see `A2`/`A3` in
+`DECISIONS.md` — the agent decides SQL, the executor only runs it). Covered
+by eval case Q48, which asserts the full requested range appears as rows
+against a known real gap (2020–2022 have zero approved detections in the
+live dataset).
 
 ---
 
