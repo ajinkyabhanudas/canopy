@@ -222,7 +222,7 @@ make test           # unit tests only
 make smoke          # Docker runtime validation (requires Docker)
 ```
 
-Expected unit test result: **413 passed**, 100% coverage.
+Expected unit test result: **469 passed**, 100% coverage.
 
 The smoke test validates what `pytest` cannot: Docker volume permissions, Gradio
 startup warnings, and HTTP availability. Run it after any Dockerfile or Gradio change.
@@ -237,17 +237,18 @@ eval suite and prints a comparison table:
 | gpt-5.1-codex-mini | **91%** | **94%** | 14.9s | $0.00075 | $0.003 |
 | gpt-5.1-2 | 93% | 88% | 14.5s | $0.003 | $0.012 |
 
-> **codex-mini is the default** — lower cost and competitive accuracy on the expanded 59-case
-> suite (43 ground-truth + 16 adversarial). Both models exceed the ≥85% GT gate and ≥80% ADV
+> **codex-mini is the default** — lower cost and competitive accuracy on the expanded 65-case
+> suite (49 ground-truth + 16 adversarial). Both models exceed the ≥85% GT gate and ≥80% ADV
 > gate. gpt-5.1-2 runs at temperature=0 (deterministic); codex-mini does not support
 > temperature control so scores have ~2–3% natural variance across runs.
-> Run `make benchmark` to refresh. The cache is cleared before each model run.
+> Run `make benchmark` to refresh — the table above reflects the 43/16-case suite before
+> Steps 8/9 and the multi-row faithfulness case were added; re-run to get current percentages.
 
 Connections marked `active: false` in `models.yaml` are skipped. Currently inactive:
 `claude-sonnet` (Anthropic API credits required — re-enable at console.anthropic.com),
 `phi-4`, `qwen-3-4b` (pending admin deployment activation).
 
-Columns: **GT%** = ground-truth pass rate (43 cases, target ≥85%), **ADV%** = adversarial
+Columns: **GT%** = ground-truth pass rate (49 cases, target ≥85%), **ADV%** = adversarial
 pass rate (16 cases, target 100%), **Lat(s)** = average latency per case.
 
 Results are also written to `benchmark_results/benchmark_<timestamp>.json` and `.csv`
@@ -313,7 +314,7 @@ date, see `DECISIONS.md` (O4) and run `git log --before=<date> --grep="model\|sc
 | Schema context + system prompt | Done |
 | SQL executor with SELECT-only guard | Done |
 | Agentic query loop | Done |
-| Ground-truth eval set (31 queries) | Done |
+| Ground-truth eval set (49 queries) | Done |
 | Query history (JSONL, Docker-safe) | Done |
 | Production hardening (logging, timeout, Dockerfile) | Done |
 | Gradio UI with streaming progress | Done |
@@ -321,11 +322,14 @@ date, see `DECISIONS.md` (O4) and run `git log --before=<date> --grep="model\|sc
 | Coordinate filtering (lat/lon never sent to AI layer) | Done |
 | Read-only DB connection enforcement | Done |
 | Resilient query history | Done |
-| Faithfulness + adversarial evals (31 GT + 10 adversarial) | Done |
+| Faithfulness + adversarial evals (49 GT + 16 adversarial) | Done |
 | Query result cache (SHA-256+NFC, TTL, LRU, model-scoped key) | Done |
 | Spanish language support (auto-detect responses + UI labels) | Done |
 | Spanish eval suite (8 GT parallel cases) | Done |
 | Azure AI Foundry adapter (OpenAI-compatible) | Done |
 | models.yaml connection registry (named connections, auto-discover) | Done |
 | Multi-model benchmark runner (`make benchmark`) | Done |
+| Structured interpretation output (data source, gaps, research questions) | Done |
+| Missing-year gap filling in year-range queries | Done |
+| Multi-row faithfulness verification | Done |
 | IUCN API integration | Deferred (needs API key) |
