@@ -1,4 +1,4 @@
-.PHONY: help test lint check build run smoke ui eval eval-spanish eval-adversarial benchmark clean playwright-install e2e screenshots
+.PHONY: help test lint check build run smoke ui eval eval-gt eval-es eval-adv benchmark clean playwright-install e2e screenshots
 
 # Default target
 help:
