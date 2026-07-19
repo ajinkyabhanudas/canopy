@@ -5,7 +5,7 @@ from __future__ import annotations
 import canopy.ui.app as ui_mod
 from canopy.i18n import t
 from canopy.query.executor import SQLGuardError
-from canopy.query.loop import Interpretation, LoopResult
+from canopy.query.loop import Interpretation, LoopResult, UnsupportedLanguageError
 
 
 def _make_result(**overrides) -> LoopResult:
@@ -259,6 +259,23 @@ def test_handler_statement_timeout_gives_actionable_message(monkeypatch):
     assert "too long" in response.lower()
     assert "⚠" in status
     assert "timed out" in status.lower()
+
+
+def test_handler_catches_unsupported_language_error_from_run_query(monkeypatch):
+    """Defense-in-depth path: is_unsupported_language() in the handler only
+    inspects the raw question text, so it can't see what run_query() itself
+    might raise. This exercises that branch directly — the same way
+    SQLGuardError/QueryCanceled are exercised above — rather than leaving it
+    uncovered because it's normally unreachable through the UI's own
+    pre-check on a real (non-mocked) run_query."""
+
+    def _raise_unsupported_language(q, status_cb=None):
+        raise UnsupportedLanguageError("Canopy only supports questions in English or Spanish.")
+
+    monkeypatch.setattr(ui_mod, "run_query", _raise_unsupported_language)
+    _, _, response, _, _, _, status, _, *__ = _run("a normal English question here")
+    assert t("error_unsupported_language") in response
+    assert t("error_unsupported_language_status") in status
 
 
 def test_handler_db_connection_error_message(monkeypatch):
