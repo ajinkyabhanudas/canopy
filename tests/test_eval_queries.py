@@ -17,6 +17,7 @@ from canopy.query.loop import LoopResult, run_query
 from tests.eval.queries import (
     EVAL_CASES,
     EvalCase,
+    _all_row_values_in_text,
     _col_has,
     _q1_species_validated_at_any_site,
     _q4_annual_detection_counts,
@@ -26,6 +27,7 @@ from tests.eval.queries import (
     _q17_population_trend_declined,
     _q18_iucn_flagged_not_in_db,
     _q20_conservation_priority_declined,
+    _q49_multirow_breakdown_all_values_faithful,
     _sql_has,
     _text_has,
 )
@@ -63,8 +65,8 @@ def _make_result(
 # ---------------------------------------------------------------------------
 
 
-def test_eval_cases_has_exactly_48_entries():
-    assert len(EVAL_CASES) == 48
+def test_eval_cases_has_exactly_49_entries():
+    assert len(EVAL_CASES) == 49
 
 
 def test_all_questions_are_nonempty_strings():
@@ -399,3 +401,64 @@ def test_faithfulness_unknown_species_returns_zero() -> None:
         f"Model returned {result.row_count} rows for a non-existent species. "
         f"Generated SQL: {result.sql}"
     )
+
+
+# ---------------------------------------------------------------------------
+# _all_row_values_in_text / Q49 — multi-row faithfulness, no live DB needed
+# ---------------------------------------------------------------------------
+
+
+def test_all_row_values_in_text_passes_when_all_values_cited():
+    r = _make_result(
+        sql="SELECT model_id, COUNT(*) FROM detections GROUP BY model_id",
+        rows=[("Model A", 25002), ("Model B", 351), ("Model C", 156)],
+        row_count=3,
+        model_text="Model A: 25,002. Model B: 351. Model C: 156.",
+    )
+    assert _all_row_values_in_text(r) is True
+
+
+def test_all_row_values_in_text_fails_when_one_row_wrong():
+    r = _make_result(
+        sql="SELECT model_id, COUNT(*) FROM detections GROUP BY model_id",
+        rows=[("Model A", 25002), ("Model B", 351), ("Model C", 156)],
+        row_count=3,
+        # Model C's real value (156) never appears — only a fabricated 999.
+        model_text="Model A: 25,002. Model B: 351. Model C: 999.",
+    )
+    assert _all_row_values_in_text(r) is False
+
+
+def test_all_row_values_in_text_fails_when_last_row_dropped():
+    r = _make_result(
+        sql="SELECT model_id, COUNT(*) FROM detections GROUP BY model_id",
+        rows=[("Model A", 25002), ("Model B", 351), ("Model C", 156)],
+        row_count=3,
+        model_text="Model A: 25,002. Model B: 351.",  # Model C's 156 never mentioned
+    )
+    assert _all_row_values_in_text(r) is False
+
+
+def test_all_row_values_in_text_requires_multiple_rows():
+    r = _make_result(
+        sql="SELECT COUNT(*) FROM detections",
+        rows=[(5,)],
+        row_count=1,
+        model_text="There are 5 detections.",
+    )
+    assert _all_row_values_in_text(r) is False  # single-row is Q22/Q23's job, not Q49's
+
+
+def test_all_row_values_in_text_accepts_comma_formatting():
+    r = _make_result(
+        sql="SELECT model_id, COUNT(*) FROM detections GROUP BY model_id",
+        rows=[("Model A", 25002), ("Model B", 351)],
+        row_count=2,
+        model_text="Model A: 25,002 detections. Model B: 351 detections.",
+    )
+    assert _all_row_values_in_text(r) is True
+
+
+def test_q49_check_fn_requires_sql_executed():
+    r = _make_result(sql=None, rows=[], row_count=0, model_text="I cannot answer that.")
+    assert _q49_multirow_breakdown_all_values_faithful(r) is False

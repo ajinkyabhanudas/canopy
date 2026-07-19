@@ -5,9 +5,9 @@ Each EvalCase is a (question, check_fn, description) triple where check_fn
 receives a LoopResult and returns True if the response is acceptable.
 
 Run with: python scripts/run_eval.py  (requires live DB + active MODEL_BACKEND API key)
-Target: ≥85% pass rate (≥41/48).
+Target: ≥85% pass rate (≥42/49).
 
-Coverage across 19 categories:
+Coverage across 20 categories:
   1. Species list at a named site (Q1–Q3)
   2. Year-range / temporal (Q4–Q6)
   3. Validation status breakdown (Q7–Q8)
@@ -24,6 +24,7 @@ Coverage across 19 categories:
   17. Step-8 interpretation block — present on data-returning queries (Q44–Q46)
   18. Step-8 interpretation block — absent on guardrail decline (Q47)
   19. Step-9 — missing-year gap filling in year-range queries (Q48)
+  20. Multi-row faithfulness — every value in a breakdown, not just the first (Q49)
 
 Note on Q44–Q46 (interpretation block, Category 17): these assert against the
 *parsed* r.interpretation field (Interpretation dataclass), not raw model_text
@@ -38,6 +39,17 @@ dataset (2020–2022 have zero approved detections, confirmed via direct query
 against PostgreSQL as of 2026-07-19) rather than a synthetic assumption —
 if the underlying data changes such that this range no longer contains a
 gap, this case needs a new range re-verified the same way.
+
+Note on Q49 (Category 20): originally scoped as approximation-language eval
+coverage (per the delivery plan's Phase 5), but three live queries against
+gpt-5.1-codex-mini — including one explicitly instructing the model not to
+give the precise count — showed it reliably cites the exact figure
+alongside any rounding. That specific risk doesn't manifest in practice, so
+writing eval cases for it would pass trivially and add no signal. The same
+live testing surfaced a real, previously uncovered gap instead: Q22/Q23
+only ever check rows[0][0], so a multi-row breakdown response could get the
+first row right and fabricate or drop the rest with nothing catching it.
+Q49 closes that gap.
 """
 
 from __future__ import annotations
@@ -85,6 +97,15 @@ def _text_has(result: LoopResult, *terms: str) -> bool:
     return any(t.lower() in low for t in terms)
 
 
+def _int_value_in_text(val: object, text: str) -> bool:
+    """True iff val (as plain or comma-formatted int) appears in text."""
+    if not isinstance(val, int) or val <= 0:
+        return False
+    plain = str(val)
+    formatted = f"{val:,}"  # e.g. 53482 -> "53,482"
+    return plain in text or formatted in text
+
+
 def _count_value_in_text(result: LoopResult) -> bool:
     """True iff the numeric value in rows[0][0] appears in model_text.
 
@@ -95,13 +116,27 @@ def _count_value_in_text(result: LoopResult) -> bool:
     """
     if result.row_count != 1 or not result.rows:
         return False
-    val = result.rows[0][0]
-    if not isinstance(val, int) or val <= 0:
+    return _int_value_in_text(result.rows[0][0], result.model_text)
+
+
+def _all_row_values_in_text(result: LoopResult) -> bool:
+    """True iff every integer value across every row appears in model_text.
+
+    Extends _count_value_in_text to multi-row aggregation results (e.g. a
+    breakdown "per AI model" or "per site"). A response can cite the first
+    row correctly while getting the second or third wrong — single-scalar
+    checks like _count_value_in_text never exercise that path since they
+    only ever look at rows[0][0]. Non-integer columns (labels, names) are
+    skipped; only numeric columns are checked, matching how
+    _count_value_in_text already treats non-int values as skip-worthy
+    rather than failing.
+    """
+    if result.row_count < 2 or not result.rows:
         return False
-    plain = str(val)
-    # Insert commas every 3 digits from the right (e.g. 53482 → "53,482")
-    formatted = f"{val:,}"
-    return plain in result.model_text or formatted in result.model_text
+    int_values = [v for row in result.rows for v in row if isinstance(v, int) and v > 0]
+    if not int_values:
+        return False
+    return all(_int_value_in_text(v, result.model_text) for v in int_values)
 
 
 # ---------------------------------------------------------------------------
@@ -731,6 +766,17 @@ def _q48_year_range_fills_gap_years(r: LoopResult) -> bool:
     return has_gap_fill_pattern and r.row_count == 5
 
 
+def _q49_multirow_breakdown_all_values_faithful(r: LoopResult) -> bool:
+    """Per-model detection counts: every row's value must appear correctly
+    in model_text, not just the first (Q22/Q23 only ever check rows[0][0] —
+    a response could get the top row right and fabricate or drop the rest
+    without either of those cases catching it).
+    """
+    if r.sql is None:
+        return False
+    return _all_row_values_in_text(r)
+
+
 # ---------------------------------------------------------------------------
 # Ground-truth eval set — 44 cases
 # ---------------------------------------------------------------------------
@@ -1096,6 +1142,17 @@ EVAL_CASES: list[EvalCase] = [
             "against PostgreSQL). SQL must use generate_series-based gap-filling so "
             "the result has 5 rows (one per requested year), not just the 2 years "
             "with actual data — proves the model doesn't silently omit zero-count years"
+        ),
+    ),
+    # --- Category 20: Multi-row faithfulness ---
+    EvalCase(
+        question="Break down the number of approved detections by AI model.",
+        check_fn=_q49_multirow_breakdown_all_values_faithful,
+        description=(
+            "Multi-row aggregation: every row's value must appear correctly in "
+            "model_text, not just the first — Q22/Q23 only ever check rows[0][0], "
+            "which would miss a response that gets the top row right and "
+            "fabricates or drops the rest"
         ),
     ),
 ]
