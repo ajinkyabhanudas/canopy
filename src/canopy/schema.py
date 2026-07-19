@@ -137,6 +137,31 @@ Add further WHERE clauses, GROUP BY, or aggregate functions as needed.
 Use EXTRACT(YEAR FROM d.recorded_at) to filter or group by year.
 Use DATE_TRUNC for finer time grouping.
 
+=== YEAR-RANGE QUERIES: ALWAYS FILL GAP YEARS, NEVER OMIT THEM ===
+A query spanning multiple years ("from 2019 to 2023", "each year since 2020")
+must return one row per requested year, including years with zero approved
+detections — a missing year and a zero-detection year are different facts,
+and the record-history use case depends on being able to tell them apart.
+
+Do NOT simply GROUP BY year, since that silently omits years with no rows.
+Instead, generate the full requested year range and LEFT JOIN detection
+counts onto it, so gap years appear explicitly as 0:
+
+  SELECT year_series.year, COALESCE(d.detections, 0) AS detections
+  FROM generate_series(2019, 2023) AS year_series(year)
+  LEFT JOIN (
+      SELECT EXTRACT(YEAR FROM recorded_at)::int AS year, COUNT(*) AS detections
+      FROM detections
+      WHERE validation_status = 'approved'
+      GROUP BY year
+  ) d ON d.year = year_series.year
+  ORDER BY year_series.year;
+
+The result must have exactly (end_year - start_year + 1) rows. In the
+Interpretation block's GAPS line, name any 0-count years explicitly
+(e.g. "2020–2022 have zero approved detections in this range") rather than
+letting the reader infer it from the table alone.
+
 === WHAT IS NOT IN THIS DATABASE ===
   • IUCN threat categories — not stored here; retrieved separately from the
     IUCN Red List API. Do not guess or infer threat status from this data.
