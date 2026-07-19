@@ -17,7 +17,7 @@ from canopy.config import get_ui_lang
 from canopy.history import clear_history
 from canopy.i18n import set_locale, t
 from canopy.query.executor import SQLGuardError
-from canopy.query.loop import run_query
+from canopy.query.loop import Interpretation, LoopResult, run_query, strip_interpretation_block
 
 DetectorFactory.seed = 0  # deterministic language detection across calls
 
@@ -64,12 +64,67 @@ CSS = """
     line-height: 1.65;
     margin-bottom: 0.7em;
 }
+
+/* Interpretation block — the hr before it visually separates it from the
+   main answer; text is slightly subdued to read as supplementary context. */
+.tabitem hr {
+    margin: 1em 0 0.8em 0;
+    border-color: var(--border-color-primary);
+}
 """
 
 # Type alias for the 9-tuple every handler output must match:
 # [sql_box, results_table, response_box, row_count_md, history_radio,
 #  timing_md, status_md, history_state, result_tabs]
 _Output = tuple
+
+
+def _render_interpretation(interpretation: Interpretation | None) -> str:
+    """Return a markdown fragment for the interpretation section, or '' if None.
+
+    Pure markdown, no wrapping HTML element — Gradio's markdown-it renderer
+    does not parse markdown syntax inside raw HTML blocks (confirmed via
+    browser screenshot: an earlier version wrapped this in a <div> and every
+    bold/bullet rendered as literal text). The horizontal rule (---) already
+    renders correctly and is the visual separator; CSS targets it via
+    `.tabitem hr` rather than a custom wrapper class.
+
+    Mirrors the model's own optionality rules from schema.py: an empty gaps
+    tuple renders as a literal 'none' line (matching what the model itself
+    writes inline), and an empty research_questions tuple omits that
+    sub-section entirely rather than showing an empty heading.
+    """
+    if interpretation is None:
+        return ""
+
+    lines = [
+        "---",
+        f"**{t('interpretation_heading')}**",
+        "",
+        f"**{t('interpretation_source')}:** {interpretation.data_source}",
+        "",
+        f"**{t('interpretation_gaps')}:**",
+    ]
+    if interpretation.gaps:
+        lines.extend(f"- {gap}" for gap in interpretation.gaps)
+    else:
+        lines.append(t("interpretation_gaps_none"))
+
+    if interpretation.research_questions:
+        lines.append("")
+        lines.append(f"**{t('interpretation_research')}:**")
+        lines.extend(f"- {q}" for q in interpretation.research_questions)
+
+    return "\n".join(lines)
+
+
+def _render_response(result: LoopResult) -> str:
+    """Build the Answer tab's full markdown: model_text (block stripped) + interpretation."""
+    body = strip_interpretation_block(result.model_text)
+    interpretation_md = _render_interpretation(result.interpretation)
+    if not interpretation_md:
+        return body
+    return f"{body}\n\n{interpretation_md}"
 
 
 def _check_language(question: str) -> bool:
@@ -260,7 +315,7 @@ def _run_query_handler(
     yield (
         sql_display,
         df,
-        result.model_text,
+        _render_response(result),
         count_md,
         gr.Radio(choices=new_history, value=None),
         timing_md,

@@ -31,6 +31,7 @@ from canopy.query.loop import (
     _load_sensitive_columns,
     _parse_interpretation,
     run_query,
+    strip_interpretation_block,
 )
 
 # ---------------------------------------------------------------------------
@@ -399,6 +400,32 @@ def test_parse_interpretation_missing_block_returns_none():
 def test_parse_interpretation_malformed_missing_gaps_returns_none():
     text = "---\nDATA SOURCE: detections\n---\n"
     assert _parse_interpretation(text) is None
+
+
+def test_parse_interpretation_unclosed_block_parses_via_implicit_end_of_string():
+    """Regression: gpt-5.1-codex-mini observed (live, via Docker+Playwright) to
+    sometimes omit the closing --- delimiter, ending the response right after
+    the last bullet. Must still parse, not silently fall back to None and
+    leave the raw block visible to the user."""
+    text = (
+        "Answer text.\n\n"
+        "---\n"
+        "DATA SOURCE: species catalog joined to detections\n"
+        "GAPS:\n"
+        "  • Some gap here\n"
+        "RESEARCH QUESTIONS:\n"
+        "  • Some question?"
+    )
+    result = _parse_interpretation(text)
+    assert result is not None
+    assert result.data_source == "species catalog joined to detections"
+    assert result.gaps == ("Some gap here",)
+    assert result.research_questions == ("Some question?",)
+
+
+def test_strip_interpretation_block_removes_unclosed_block():
+    text = "Answer text.\n\n---\nDATA SOURCE: detections\nGAPS: none"
+    assert strip_interpretation_block(text) == "Answer text."
 
 
 def test_parse_interpretation_dash_bullets_parse_same_as_bullet_char():
