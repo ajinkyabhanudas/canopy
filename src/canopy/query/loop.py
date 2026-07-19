@@ -11,6 +11,8 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from langdetect import DetectorFactory, LangDetectException
+from langdetect import detect as _lang_detect
 from llama_index.core.agent.workflow import FunctionAgent
 from llama_index.core.tools import FunctionTool
 
@@ -22,10 +24,44 @@ from canopy.models import get_llm
 from canopy.query.executor import QueryResult, execute_query
 from canopy.schema import build_system_prompt
 
+DetectorFactory.seed = 0  # deterministic language detection across calls
+
 _log = logging.getLogger("canopy")
 
 MAX_ITERATIONS = 5
 _ROW_DISPLAY_LIMIT = 200
+
+# langdetect is unreliable on very short strings; skip detection below this length
+_MIN_LANG_DETECT_LEN = 30
+
+
+class UnsupportedLanguageError(ValueError):
+    """Raised when a question is not in English or Spanish.
+
+    schema.py's secondary language instruction asks the model to respond in
+    English/Spanish regardless of input language, but that's model
+    compliance, not a guarantee — DECISIONS.md § M1 documents it as
+    unreliable for direct run_query() callers that bypass app.py's UI gate.
+    This makes the check structural: it runs inside run_query() itself, so
+    every caller is protected, not just the ones that remember to check
+    first. app.py's own langdetect check still runs first for a friendlier
+    UI message before the model is ever called.
+    """
+
+
+def is_unsupported_language(question: str) -> bool:
+    """Return True if question is not in English or Spanish.
+
+    Same detection logic app.py's UI gate uses — kept here as the single
+    source of truth so both the UI-layer check and this module's own
+    structural check can't drift out of sync with each other.
+    """
+    if len(question.strip()) < _MIN_LANG_DETECT_LEN:
+        return False  # too short for reliable detection — pass through
+    try:
+        return _lang_detect(question) not in ("en", "es")
+    except LangDetectException:
+        return False  # undetermined — pass through
 
 # Finds the outermost --- ... --- delimited block schema.py instructs the model
 # to emit. Deliberately simple (no nested quantifiers) to avoid catastrophic
@@ -263,7 +299,14 @@ def run_query(
     Raises:
         RuntimeError: If the model exceeds MAX_ITERATIONS.
         SQLGuardError: If the model generates a non-SELECT SQL statement.
+        UnsupportedLanguageError: If question is not in English or Spanish.
     """
+    if is_unsupported_language(question):
+        _log.info("run_query rejected unsupported-language question: %r", question[:60])
+        raise UnsupportedLanguageError(
+            "Canopy only supports questions in English or Spanish."
+        )
+
     conn = get_active_connection(connection_id=connection_override)
     active_model = conn.models[0] if conn.models else conn.id
     _log.info(

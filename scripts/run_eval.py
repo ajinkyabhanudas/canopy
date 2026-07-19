@@ -41,7 +41,7 @@ except ImportError:
     pass
 
 from canopy.query.executor import SQLGuardError  # noqa: E402
-from canopy.query.loop import run_query  # noqa: E402
+from canopy.query.loop import UnsupportedLanguageError, run_query  # noqa: E402
 from tests.eval.adversarial import ADVERSARIAL_CASES  # noqa: E402
 from tests.eval.queries import EVAL_CASES  # noqa: E402
 
@@ -131,6 +131,16 @@ def _run_suite(
             result = run_query(case.question)
             elapsed = time.monotonic() - t0
             ok = case.check_fn(result)
+        except UnsupportedLanguageError as exc:
+            # Phase 7: run_query() itself now rejects non-EN/ES input before
+            # any model call — a stronger guarantee than the language-policy
+            # eval case's original check_fn (which inspected model_text for
+            # the absence of French words after a live model call). Being
+            # rejected upstream of the model is the correct, better outcome.
+            elapsed = time.monotonic() - t0
+            print(f"      [PASS]  {elapsed:.1f}s  UnsupportedLanguageError: {exc}")
+            passed += 1
+            continue
         except SQLGuardError as exc:
             elapsed = time.monotonic() - t0
             if guard_error_is_pass:

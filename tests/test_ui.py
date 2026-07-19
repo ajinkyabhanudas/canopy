@@ -5,7 +5,7 @@ from __future__ import annotations
 import canopy.ui.app as ui_mod
 from canopy.i18n import t
 from canopy.query.executor import SQLGuardError
-from canopy.query.loop import Interpretation, LoopResult
+from canopy.query.loop import Interpretation, LoopResult, UnsupportedLanguageError
 
 
 def _make_result(**overrides) -> LoopResult:
@@ -261,6 +261,23 @@ def test_handler_statement_timeout_gives_actionable_message(monkeypatch):
     assert "timed out" in status.lower()
 
 
+def test_handler_catches_unsupported_language_error_from_run_query(monkeypatch):
+    """Defense-in-depth path: is_unsupported_language() in the handler only
+    inspects the raw question text, so it can't see what run_query() itself
+    might raise. This exercises that branch directly — the same way
+    SQLGuardError/QueryCanceled are exercised above — rather than leaving it
+    uncovered because it's normally unreachable through the UI's own
+    pre-check on a real (non-mocked) run_query."""
+
+    def _raise_unsupported_language(q, status_cb=None):
+        raise UnsupportedLanguageError("Canopy only supports questions in English or Spanish.")
+
+    monkeypatch.setattr(ui_mod, "run_query", _raise_unsupported_language)
+    _, _, response, _, _, _, status, _, *__ = _run("a normal English question here")
+    assert t("error_unsupported_language") in response
+    assert t("error_unsupported_language_status") in status
+
+
 def test_handler_db_connection_error_message(monkeypatch):
     """psycopg2 OperationalError (connection lost) → specific connection message."""
     import psycopg2
@@ -317,52 +334,28 @@ def test_handler_cache_hit_shows_cached_status(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# _check_language — language gate
+# Language gate — is_unsupported_language() moved to query/loop.py so
+# run_query() is self-protecting for direct callers too (Phase 7). Pure
+# detection-logic tests live in test_query_loop.py now; kept here is only
+# the UI-integration test confirming app.py still wires the shared check in.
 # ---------------------------------------------------------------------------
 
 
-def test_check_language_english_passes():
-    assert not ui_mod._check_language("How many species were detected at each reserve in 2023?")
+def test_handler_rejects_unsupported_language_before_calling_run_query(monkeypatch):
+    """UI gate must reject non-EN/ES input without ever calling run_query()."""
+    called = False
 
+    def _should_not_be_called(q, status_cb=None):
+        nonlocal called
+        called = True
+        return _make_result()
 
-def test_check_language_spanish_passes():
-    assert ui_mod._check_language("¿Cuántas especies únicas se detectaron en 2023?") is False
-
-
-def test_check_language_french_rejected():
-    assert ui_mod._check_language("Combien d'espèces ont été détectées en 2023?") is True
-
-
-def test_check_language_short_input_passes_through():
-    """Inputs under 30 chars bypass detection — too short for reliable result."""
-    assert ui_mod._check_language("Bonjour monde!") is False  # 14 chars
-    assert ui_mod._check_language("very complex question") is False  # 21 chars
-
-
-def test_check_language_empty_passes_through():
-    assert ui_mod._check_language("") is False
-
-
-def test_check_language_detection_exception_passes_through(monkeypatch):
-    from langdetect import LangDetectException
-
-    def _raise(q):
-        raise LangDetectException(0, "no features in text")
-
-    monkeypatch.setattr(ui_mod, "_lang_detect", _raise)
-    assert ui_mod._check_language("x" * 40) is False
-
-
-def test_check_language_boundary_30_chars(monkeypatch):
-    """29 chars: detector not called. 30 chars: detector is called."""
-    calls: list = []
-    monkeypatch.setattr(ui_mod, "_lang_detect", lambda q: calls.append(q) or "fr")
-
-    assert ui_mod._check_language("a" * 29) is False
-    assert calls == [], "detector must not run under the threshold"
-
-    assert ui_mod._check_language("a" * 30) is True
-    assert len(calls) == 1, "detector must run at exactly the threshold"
+    monkeypatch.setattr(ui_mod, "run_query", _should_not_be_called)
+    _, _, response, _, _, _, status, _, *_ = _run(
+        "Combien d'espèces ont été détectées en 2023?"
+    )
+    assert not called, "run_query() must not be called for rejected-language input"
+    assert t("error_unsupported_language") in response
 
 
 def test_handler_unsupported_language_rejected(monkeypatch):
