@@ -47,7 +47,7 @@ except ImportError:
 from canopy.cache import clear_cache  # noqa: E402
 from canopy.config import ModelConnection, load_model_connections  # noqa: E402
 from canopy.query.executor import SQLGuardError  # noqa: E402
-from canopy.query.loop import run_query  # noqa: E402
+from canopy.query.loop import UnsupportedLanguageError, run_query  # noqa: E402
 from tests.eval.adversarial import ADVERSARIAL_CASES  # noqa: E402
 from tests.eval.queries import EVAL_CASES  # noqa: E402
 
@@ -159,6 +159,20 @@ def _run_case(
             passed=passed, latency_s=round(latency, 2),
             input_tokens=in_tok, output_tokens=out_tok,
             cost_usd=round(_est_cost(model, backend, in_tok, out_tok), 5),
+        )
+    except UnsupportedLanguageError as exc:
+        # Phase 7: run_query() now rejects non-EN/ES input before any model
+        # call. For the language-policy case, being rejected pre-model is
+        # the correct, stronger outcome than the original check_fn (which
+        # inspected model_text after a live call) — same PASS logic as the
+        # eval runner's equivalent branch in scripts/run_eval.py.
+        latency = time.monotonic() - t0
+        return CaseResult(
+            conn_id=conn_id, backend=backend, model=model,
+            suite=suite, case_id=case_id, question=case.question,
+            passed=guard_pass, latency_s=round(latency, 2),
+            input_tokens=0, output_tokens=0, cost_usd=0.0,
+            error=f"UnsupportedLanguageError: {exc}",
         )
     except SQLGuardError as exc:
         latency = time.monotonic() - t0

@@ -27,9 +27,11 @@ from canopy.query.executor import QueryResult
 from canopy.query.loop import (
     Interpretation,
     LoopResult,
+    UnsupportedLanguageError,
     _format_result,
     _load_sensitive_columns,
     _parse_interpretation,
+    is_unsupported_language,
     run_query,
     strip_interpretation_block,
 )
@@ -491,3 +493,77 @@ def test_run_query_interpretation_is_none_when_block_absent(monkeypatch):
     with patch("canopy.query.loop._run_agent", new=mock):
         result = run_query("How many rows?")
     assert result.interpretation is None
+
+
+# ---------------------------------------------------------------------------
+# is_unsupported_language / UnsupportedLanguageError — Phase 7
+# ---------------------------------------------------------------------------
+
+
+def test_is_unsupported_language_english_passes():
+    assert not is_unsupported_language("How many species were detected at each reserve in 2023?")
+
+
+def test_is_unsupported_language_spanish_passes():
+    assert is_unsupported_language("¿Cuántas especies únicas se detectaron en 2023?") is False
+
+
+def test_is_unsupported_language_french_rejected():
+    assert is_unsupported_language("Combien d'espèces ont été détectées en 2023?") is True
+
+
+def test_is_unsupported_language_short_input_passes_through():
+    """Inputs under 30 chars bypass detection — too short for reliable result."""
+    assert is_unsupported_language("Bonjour monde!") is False  # 14 chars
+    assert is_unsupported_language("very complex question") is False  # 21 chars
+
+
+def test_is_unsupported_language_empty_passes_through():
+    assert is_unsupported_language("") is False
+
+
+def test_is_unsupported_language_detection_exception_passes_through(monkeypatch):
+    from langdetect import LangDetectException
+
+    def _raise(q):
+        raise LangDetectException(0, "no features in text")
+
+    monkeypatch.setattr("canopy.query.loop._lang_detect", _raise)
+    assert is_unsupported_language("x" * 40) is False
+
+
+def test_is_unsupported_language_boundary_30_chars(monkeypatch):
+    """29 chars: detector not called. 30 chars: detector is called."""
+    calls: list = []
+    monkeypatch.setattr(
+        "canopy.query.loop._lang_detect", lambda q: calls.append(q) or "fr"
+    )
+
+    assert is_unsupported_language("a" * 29) is False
+    assert calls == [], "detector must not run under the threshold"
+
+    assert is_unsupported_language("a" * 30) is True
+    assert len(calls) == 1, "detector must run at exactly the threshold"
+
+
+def test_run_query_raises_for_unsupported_language(monkeypatch):
+    """run_query() itself must reject non-EN/ES input — structural guard for
+    direct callers that bypass app.py's UI-layer check (Phase 7)."""
+    with pytest.raises(UnsupportedLanguageError):
+        run_query("Combien d'espèces ont été détectées en 2023?" + " " * 10)
+
+
+def test_run_query_never_calls_agent_for_unsupported_language(monkeypatch):
+    """The language check must short-circuit before any model call — verified
+    by confirming _run_agent is never invoked for rejected input."""
+    called = False
+
+    async def _should_not_run(*args, **kwargs):
+        nonlocal called
+        called = True
+        return "should never reach here"
+
+    with patch("canopy.query.loop._run_agent", new=_should_not_run):
+        with pytest.raises(UnsupportedLanguageError):
+            run_query("Combien d'espèces ont été détectées en 2023?" + " " * 10)
+    assert not called

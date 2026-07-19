@@ -10,16 +10,19 @@ from collections.abc import Generator
 import gradio as gr
 import psycopg2
 import psycopg2.errors
-from langdetect import DetectorFactory, LangDetectException
-from langdetect import detect as _lang_detect
 
 from canopy.config import get_ui_lang
 from canopy.history import clear_history
 from canopy.i18n import set_locale, t
 from canopy.query.executor import SQLGuardError
-from canopy.query.loop import Interpretation, LoopResult, run_query, strip_interpretation_block
-
-DetectorFactory.seed = 0  # deterministic language detection across calls
+from canopy.query.loop import (
+    Interpretation,
+    LoopResult,
+    UnsupportedLanguageError,
+    is_unsupported_language,
+    run_query,
+    strip_interpretation_block,
+)
 
 _log = logging.getLogger("canopy.ui")
 
@@ -27,9 +30,6 @@ set_locale(get_ui_lang())
 
 _PLACEHOLDER = t("placeholder")
 _IDLE_PROMPT = t("idle_prompt")
-
-# langdetect is unreliable on very short strings; skip detection below this length
-_MIN_LANG_DETECT_LEN = 30
 
 # Max simultaneous run_query() calls. Was 1 (serializing the whole app to one
 # query at a time, globally — not per-user), which would visibly queue during
@@ -135,16 +135,6 @@ def _render_response(result: LoopResult) -> str:
     return f"{body}\n\n{interpretation_md}"
 
 
-def _check_language(question: str) -> bool:
-    """Return True if the question is in a language other than English or Spanish."""
-    if len(question.strip()) < _MIN_LANG_DETECT_LEN:
-        return False  # too short for reliable detection — pass through
-    try:
-        return _lang_detect(question) not in ("en", "es")
-    except LangDetectException:
-        return False  # undetermined — pass through
-
-
 def _empty_result(message: str, session_history: list, status: str = "") -> _Output:
     """Return a blank 9-tuple with only the response message and optional status set."""
     return (
@@ -192,7 +182,7 @@ def _run_query_handler(
         yield _empty_result(t("error_empty_question"), session_history)
         return
 
-    if _check_language(question):
+    if is_unsupported_language(question):
         _log.info("language check rejected: %r", question[:60])
         yield _empty_result(
             t("error_unsupported_language"),
@@ -274,6 +264,18 @@ def _run_query_handler(
             _log.warning("loop exhausted for question: %r", question[:60])
             yield _empty_result(
                 t("error_iterations"), session_history, status="⚠ Question too complex"
+            )
+        elif isinstance(exc, UnsupportedLanguageError):
+            # Defense-in-depth: the is_unsupported_language() check above
+            # already catches this before run_query() is ever called, so
+            # this path is normally unreachable from the UI. It exists so
+            # run_query() itself is self-protecting for any caller that
+            # bypasses this handler (scripts, direct API use).
+            _log.info("run_query rejected unsupported language: %r", question[:60])
+            yield _empty_result(
+                t("error_unsupported_language"),
+                session_history,
+                status=t("error_unsupported_language_status"),
             )
         else:
             _log.error("query failed in UI: %s", exc, exc_info=True)
