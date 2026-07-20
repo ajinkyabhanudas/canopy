@@ -94,4 +94,7 @@ STRINGS: dict[str, str] = {
         "Support for additional languages may be added in the future."
     ),
     "error_unsupported_language_status": "⚠ Language not yet supported — try English or Spanish",
+    # Fuzzy name suggestions (app.py) — shown when a query returns 0 rows and
+    # a close match was found for a mistyped species/site name.
+    "fuzzy_suggestion_prompt": "No exact match found. Did you mean one of these?",
 }

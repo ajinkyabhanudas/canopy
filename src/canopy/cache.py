@@ -90,6 +90,15 @@ def _deserialize_interpretation(raw: dict | None) -> object | None:
     )
 
 
+def _deserialize_fuzzy_match(raw: dict | None) -> object | None:
+    """Reconstruct a FuzzyMatch from its cached dict form, or None."""
+    from canopy.query.fuzzy_match import FuzzyMatch
+
+    if raw is None:
+        return None
+    return FuzzyMatch(literal=raw["literal"], candidates=tuple(raw["candidates"]))
+
+
 def lookup_cache(question: str, connection_id: str = "", model: str = "") -> LoopResult | None:
     """Return a cached LoopResult for question, or None on miss/expiry."""
     from canopy.query.loop import LoopResult
@@ -115,6 +124,7 @@ def lookup_cache(question: str, connection_id: str = "", model: str = "") -> Loo
         model_text=entry["model_text"],
         timing={"cache_hit": True, "cached_at": entry["created_at"]},
         interpretation=_deserialize_interpretation(entry.get("interpretation")),
+        fuzzy_match=_deserialize_fuzzy_match(entry.get("fuzzy_match")),
     )
 
 
@@ -152,6 +162,14 @@ def write_cache(result: LoopResult, connection_id: str = "", model: str = "") ->
                     "research_questions": list(result.interpretation.research_questions),
                 }
                 if result.interpretation is not None
+                else None
+            ),
+            "fuzzy_match": (
+                {
+                    "literal": result.fuzzy_match.literal,
+                    "candidates": list(result.fuzzy_match.candidates),
+                }
+                if result.fuzzy_match is not None
                 else None
             ),
         }

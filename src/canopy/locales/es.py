@@ -94,4 +94,9 @@ STRINGS: dict[str, str] = {
         "Es posible que se añada compatibilidad con otros idiomas en el futuro."
     ),
     "error_unsupported_language_status": "⚠ Idioma no compatible aún — pruebe en inglés o español",
+    # Fuzzy name suggestions (app.py) — shown when a query returns 0 rows and
+    # a close match was found for a mistyped species/site name.
+    "fuzzy_suggestion_prompt": (
+        "No se encontró una coincidencia exacta. ¿Quiso decir alguno de estos?"
+    ),
 }
