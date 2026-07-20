@@ -118,6 +118,15 @@ FUZZY_COLUMNS: dict[str, _ColumnSpec] = {
         label_key="site",
         values_sql="SELECT DISTINCT name FROM sites",
     ),
+    "detections.management_unit": _ColumnSpec(
+        table="detections",
+        column="management_unit",
+        label_key="management_unit",
+        values_sql=(
+            "SELECT DISTINCT management_unit FROM detections "
+            "WHERE management_unit IS NOT NULL"
+        ),
+    ),
 }
 
 

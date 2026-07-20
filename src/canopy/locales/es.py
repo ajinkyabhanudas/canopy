@@ -104,4 +104,5 @@ STRINGS: dict[str, str] = {
     ),
     "fuzzy_column_species": "Especie",
     "fuzzy_column_site": "Sitio",
+    "fuzzy_column_management_unit": "Unidad de manejo",
 }

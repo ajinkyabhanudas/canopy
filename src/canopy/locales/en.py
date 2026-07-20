@@ -103,4 +103,5 @@ STRINGS: dict[str, str] = {
     "fuzzy_suggestion_prompt": "{label}: no exact match found. Did you mean one of these?",
     "fuzzy_column_species": "Species",
     "fuzzy_column_site": "Site",
+    "fuzzy_column_management_unit": "Management unit",
 }

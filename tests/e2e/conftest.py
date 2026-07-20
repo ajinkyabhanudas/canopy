@@ -148,6 +148,30 @@ _TWO_TYPOS_MATCH = LoopResult(
     ),
 )
 
+_MU_TYPO_MATCH = LoopResult(
+    question="test",
+    sql="SELECT * FROM detections WHERE management_unit ILIKE '%Waman%'",
+    columns=("management_unit",),
+    rows=(),
+    row_count=0,
+    model_text="I found 0 rows for that management unit.",
+    timing={
+        "total_s": 0.6,
+        "cache_hit": False,
+        "llm_s": 0.5,
+        "llm_calls": 1,
+        "db_s": 0.05,
+        "db_calls": 1,
+    },
+    fuzzy_matches=(
+        FuzzyMatch(
+            literal="Waman",
+            candidates=("Wamani", "Wamaní"),
+            label_key="management_unit",
+        ),
+    ),
+)
+
 _GUARDRAIL = LoopResult(
     question="test",
     sql=None,
@@ -181,6 +205,8 @@ def _smart_mock(question: str, status_cb=None) -> LoopResult:
       e2e-guardrail   → LoopResult with conservation-decline model_text (no SQL)
       e2e-typo        → LoopResult with 0 rows + species fuzzy_matches candidate
       e2e-site-typo   → LoopResult with 0 rows + site fuzzy_matches candidate
+      e2e-mu-typo     → LoopResult with 0 rows + management_unit fuzzy_matches
+                        candidates (real near-duplicate pair: Wamani/Wamaní)
       e2e-two-typos   → LoopResult with 0 rows + BOTH species and site
                         fuzzy_matches candidates (two simultaneous typos)
       anything else   → LoopResult success with model_text mentioning "42 detections"
@@ -203,6 +229,8 @@ def _smart_mock(question: str, status_cb=None) -> LoopResult:
         return LoopResult(**{**_TWO_TYPOS_MATCH.__dict__, "question": question})
     if "e2e-site-typo" in q:
         return LoopResult(**{**_SITE_TYPO_MATCH.__dict__, "question": question})
+    if "e2e-mu-typo" in q:
+        return LoopResult(**{**_MU_TYPO_MATCH.__dict__, "question": question})
     if "e2e-typo" in q:
         return LoopResult(**{**_TYPO_MATCH.__dict__, "question": question})
     return _SUCCESS

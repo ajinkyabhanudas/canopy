@@ -13,6 +13,10 @@ from canopy.query.fuzzy_match import _cache, find_candidates, is_empty_result
 
 SPECIES_VALUES = ("Grallaria gigantea", "Grallaria ridgelyi", "Tinamus major")
 SITE_VALUES = ("Reserva Narupa", "Reserva Buenaventura", "Reserva Antisana")
+# Real near-duplicate found live in the DB: an accent divergence between two
+# genuinely distinct entries ("Wamani" vs "Wamaní") — exactly the kind of
+# typo-shaped inconsistency this feature exists to help with.
+MANAGEMENT_UNIT_VALUES = ("Wamani", "Wamaní", "Yunguilla", "Buenaventura Corridor")
 
 
 @pytest.fixture(autouse=True)
@@ -26,10 +30,15 @@ def _clear_value_cache():
     _cache._fetched_at.clear()
 
 
-def _mock_execute_query_by_table(species=(), sites=()):
+def _mock_execute_query_by_table(species=(), sites=(), management_units=()):
     """Route DISTINCT lookups to the right value list by table name in the SQL."""
     def _fn(sql: str) -> QueryResult:
-        values = species if "species" in sql else sites
+        if "species" in sql:
+            values = species
+        elif "sites" in sql:
+            values = sites
+        else:
+            values = management_units
         return QueryResult(columns=("v",), rows=tuple((v,) for v in values), row_count=len(values))
     return _fn
 
@@ -125,6 +134,19 @@ def test_site_name_column_resolves(monkeypatch):
     assert len(matches) == 1
     assert matches[0].label_key == "site"
     assert "Reserva Buenaventura" in matches[0].candidates
+
+
+def test_management_unit_column_resolves(monkeypatch):
+    monkeypatch.setattr(
+        "canopy.query.fuzzy_match.execute_query", _mock_execute_query(MANAGEMENT_UNIT_VALUES)
+    )
+    sql = "SELECT * FROM detections WHERE management_unit ILIKE '%Waman%'"
+    matches = find_candidates(sql)
+    assert len(matches) == 1
+    assert matches[0].label_key == "management_unit"
+    # Real near-duplicate pair in the data — both should surface as candidates.
+    assert "Wamani" in matches[0].candidates
+    assert "Wamaní" in matches[0].candidates
 
 
 def test_aliased_column_reference_resolves(monkeypatch):
@@ -225,6 +247,34 @@ def test_two_typos_one_resolvable_one_not_returns_only_the_resolvable_one(monkey
     matches = find_candidates(sql)
     assert len(matches) == 1
     assert matches[0].label_key == "species"
+
+
+def test_three_typos_across_three_columns_all_resolve(monkeypatch):
+    """Extends the two-column case to all three registered columns at once —
+    a query mistyping species, site, AND management_unit simultaneously must
+    surface all three, not just the first two checked."""
+    monkeypatch.setattr(
+        "canopy.query.fuzzy_match.execute_query",
+        _mock_execute_query_by_table(
+            species=SPECIES_VALUES, sites=SITE_VALUES, management_units=MANAGEMENT_UNIT_VALUES
+        ),
+    )
+    sql = (
+        "SELECT * FROM species sp "
+        "JOIN sites si ON sp.site_id = si.id "
+        "JOIN detections d ON d.species_id = sp.id "
+        "WHERE sp.scientific_name ILIKE '%Gralari gigantae%' "
+        "AND si.name ILIKE '%Buenaventuraa%' "
+        "AND d.management_unit ILIKE '%Waman%'"
+    )
+    matches = find_candidates(sql)
+    assert len(matches) == 3
+
+    by_label = {m.label_key: m for m in matches}
+    assert set(by_label) == {"species", "site", "management_unit"}
+    assert "Grallaria gigantea" in by_label["species"].candidates
+    assert "Reserva Buenaventura" in by_label["site"].candidates
+    assert "Wamani" in by_label["management_unit"].candidates
 
 
 def test_lookup_failure_on_one_column_does_not_block_the_other(monkeypatch):

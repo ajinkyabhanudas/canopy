@@ -112,6 +112,45 @@ def test_clicking_site_suggestion_reruns_corrected_question(page: Page, canopy_u
 
 
 # ---------------------------------------------------------------------------
+# Single typo — management_unit column (third registered FUZZY_COLUMNS
+# entry; exercises the real near-duplicate pair found live: Wamani/Wamaní)
+# ---------------------------------------------------------------------------
+
+
+def test_mu_typo_query_shows_did_you_mean_prompt(page: Page, canopy_url: str) -> None:
+    """A mistyped management unit name gets its own labeled suggestion,
+    distinct from the species/site column wording."""
+    _submit(page, canopy_url, "e2e-mu-typo How many detections in Waman are there?")
+    expect(page.get_by_text("0 rows for that management unit", exact=False)).to_be_visible(
+        timeout=_TIMEOUT
+    )
+    expect(page.get_by_text("Management unit:", exact=False)).to_be_visible(timeout=_TIMEOUT)
+
+
+def test_mu_typo_query_shows_both_candidate_buttons(page: Page, canopy_url: str) -> None:
+    """Both real near-duplicate candidates (accent divergence) render as
+    separate, clickable buttons."""
+    _submit(page, canopy_url, "e2e-mu-typo How many detections in Waman are there?")
+    expect(page.get_by_role("button", name="Wamani", exact=True)).to_be_visible(
+        timeout=_TIMEOUT
+    )
+    expect(page.get_by_role("button", name="Wamaní", exact=True)).to_be_visible(
+        timeout=_TIMEOUT
+    )
+
+
+def test_clicking_mu_suggestion_reruns_corrected_question(page: Page, canopy_url: str) -> None:
+    _submit(page, canopy_url, "e2e-mu-typo How many detections in Waman are there?")
+    page.get_by_role("button", name="Wamani", exact=True).wait_for(
+        state="visible", timeout=_TIMEOUT
+    )
+    page.get_by_role("button", name="Wamani", exact=True).click()
+    expect(page.locator(f"[placeholder*='{_PLACEHOLDER}']")).to_have_value(
+        "e2e-mu-typo How many detections in Wamani are there?", timeout=_TIMEOUT
+    )
+
+
+# ---------------------------------------------------------------------------
 # Two simultaneous typos — species AND site mistyped in the same question
 # ---------------------------------------------------------------------------
 

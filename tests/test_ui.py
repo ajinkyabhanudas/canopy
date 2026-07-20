@@ -48,7 +48,7 @@ def _all_yields(question: str, session_history: list | None = None) -> list[tupl
 
 def test_empty_result_structure():
     result = ui_mod._empty_result("some message", [])
-    assert len(result) == 23
+    assert len(result) == 30
     sql, df, response, count_md, radio, timing, status, state, tabs, *_ = result
     assert sql == ""
     assert count_md == ""
@@ -79,7 +79,7 @@ def test_handler_first_yield_is_loading(monkeypatch):
     """User should see loading state immediately before any model call."""
     monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: _make_result())
     first, *_ = _all_yields("How many detections?")
-    assert len(first) == 23
+    assert len(first) == 30
     _, _, response, _, _, _, status_md, state, *_ = first
     assert t("status_reading") in response
     assert t("status_reading") in status_md
@@ -157,9 +157,10 @@ def test_handler_null_sql(monkeypatch):
 # ---------------------------------------------------------------------------
 # Fuzzy suggestion buttons — "did you mean X?" recovery path
 #
-# Trailing output shape: 2 groups (species, site) x (1 prompt + 3 buttons +
-# 3 q-states) = 14 slots. Group 1 = species, group 2 = site (FUZZY_COLUMNS
-# registration order in fuzzy_match.py).
+# Trailing output shape: 3 groups (species, site, management_unit) x
+# (1 prompt + 3 buttons + 3 q-states) = 21 slots. Group 1 = species,
+# group 2 = site, group 3 = management_unit (FUZZY_COLUMNS registration
+# order in fuzzy_match.py).
 # ---------------------------------------------------------------------------
 
 
@@ -175,7 +176,8 @@ def test_handler_shows_suggestions_on_fuzzy_match(monkeypatch):
     monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: result)
 
     (*_, g1_prompt, g1_b1, g1_b2, g1_b3, g1_q1, g1_q2, g1_q3,
-     g2_prompt, g2_b1, g2_b2, g2_b3, g2_q1, g2_q2, g2_q3) = _run(
+     g2_prompt, g2_b1, g2_b2, g2_b3, g2_q1, g2_q2, g2_q3,
+     g3_prompt, g3_b1, g3_b2, g3_b3, g3_q1, g3_q2, g3_q3) = _run(
         "How many detections of Gralari gigantae are there?"
     )
 
@@ -190,10 +192,14 @@ def test_handler_shows_suggestions_on_fuzzy_match(monkeypatch):
     assert g1_q2 == "How many detections of Grallaria ridgelyi are there?"
     assert g1_q3 is None
 
-    # Second group (site) stays fully hidden — only one column was mistyped.
+    # Remaining groups (site, management_unit) stay fully hidden — only one
+    # column was mistyped.
     assert g2_prompt["visible"] is False
     assert g2_b1["visible"] is False
     assert g2_q1 is None
+    assert g3_prompt["visible"] is False
+    assert g3_b1["visible"] is False
+    assert g3_q1 is None
 
 
 def test_handler_fuzzy_match_falls_back_to_candidate_when_literal_not_in_question(monkeypatch):
@@ -209,7 +215,8 @@ def test_handler_fuzzy_match_falls_back_to_candidate_when_literal_not_in_questio
     monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: result)
 
     (*_, _g1_prompt, _g1_b1, _g1_b2, _g1_b3, g1_q1, _g1_q2, _g1_q3,
-     _g2_prompt, _g2_b1, _g2_b2, _g2_b3, _g2_q1, _g2_q2, _g2_q3) = _run(
+     _g2_prompt, _g2_b1, _g2_b2, _g2_b3, _g2_q1, _g2_q2, _g2_q3,
+     _g3_prompt, _g3_b1, _g3_b2, _g3_b3, _g3_q1, _g3_q2, _g3_q3) = _run(
         "Tell me about the giant antpitta"
     )
 
@@ -234,7 +241,8 @@ def test_handler_shows_suggestions_for_two_simultaneous_typos(monkeypatch):
     monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: result)
 
     (*_, g1_prompt, g1_b1, _g1_b2, _g1_b3, g1_q1, _g1_q2, _g1_q3,
-     g2_prompt, g2_b1, _g2_b2, _g2_b3, g2_q1, _g2_q2, _g2_q3) = _run(
+     g2_prompt, g2_b1, _g2_b2, _g2_b3, g2_q1, _g2_q2, _g2_q3,
+     g3_prompt, _g3_b1, _g3_b2, _g3_b3, _g3_q1, _g3_q2, _g3_q3) = _run(
         "How many detections of Gralari gigantae at Buenaventuraa are there?"
     )
 
@@ -248,14 +256,63 @@ def test_handler_shows_suggestions_for_two_simultaneous_typos(monkeypatch):
     assert g2_b1["value"] == "Reserva Buenaventura"
     assert g2_q1 == "How many detections of Gralari gigantae at Reserva Buenaventura are there?"
 
+    # Third group (management_unit) stays hidden — that column wasn't mistyped.
+    assert g3_prompt["visible"] is False
+
+
+def test_handler_shows_suggestions_for_three_simultaneous_typos(monkeypatch):
+    """A question with typos in species, site, AND management_unit at once
+    surfaces three independent suggestion groups — extends the two-column
+    case now that a third fuzzy-checkable column is registered."""
+    from canopy.query.fuzzy_match import FuzzyMatch
+
+    species_match = FuzzyMatch(
+        literal="Gralari gigantae", candidates=("Grallaria gigantea",), label_key="species"
+    )
+    site_match = FuzzyMatch(
+        literal="Buenaventuraa", candidates=("Reserva Buenaventura",), label_key="site"
+    )
+    mu_match = FuzzyMatch(
+        literal="Waman", candidates=("Wamani", "Wamaní"), label_key="management_unit"
+    )
+    result = _make_result(
+        sql="...", rows=[], row_count=0, fuzzy_matches=(species_match, site_match, mu_match)
+    )
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: result)
+
+    (*_, g1_prompt, g1_b1, _g1_b2, _g1_b3, g1_q1, _g1_q2, _g1_q3,
+     g2_prompt, g2_b1, _g2_b2, _g2_b3, g2_q1, _g2_q2, _g2_q3,
+     g3_prompt, g3_b1, g3_b2, _g3_b3, g3_q1, g3_q2, _g3_q3) = _run(
+        "How many detections of Gralari gigantae at Buenaventuraa in Waman are there?"
+    )
+
+    assert g1_prompt["visible"] is True
+    assert "Species" in g1_prompt["value"]
+    assert g1_b1["value"] == "Grallaria gigantea"
+    assert "Grallaria gigantea" in g1_q1
+
+    assert g2_prompt["visible"] is True
+    assert "Site" in g2_prompt["value"]
+    assert g2_b1["value"] == "Reserva Buenaventura"
+    assert "Reserva Buenaventura" in g2_q1
+
+    assert g3_prompt["visible"] is True
+    assert "Management unit" in g3_prompt["value"]
+    assert g3_b1["value"] == "Wamani"
+    assert g3_b2["value"] == "Wamaní"
+    assert "Wamani" in g3_q1
+    assert "Wamaní" in g3_q2
+
 
 def test_handler_no_suggestions_on_normal_success(monkeypatch):
     monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: _make_result())
     (*_, g1_prompt, g1_b1, g1_b2, g1_b3, g1_q1, g1_q2, g1_q3,
-     g2_prompt, g2_b1, g2_b2, g2_b3, g2_q1, g2_q2, g2_q3) = _run("How many detections?")
+     g2_prompt, g2_b1, g2_b2, g2_b3, g2_q1, g2_q2, g2_q3,
+     g3_prompt, g3_b1, g3_b2, g3_b3, g3_q1, g3_q2, g3_q3) = _run("How many detections?")
     for prompt, b1, b2, b3, q1, q2, q3 in (
         (g1_prompt, g1_b1, g1_b2, g1_b3, g1_q1, g1_q2, g1_q3),
         (g2_prompt, g2_b1, g2_b2, g2_b3, g2_q1, g2_q2, g2_q3),
+        (g3_prompt, g3_b1, g3_b2, g3_b3, g3_q1, g3_q2, g3_q3),
     ):
         assert prompt["visible"] is False
         assert b1["visible"] is False
@@ -270,7 +327,8 @@ def test_handler_no_suggestions_on_zero_rows_without_fuzzy_match(monkeypatch):
         ui_mod, "run_query", lambda q, status_cb=None: _make_result(rows=[], row_count=0)
     )
     (*_, g1_prompt, g1_b1, _g1_b2, _g1_b3, _g1_q1, _g1_q2, _g1_q3,
-     _g2_prompt, _g2_b1, _g2_b2, _g2_b3, _g2_q1, _g2_q2, _g2_q3) = _run("q")
+     _g2_prompt, _g2_b1, _g2_b2, _g2_b3, _g2_q1, _g2_q2, _g2_q3,
+     _g3_prompt, _g3_b1, _g3_b2, _g3_b3, _g3_q1, _g3_q2, _g3_q3) = _run("q")
     assert g1_prompt["visible"] is False
     assert g1_b1["visible"] is False
 
@@ -278,12 +336,15 @@ def test_handler_no_suggestions_on_zero_rows_without_fuzzy_match(monkeypatch):
 def test_clear_handler_hides_suggestions(monkeypatch):
     monkeypatch.setattr(ui_mod, "clear_history", lambda: None)
     (*_, g1_prompt, g1_b1, g1_b2, g1_b3, g1_q1, g1_q2, g1_q3,
-     g2_prompt, g2_b1, g2_b2, g2_b3, g2_q1, g2_q2, g2_q3) = ui_mod._clear_handler("q")
+     g2_prompt, g2_b1, g2_b2, g2_b3, g2_q1, g2_q2, g2_q3,
+     g3_prompt, g3_b1, g3_b2, g3_b3, g3_q1, g3_q2, g3_q3) = ui_mod._clear_handler("q")
     assert g1_prompt["visible"] is False
     assert g1_b1["visible"] is False
     assert g1_q1 is None
     assert g2_prompt["visible"] is False
     assert g2_q1 is None
+    assert g3_prompt["visible"] is False
+    assert g3_q1 is None
 
 
 # ---------------------------------------------------------------------------
