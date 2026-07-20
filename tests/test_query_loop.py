@@ -149,18 +149,18 @@ def test_format_result_truncates_at_200_rows():
 
 
 # ---------------------------------------------------------------------------
-# fuzzy_match wiring — state["fuzzy_match"] -> LoopResult
+# fuzzy_matches wiring — state["fuzzy_matches"] -> LoopResult
 # ---------------------------------------------------------------------------
 
 
-def test_fuzzy_match_default_none_on_success():
-    """LoopResult.fuzzy_match defaults to None when nothing set it."""
+def test_fuzzy_matches_default_empty_on_success():
+    """LoopResult.fuzzy_matches defaults to () when nothing set it."""
     with patch("canopy.query.loop._run_agent", new=_make_agent_mock("Found 1 result.", "SELECT 1")):
         result = run_query("How many rows are in the detections table?")
-    assert result.fuzzy_match is None
+    assert result.fuzzy_matches == ()
 
 
-def test_fuzzy_match_flows_from_state_to_result():
+def test_fuzzy_matches_flow_from_state_to_result():
     """A fuzzy-match hit stashed on state by execute_sql surfaces on LoopResult."""
     from canopy.query.fuzzy_match import FuzzyMatch
 
@@ -168,6 +168,7 @@ def test_fuzzy_match_flows_from_state_to_result():
     match = FuzzyMatch(
         literal="Gralari gigantae",
         candidates=("Grallaria gigantea", "Grallaria ridgelyi"),
+        label_key="species",
     )
 
     async def _agent_with_fuzzy_hit(question, status_cb, state, conn_id, active_model):
@@ -175,14 +176,53 @@ def test_fuzzy_match_flows_from_state_to_result():
         state["last_query_result"] = zero_row_result
         state["llm_times"] = [0.5]
         state["db_times"] = [0.05]
-        state["fuzzy_match"] = match
+        state["fuzzy_matches"] = (match,)
         return "0 rows returned."
 
     with patch("canopy.query.loop._run_agent", new=_agent_with_fuzzy_hit):
         result = run_query("How many detections are there of the species Gralari gigantae?")
 
     assert result.row_count == 0
-    assert result.fuzzy_match == match
+    assert result.fuzzy_matches == (match,)
+
+
+def test_fuzzy_matches_multiple_columns_flow_through():
+    """Two simultaneous fuzzy matches (e.g. species + site) both surface on
+    LoopResult, not just the first — mirrors find_candidates() returning a
+    tuple of all resolvable columns rather than the first match only."""
+    from canopy.query.fuzzy_match import FuzzyMatch
+
+    zero_row_result = QueryResult(columns=("scientific_name", "name"), rows=(), row_count=0)
+    species_match = FuzzyMatch(
+        literal="Gralari gigantae",
+        candidates=("Grallaria gigantea",),
+        label_key="species",
+    )
+    site_match = FuzzyMatch(
+        literal="Buenaventuraa",
+        candidates=("Reserva Buenaventura",),
+        label_key="site",
+    )
+
+    async def _agent_with_two_fuzzy_hits(question, status_cb, state, conn_id, active_model):
+        state["last_sql"] = (
+            "SELECT * FROM species sp JOIN sites si ON sp.site_id = si.id "
+            "WHERE sp.scientific_name ILIKE '%Gralari gigantae%' "
+            "AND si.name ILIKE '%Buenaventuraa%'"
+        )
+        state["last_query_result"] = zero_row_result
+        state["llm_times"] = [0.5]
+        state["db_times"] = [0.05]
+        state["fuzzy_matches"] = (species_match, site_match)
+        return "0 rows returned."
+
+    with patch("canopy.query.loop._run_agent", new=_agent_with_two_fuzzy_hits):
+        result = run_query(
+            "How many detections of Gralari gigantae at Buenaventuraa are there?"
+        )
+
+    assert result.row_count == 0
+    assert result.fuzzy_matches == (species_match, site_match)
 
 
 def test_format_result_strips_sensitive_columns():

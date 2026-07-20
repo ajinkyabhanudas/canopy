@@ -48,7 +48,7 @@ def _all_yields(question: str, session_history: list | None = None) -> list[tupl
 
 def test_empty_result_structure():
     result = ui_mod._empty_result("some message", [])
-    assert len(result) == 16
+    assert len(result) == 23
     sql, df, response, count_md, radio, timing, status, state, tabs, *_ = result
     assert sql == ""
     assert count_md == ""
@@ -79,7 +79,7 @@ def test_handler_first_yield_is_loading(monkeypatch):
     """User should see loading state immediately before any model call."""
     monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: _make_result())
     first, *_ = _all_yields("How many detections?")
-    assert len(first) == 16
+    assert len(first) == 23
     _, _, response, _, _, _, status_md, state, *_ = first
     assert t("status_reading") in response
     assert t("status_reading") in status_md
@@ -156,6 +156,10 @@ def test_handler_null_sql(monkeypatch):
 
 # ---------------------------------------------------------------------------
 # Fuzzy suggestion buttons — "did you mean X?" recovery path
+#
+# Trailing output shape: 2 groups (species, site) x (1 prompt + 3 buttons +
+# 3 q-states) = 14 slots. Group 1 = species, group 2 = site (FUZZY_COLUMNS
+# registration order in fuzzy_match.py).
 # ---------------------------------------------------------------------------
 
 
@@ -165,23 +169,31 @@ def test_handler_shows_suggestions_on_fuzzy_match(monkeypatch):
     match = FuzzyMatch(
         literal="Gralari gigantae",
         candidates=("Grallaria gigantea", "Grallaria ridgelyi"),
+        label_key="species",
     )
-    result = _make_result(sql="...", rows=[], row_count=0, fuzzy_match=match)
+    result = _make_result(sql="...", rows=[], row_count=0, fuzzy_matches=(match,))
     monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: result)
 
-    (*_, prompt_md, btn1, btn2, btn3, q1, q2, q3) = _run(
+    (*_, g1_prompt, g1_b1, g1_b2, g1_b3, g1_q1, g1_q2, g1_q3,
+     g2_prompt, g2_b1, g2_b2, g2_b3, g2_q1, g2_q2, g2_q3) = _run(
         "How many detections of Gralari gigantae are there?"
     )
 
-    assert prompt_md["visible"] is True
-    assert btn1["visible"] is True
-    assert btn1["value"] == "Grallaria gigantea"
-    assert btn2["visible"] is True
-    assert btn2["value"] == "Grallaria ridgelyi"
-    assert btn3["visible"] is False
-    assert q1 == "How many detections of Grallaria gigantea are there?"
-    assert q2 == "How many detections of Grallaria ridgelyi are there?"
-    assert q3 is None
+    assert g1_prompt["visible"] is True
+    assert "Species" in g1_prompt["value"]
+    assert g1_b1["visible"] is True
+    assert g1_b1["value"] == "Grallaria gigantea"
+    assert g1_b2["visible"] is True
+    assert g1_b2["value"] == "Grallaria ridgelyi"
+    assert g1_b3["visible"] is False
+    assert g1_q1 == "How many detections of Grallaria gigantea are there?"
+    assert g1_q2 == "How many detections of Grallaria ridgelyi are there?"
+    assert g1_q3 is None
+
+    # Second group (site) stays fully hidden — only one column was mistyped.
+    assert g2_prompt["visible"] is False
+    assert g2_b1["visible"] is False
+    assert g2_q1 is None
 
 
 def test_handler_fuzzy_match_falls_back_to_candidate_when_literal_not_in_question(monkeypatch):
@@ -190,41 +202,88 @@ def test_handler_fuzzy_match_falls_back_to_candidate_when_literal_not_in_questio
     candidate name rather than leaving the question unchanged."""
     from canopy.query.fuzzy_match import FuzzyMatch
 
-    match = FuzzyMatch(literal="Gralari gigantae", candidates=("Grallaria gigantea",))
-    result = _make_result(sql="...", rows=[], row_count=0, fuzzy_match=match)
+    match = FuzzyMatch(
+        literal="Gralari gigantae", candidates=("Grallaria gigantea",), label_key="species"
+    )
+    result = _make_result(sql="...", rows=[], row_count=0, fuzzy_matches=(match,))
     monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: result)
 
-    (*_, q1, _q2, _q3) = _run("Tell me about the giant antpitta")
+    (*_, _g1_prompt, _g1_b1, _g1_b2, _g1_b3, g1_q1, _g1_q2, _g1_q3,
+     _g2_prompt, _g2_b1, _g2_b2, _g2_b3, _g2_q1, _g2_q2, _g2_q3) = _run(
+        "Tell me about the giant antpitta"
+    )
 
-    assert q1 == "Grallaria gigantea"
+    assert g1_q1 == "Grallaria gigantea"
+
+
+def test_handler_shows_suggestions_for_two_simultaneous_typos(monkeypatch):
+    """A question with typos in BOTH a species name AND a site name shows
+    two independent suggestion groups, each labeled and clickable on its
+    own — not just the first typo, and not merged into one group."""
+    from canopy.query.fuzzy_match import FuzzyMatch
+
+    species_match = FuzzyMatch(
+        literal="Gralari gigantae", candidates=("Grallaria gigantea",), label_key="species"
+    )
+    site_match = FuzzyMatch(
+        literal="Buenaventuraa", candidates=("Reserva Buenaventura",), label_key="site"
+    )
+    result = _make_result(
+        sql="...", rows=[], row_count=0, fuzzy_matches=(species_match, site_match)
+    )
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: result)
+
+    (*_, g1_prompt, g1_b1, _g1_b2, _g1_b3, g1_q1, _g1_q2, _g1_q3,
+     g2_prompt, g2_b1, _g2_b2, _g2_b3, g2_q1, _g2_q2, _g2_q3) = _run(
+        "How many detections of Gralari gigantae at Buenaventuraa are there?"
+    )
+
+    assert g1_prompt["visible"] is True
+    assert "Species" in g1_prompt["value"]
+    assert g1_b1["value"] == "Grallaria gigantea"
+    assert g1_q1 == "How many detections of Grallaria gigantea at Buenaventuraa are there?"
+
+    assert g2_prompt["visible"] is True
+    assert "Site" in g2_prompt["value"]
+    assert g2_b1["value"] == "Reserva Buenaventura"
+    assert g2_q1 == "How many detections of Gralari gigantae at Reserva Buenaventura are there?"
 
 
 def test_handler_no_suggestions_on_normal_success(monkeypatch):
     monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: _make_result())
-    (*_, prompt_md, btn1, btn2, btn3, q1, q2, q3) = _run("How many detections?")
-    assert prompt_md["visible"] is False
-    assert btn1["visible"] is False
-    assert btn2["visible"] is False
-    assert btn3["visible"] is False
-    assert q1 is None and q2 is None and q3 is None
+    (*_, g1_prompt, g1_b1, g1_b2, g1_b3, g1_q1, g1_q2, g1_q3,
+     g2_prompt, g2_b1, g2_b2, g2_b3, g2_q1, g2_q2, g2_q3) = _run("How many detections?")
+    for prompt, b1, b2, b3, q1, q2, q3 in (
+        (g1_prompt, g1_b1, g1_b2, g1_b3, g1_q1, g1_q2, g1_q3),
+        (g2_prompt, g2_b1, g2_b2, g2_b3, g2_q1, g2_q2, g2_q3),
+    ):
+        assert prompt["visible"] is False
+        assert b1["visible"] is False
+        assert b2["visible"] is False
+        assert b3["visible"] is False
+        assert q1 is None and q2 is None and q3 is None
 
 
 def test_handler_no_suggestions_on_zero_rows_without_fuzzy_match(monkeypatch):
-    """0 rows with no fuzzy_match set (find_candidates found nothing) shows no suggestions."""
+    """0 rows with no fuzzy_matches set (find_candidates found nothing) shows no suggestions."""
     monkeypatch.setattr(
         ui_mod, "run_query", lambda q, status_cb=None: _make_result(rows=[], row_count=0)
     )
-    (*_, prompt_md, btn1, btn2, btn3, q1, q2, q3) = _run("q")
-    assert prompt_md["visible"] is False
-    assert btn1["visible"] is False
+    (*_, g1_prompt, g1_b1, _g1_b2, _g1_b3, _g1_q1, _g1_q2, _g1_q3,
+     _g2_prompt, _g2_b1, _g2_b2, _g2_b3, _g2_q1, _g2_q2, _g2_q3) = _run("q")
+    assert g1_prompt["visible"] is False
+    assert g1_b1["visible"] is False
 
 
 def test_clear_handler_hides_suggestions(monkeypatch):
     monkeypatch.setattr(ui_mod, "clear_history", lambda: None)
-    (*_, prompt_md, btn1, btn2, btn3, q1, q2, q3) = ui_mod._clear_handler("q")
-    assert prompt_md["visible"] is False
-    assert btn1["visible"] is False
-    assert q1 is None
+    (*_, g1_prompt, g1_b1, g1_b2, g1_b3, g1_q1, g1_q2, g1_q3,
+     g2_prompt, g2_b1, g2_b2, g2_b3, g2_q1, g2_q2, g2_q3) = ui_mod._clear_handler("q")
+    assert g1_prompt["visible"] is False
+    assert g1_b1["visible"] is False
+    assert g1_q1 is None
+    assert g2_prompt["visible"] is False
+    assert g2_q1 is None
 
 
 # ---------------------------------------------------------------------------

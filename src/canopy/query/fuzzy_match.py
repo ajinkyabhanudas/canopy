@@ -42,10 +42,20 @@ class FuzzyMatch:
     substring-swap the exact mistyped text within the user's original
     question when a candidate is picked, rather than discarding the rest of
     the question's context (date ranges, site filters, etc).
+
+    `label_key` is a stable machine-readable identifier for the matched
+    column (e.g. "species", "site") — not display text. This module has no
+    i18n dependency (backend query logic should not import UI-layer
+    concerns), so callers — the UI — map this key to a translated,
+    human-readable label. It exists so a caller can distinguish multiple
+    simultaneous matches: a question can have typos in more than one
+    fuzzy-checkable column at once, and each needs its own labeled
+    suggestion group in the UI.
     """
 
     literal: str
     candidates: tuple[str, ...]
+    label_key: str
 
 
 @dataclass(frozen=True)
@@ -54,6 +64,7 @@ class _ColumnSpec:
 
     table: str
     column: str
+    label_key: str
     values_sql: str
 
 
@@ -61,11 +72,13 @@ FUZZY_COLUMNS: dict[str, _ColumnSpec] = {
     "species.scientific_name": _ColumnSpec(
         table="species",
         column="scientific_name",
+        label_key="species",
         values_sql="SELECT DISTINCT scientific_name FROM species",
     ),
     "sites.name": _ColumnSpec(
         table="sites",
         column="name",
+        label_key="site",
         values_sql="SELECT DISTINCT name FROM sites",
     ),
 }
@@ -104,21 +117,32 @@ _cache = _ValueCache()
 def _column_pattern(column: str) -> re.Pattern[str]:
     # Matches `<qualifier.>column ILIKE '%literal%'` or `<qualifier.>column = 'literal'`,
     # tolerating an optional table alias prefix (e.g. `sp.scientific_name`).
+    #
+    # The leading \b is load-bearing: without it, a short registered column
+    # name like "name" would match as a substring of an unrelated longer
+    # identifier ending in "name" (e.g. "scientific_name"), because "_" is a
+    # word character and (?:\w+\.)? doesn't require the match to start at an
+    # identifier boundary. \b anchors the match to the start of the actual
+    # column token instead of anywhere within a longer one.
     return re.compile(
-        rf"(?:\w+\.)?{re.escape(column)}\s*(?:ILIKE|ilike|=)\s*'%?([^'%]+)%?'"
+        rf"(?:\w+\.)?\b{re.escape(column)}\b\s*(?:ILIKE|ilike|=)\s*'%?([^'%]+)%?'"
     )
 
 
 def find_candidates(
     sql: str, threshold: float = _DEFAULT_THRESHOLD, limit: int = _MAX_CANDIDATES
-) -> FuzzyMatch | None:
-    """Return the mistyped literal and up to `limit` close-match candidates.
+) -> tuple[FuzzyMatch, ...]:
+    """Return one FuzzyMatch per registered column with a resolvable mistyped literal.
 
-    Only triggers for columns registered in FUZZY_COLUMNS. Returns None if no
-    registered column is referenced, no literal can be extracted, or nothing
-    scores above `threshold` (a genuinely absent value should not produce
-    noisy suggestions).
+    Checks every column in FUZZY_COLUMNS — not just the first match — so a
+    question with typos in two different columns (e.g. a mistyped species
+    name AND a mistyped site name in the same query) surfaces suggestions
+    for both rather than silently dropping the second. Returns an empty
+    tuple if no registered column is referenced, no literal can be
+    extracted, or nothing scores above `threshold` for any column (a
+    genuinely absent value should not produce noisy suggestions).
     """
+    matches: list[FuzzyMatch] = []
     for key, spec in FUZZY_COLUMNS.items():
         if spec.column not in sql:
             continue
@@ -133,7 +157,7 @@ def find_candidates(
             values = _cache.get(key, spec)
         except Exception:
             _log.warning("fuzzy candidate lookup failed for %s", key, exc_info=True)
-            return None
+            continue
         if not values:
             continue
 
@@ -144,6 +168,12 @@ def find_candidates(
         scored = [(score, v) for score, v in scored if score >= threshold]
         if scored:
             scored.sort(key=lambda sv: sv[0], reverse=True)
-            return FuzzyMatch(literal=literal, candidates=tuple(v for _, v in scored[:limit]))
+            matches.append(
+                FuzzyMatch(
+                    literal=literal,
+                    candidates=tuple(v for _, v in scored[:limit]),
+                    label_key=spec.label_key,
+                )
+            )
 
-    return None
+    return tuple(matches)

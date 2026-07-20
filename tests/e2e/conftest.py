@@ -82,9 +82,69 @@ _TYPO_MATCH = LoopResult(
         "db_s": 0.05,
         "db_calls": 1,
     },
-    fuzzy_match=FuzzyMatch(
-        literal="Gralari gigantae",
-        candidates=("Grallaria gigantea", "Grallaria ridgelyi"),
+    fuzzy_matches=(
+        FuzzyMatch(
+            literal="Gralari gigantae",
+            candidates=("Grallaria gigantea", "Grallaria ridgelyi"),
+            label_key="species",
+        ),
+    ),
+)
+
+_SITE_TYPO_MATCH = LoopResult(
+    question="test",
+    sql="SELECT * FROM sites WHERE name ILIKE '%Buenaventuraa%'",
+    columns=("name",),
+    rows=(),
+    row_count=0,
+    model_text="I found 0 rows for that site name.",
+    timing={
+        "total_s": 0.6,
+        "cache_hit": False,
+        "llm_s": 0.5,
+        "llm_calls": 1,
+        "db_s": 0.05,
+        "db_calls": 1,
+    },
+    fuzzy_matches=(
+        FuzzyMatch(
+            literal="Buenaventuraa",
+            candidates=("Reserva Buenaventura",),
+            label_key="site",
+        ),
+    ),
+)
+
+_TWO_TYPOS_MATCH = LoopResult(
+    question="test",
+    sql=(
+        "SELECT * FROM species sp JOIN sites si ON sp.site_id = si.id "
+        "WHERE sp.scientific_name ILIKE '%Gralari gigantae%' "
+        "AND si.name ILIKE '%Buenaventuraa%'"
+    ),
+    columns=("scientific_name", "name"),
+    rows=(),
+    row_count=0,
+    model_text="I found 0 rows for that species/site combination.",
+    timing={
+        "total_s": 0.7,
+        "cache_hit": False,
+        "llm_s": 0.6,
+        "llm_calls": 1,
+        "db_s": 0.05,
+        "db_calls": 1,
+    },
+    fuzzy_matches=(
+        FuzzyMatch(
+            literal="Gralari gigantae",
+            candidates=("Grallaria gigantea",),
+            label_key="species",
+        ),
+        FuzzyMatch(
+            literal="Buenaventuraa",
+            candidates=("Reserva Buenaventura",),
+            label_key="site",
+        ),
     ),
 )
 
@@ -119,7 +179,10 @@ def _smart_mock(question: str, status_cb=None) -> LoopResult:
       e2e-overflow    → RuntimeError (MAX_ITERATIONS exhausted)
       e2e-disconnect  → psycopg2 OperationalError (connection lost)
       e2e-guardrail   → LoopResult with conservation-decline model_text (no SQL)
-      e2e-typo        → LoopResult with 0 rows + fuzzy_match candidates set
+      e2e-typo        → LoopResult with 0 rows + species fuzzy_matches candidate
+      e2e-site-typo   → LoopResult with 0 rows + site fuzzy_matches candidate
+      e2e-two-typos   → LoopResult with 0 rows + BOTH species and site
+                        fuzzy_matches candidates (two simultaneous typos)
       anything else   → LoopResult success with model_text mentioning "42 detections"
     """
     q = question.lower()
@@ -136,6 +199,10 @@ def _smart_mock(question: str, status_cb=None) -> LoopResult:
         raise _OperationalError()
     if "e2e-guardrail" in q:
         return _GUARDRAIL
+    if "e2e-two-typos" in q:
+        return LoopResult(**{**_TWO_TYPOS_MATCH.__dict__, "question": question})
+    if "e2e-site-typo" in q:
+        return LoopResult(**{**_SITE_TYPO_MATCH.__dict__, "question": question})
     if "e2e-typo" in q:
         return LoopResult(**{**_TYPO_MATCH.__dict__, "question": question})
     return _SUCCESS

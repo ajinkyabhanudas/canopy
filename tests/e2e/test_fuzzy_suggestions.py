@@ -6,6 +6,10 @@ a real column value closely enough to suggest a correction: the model's own
 names, and clicking one re-runs the corrected question end-to-end through
 the real Gradio UI (not just the Python handler contract).
 
+Also verifies the multi-column case: a question with typos in BOTH a
+species name AND a site name at once must surface two independent,
+separately labeled suggestion groups rather than only the first one found.
+
 Run:  make e2e  (not included in make check — requires playwright browsers)
 """
 from __future__ import annotations
@@ -29,14 +33,22 @@ def _submit(page: Page, canopy_url: str, question: str) -> None:
     page.click(f"button:has-text('{_RUN_BTN}')")
 
 
+# ---------------------------------------------------------------------------
+# Single typo — species column
+# ---------------------------------------------------------------------------
+
+
 def test_typo_query_shows_did_you_mean_prompt(page: Page, canopy_url: str) -> None:
     """A mistyped species name still gets the model's own 0-row answer, plus
-    a 'did you mean' prompt introducing the suggestions."""
+    a labeled 'did you mean' prompt introducing the suggestions."""
     _submit(page, canopy_url, "e2e-typo How many detections of Gralari gigantae are there?")
     expect(page.get_by_text("0 rows for that species", exact=False)).to_be_visible(
         timeout=_TIMEOUT
     )
-    expect(page.get_by_text("Did you mean", exact=False)).to_be_visible(timeout=_TIMEOUT)
+    expect(page.get_by_text("no exact match found", exact=False)).to_be_visible(
+        timeout=_TIMEOUT
+    )
+    expect(page.get_by_text("Species:", exact=False)).to_be_visible(timeout=_TIMEOUT)
 
 
 def test_typo_query_shows_candidate_buttons(page: Page, canopy_url: str) -> None:
@@ -67,19 +79,106 @@ def test_clicking_suggestion_reruns_corrected_question(page: Page, canopy_url: s
     )
 
 
+# ---------------------------------------------------------------------------
+# Single typo — site column (distinct from species; exercises the second
+# registered FUZZY_COLUMNS entry end-to-end, not just species every time)
+# ---------------------------------------------------------------------------
+
+
+def test_site_typo_query_shows_did_you_mean_prompt(page: Page, canopy_url: str) -> None:
+    """A mistyped site name gets its own labeled suggestion, distinct from
+    the species-column wording."""
+    _submit(page, canopy_url, "e2e-site-typo How many detections at Buenaventuraa are there?")
+    expect(page.get_by_text("0 rows for that site", exact=False)).to_be_visible(timeout=_TIMEOUT)
+    expect(page.get_by_text("Site:", exact=False)).to_be_visible(timeout=_TIMEOUT)
+
+
+def test_site_typo_query_shows_candidate_button(page: Page, canopy_url: str) -> None:
+    _submit(page, canopy_url, "e2e-site-typo How many detections at Buenaventuraa are there?")
+    expect(page.get_by_role("button", name="Reserva Buenaventura", exact=True)).to_be_visible(
+        timeout=_TIMEOUT
+    )
+
+
+def test_clicking_site_suggestion_reruns_corrected_question(page: Page, canopy_url: str) -> None:
+    _submit(page, canopy_url, "e2e-site-typo How many detections at Buenaventuraa are there?")
+    page.get_by_role("button", name="Reserva Buenaventura", exact=True).wait_for(
+        state="visible", timeout=_TIMEOUT
+    )
+    page.get_by_role("button", name="Reserva Buenaventura", exact=True).click()
+    expect(page.locator(f"[placeholder*='{_PLACEHOLDER}']")).to_have_value(
+        "e2e-site-typo How many detections at Reserva Buenaventura are there?", timeout=_TIMEOUT
+    )
+
+
+# ---------------------------------------------------------------------------
+# Two simultaneous typos — species AND site mistyped in the same question
+# ---------------------------------------------------------------------------
+
+
+def test_two_simultaneous_typos_show_two_suggestion_groups(page: Page, canopy_url: str) -> None:
+    """A question with typos in BOTH a species name AND a site name must
+    surface two independent suggestion groups, each with its own label —
+    not just a correction for whichever column was checked first."""
+    _submit(
+        page,
+        canopy_url,
+        "e2e-two-typos How many detections of Gralari gigantae at Buenaventuraa are there?",
+    )
+    expect(page.get_by_text("Species:", exact=False)).to_be_visible(timeout=_TIMEOUT)
+    expect(page.get_by_text("Site:", exact=False)).to_be_visible(timeout=_TIMEOUT)
+    expect(page.get_by_role("button", name="Grallaria gigantea", exact=True)).to_be_visible(
+        timeout=_TIMEOUT
+    )
+    expect(page.get_by_role("button", name="Reserva Buenaventura", exact=True)).to_be_visible(
+        timeout=_TIMEOUT
+    )
+
+
+def test_clicking_one_group_in_two_typo_case_only_fixes_that_column(
+    page: Page, canopy_url: str
+) -> None:
+    """Clicking the species suggestion when both columns are mistyped fixes
+    only the species literal — the site typo remains in the re-run question,
+    since only one correction was chosen."""
+    _submit(
+        page,
+        canopy_url,
+        "e2e-two-typos How many detections of Gralari gigantae at Buenaventuraa are there?",
+    )
+    page.get_by_role("button", name="Grallaria gigantea", exact=True).wait_for(
+        state="visible", timeout=_TIMEOUT
+    )
+    page.get_by_role("button", name="Grallaria gigantea", exact=True).click()
+
+    expect(page.locator(f"[placeholder*='{_PLACEHOLDER}']")).to_have_value(
+        "e2e-two-typos How many detections of Grallaria gigantea at Buenaventuraa are there?",
+        timeout=_TIMEOUT,
+    )
+
+
+# ---------------------------------------------------------------------------
+# No suggestions on non-typo paths — additive-only, no regression
+# ---------------------------------------------------------------------------
+
+
 def test_normal_success_shows_no_suggestion_buttons(page: Page, canopy_url: str) -> None:
     """Golden path (non-zero-row result) never shows the suggestion row —
     additive-only behavior, no regression to the default UI."""
     _submit(page, canopy_url, "how many detections are there")
     expect(page.get_by_text("42 detections", exact=False)).to_be_visible(timeout=_TIMEOUT)
-    expect(page.get_by_text("Did you mean", exact=False)).not_to_be_visible(timeout=3_000)
+    expect(page.get_by_text("no exact match found", exact=False)).not_to_be_visible(
+        timeout=3_000
+    )
 
 
 def test_guardrail_zero_row_response_shows_no_suggestions(page: Page, canopy_url: str) -> None:
-    """A 0-row/no-SQL guardrail decline (no fuzzy_match set) must not show
-    suggestion buttons — only an actual fuzzy-match hit triggers the row."""
+    """A 0-row/no-SQL guardrail decline (no fuzzy_matches set) must not show
+    suggestion buttons — only an actual fuzzy-match hit triggers a group."""
     _submit(page, canopy_url, "e2e-guardrail check this query please")
     expect(page.get_by_text("cannot assess conservation trends", exact=False)).to_be_visible(
         timeout=_TIMEOUT
     )
-    expect(page.get_by_text("Did you mean", exact=False)).not_to_be_visible(timeout=3_000)
+    expect(page.get_by_text("no exact match found", exact=False)).not_to_be_visible(
+        timeout=3_000
+    )

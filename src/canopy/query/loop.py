@@ -113,7 +113,7 @@ class LoopResult:
     model_text: str
     timing: dict = field(default_factory=dict)
     interpretation: Interpretation | None = None
-    fuzzy_match: FuzzyMatch | None = None
+    fuzzy_matches: tuple[FuzzyMatch, ...] = ()
 
 
 def _parse_interpretation(model_text: str) -> Interpretation | None:
@@ -231,7 +231,7 @@ def _build_sql_tool(
         state["last_sql"] = sql
         state["last_query_result"] = result
         _log.debug("db execute: %.3fs — %s", state["db_times"][-1], sql[:120])
-        state["fuzzy_match"] = find_candidates(sql) if result.row_count == 0 else None
+        state["fuzzy_matches"] = find_candidates(sql) if result.row_count == 0 else ()
         if status_cb:
             n = result.row_count
             key = "found_detections_singular" if n == 1 else "found_detections_plural"
@@ -334,7 +334,7 @@ def run_query(
         "llm_times": [],
         "db_times": [],
         "iterations": 0,
-        "fuzzy_match": None,
+        "fuzzy_matches": (),
     }
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
@@ -373,7 +373,7 @@ def run_query(
         model_text=model_text,
         timing=timing,
         interpretation=_parse_interpretation(model_text),
-        fuzzy_match=state.get("fuzzy_match"),
+        fuzzy_matches=tuple(state.get("fuzzy_matches") or ()),
     )
     try:
         write_cache(result, connection_id=conn.id, model=active_model)

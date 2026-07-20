@@ -90,13 +90,20 @@ def _deserialize_interpretation(raw: dict | None) -> object | None:
     )
 
 
-def _deserialize_fuzzy_match(raw: dict | None) -> object | None:
-    """Reconstruct a FuzzyMatch from its cached dict form, or None."""
+def _deserialize_fuzzy_matches(raw: list | None) -> tuple:
+    """Reconstruct FuzzyMatch tuples from their cached list-of-dicts form."""
     from canopy.query.fuzzy_match import FuzzyMatch
 
-    if raw is None:
-        return None
-    return FuzzyMatch(literal=raw["literal"], candidates=tuple(raw["candidates"]))
+    if not raw:
+        return ()
+    return tuple(
+        FuzzyMatch(
+            literal=item["literal"],
+            candidates=tuple(item["candidates"]),
+            label_key=item["label_key"],
+        )
+        for item in raw
+    )
 
 
 def lookup_cache(question: str, connection_id: str = "", model: str = "") -> LoopResult | None:
@@ -124,7 +131,7 @@ def lookup_cache(question: str, connection_id: str = "", model: str = "") -> Loo
         model_text=entry["model_text"],
         timing={"cache_hit": True, "cached_at": entry["created_at"]},
         interpretation=_deserialize_interpretation(entry.get("interpretation")),
-        fuzzy_match=_deserialize_fuzzy_match(entry.get("fuzzy_match")),
+        fuzzy_matches=_deserialize_fuzzy_matches(entry.get("fuzzy_matches")),
     )
 
 
@@ -164,14 +171,14 @@ def write_cache(result: LoopResult, connection_id: str = "", model: str = "") ->
                 if result.interpretation is not None
                 else None
             ),
-            "fuzzy_match": (
+            "fuzzy_matches": [
                 {
-                    "literal": result.fuzzy_match.literal,
-                    "candidates": list(result.fuzzy_match.candidates),
+                    "literal": m.literal,
+                    "candidates": list(m.candidates),
+                    "label_key": m.label_key,
                 }
-                if result.fuzzy_match is not None
-                else None
-            ),
+                for m in result.fuzzy_matches
+            ],
         }
         _write_cache_dict(data)
 
