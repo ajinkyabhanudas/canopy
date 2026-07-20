@@ -79,6 +79,35 @@ def test_clicking_suggestion_reruns_corrected_question(page: Page, canopy_url: s
     )
 
 
+def test_clicking_suggestion_removes_original_typo_from_history(
+    page: Page, canopy_url: str
+) -> None:
+    """Clicking a suggestion must drop the original mistyped question from
+    the history sidebar, not leave it alongside the corrected one — a
+    dead-end entry that would just hit the same 0-row result again if
+    clicked. Only the corrected question should remain."""
+    _submit(page, canopy_url, "e2e-typo How many detections of Gralari gigantae are there?")
+    page.get_by_role("button", name="Grallaria gigantea", exact=True).wait_for(
+        state="visible", timeout=_TIMEOUT
+    )
+    page.get_by_role("button", name="Grallaria gigantea", exact=True).click()
+
+    expect(page.locator(f"[placeholder*='{_PLACEHOLDER}']")).to_have_value(
+        "e2e-typo How many detections of Grallaria gigantea are there?", timeout=_TIMEOUT
+    )
+
+    expect(
+        page.get_by_text(
+            "e2e-typo How many detections of Grallaria gigantea are there?", exact=False
+        )
+    ).to_be_visible(timeout=_TIMEOUT)
+    expect(
+        page.get_by_text(
+            "e2e-typo How many detections of Gralari gigantae are there?", exact=False
+        )
+    ).not_to_be_visible(timeout=3_000)
+
+
 # ---------------------------------------------------------------------------
 # Single typo — site column (distinct from species; exercises the second
 # registered FUZZY_COLUMNS entry end-to-end, not just species every time)

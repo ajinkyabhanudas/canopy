@@ -206,7 +206,7 @@ def _status_yield(response_text: str, status_text: str, session_history: list) -
 
 
 def _run_query_handler(
-    question: str, session_history: list
+    question: str, session_history: list, superseded_question: str | None = None
 ) -> Generator[_Output, None, None]:
     """Streaming generator: yields status updates then the final result.
 
@@ -216,6 +216,13 @@ def _run_query_handler(
     session_history is a per-browser list backed by gr.BrowserState
     (localStorage). It is threaded through every yield unchanged until the
     final success yield, which prepends the new question.
+
+    superseded_question, when set, is a mistyped question this run is
+    correcting (via a clicked fuzzy-match suggestion) — it's dropped from
+    history rather than kept alongside the corrected question. Without this,
+    clicking a suggestion left the original dead-end query sitting in
+    history: re-running it from there hits the same 0-row result and forces
+    the user through the same suggestion click again.
     """
     question = question.strip()
     if not question:
@@ -360,8 +367,13 @@ def _run_query_handler(
             sql_display = ""
 
     # Deduplicate then prepend — re-running a question moves it to the top
-    # rather than adding a duplicate entry.
-    deduped = [q for q in session_history if q != question]
+    # rather than adding a duplicate entry. A superseded_question (the
+    # mistyped original a suggestion-click just corrected) is also dropped,
+    # not just the exact question — otherwise the dead-end typo lingers in
+    # history as a separate, still-clickable entry that leads nowhere new.
+    deduped = [
+        q for q in session_history if q != question and q != superseded_question
+    ]
     new_history = ([question] + deduped)[:20]
 
     if result.fuzzy_matches:
@@ -584,15 +596,26 @@ def build_app() -> gr.Blocks:
         # (typo swapped for the clicked candidate, rest of the question's
         # context preserved) carried in that button's paired gr.State — same
         # select-and-rerun pattern as history_radio.input() above.
+        #
+        # The mistyped question still sitting in question_box at click-time
+        # is captured into superseded_state before it's overwritten, so
+        # _run_query_handler can drop that dead-end entry from history
+        # instead of leaving it alongside the corrected question — clicking
+        # it later would just hit the same 0-row result again.
+        superseded_state = gr.State(None)
         for group in suggestion_groups:
             for suggestion_btn, suggestion_q in zip(group["buttons"], group["q_states"]):
                 suggestion_btn.click(
+                    fn=lambda original: original,
+                    inputs=[question_box],
+                    outputs=[superseded_state],
+                ).then(
                     fn=lambda q: q or "",
                     inputs=[suggestion_q],
                     outputs=[question_box],
                 ).then(
                     fn=_run_query_handler,
-                    inputs=[question_box, history_state],
+                    inputs=[question_box, history_state, superseded_state],
                     outputs=_OUTPUTS,
                     concurrency_limit=_QUERY_CONCURRENCY_LIMIT,
                 )

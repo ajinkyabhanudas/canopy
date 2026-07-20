@@ -26,11 +26,13 @@ def _make_result(**overrides) -> LoopResult:
     return LoopResult(**merged)
 
 
-def _run(question: str, session_history: list | None = None) -> tuple:
+def _run(
+    question: str, session_history: list | None = None, superseded: str | None = None
+) -> tuple:
     """Drain the streaming generator and return the last yielded tuple."""
     history = session_history if session_history is not None else []
     result = None
-    for result in ui_mod._run_query_handler(question, history):
+    for result in ui_mod._run_query_handler(question, history, superseded):
         pass
     return result
 
@@ -386,6 +388,33 @@ def test_handler_deduplicates_repeated_question(monkeypatch):
     assert new_state.count("repeated q") == 1
     assert new_state[0] == "repeated q"
     assert "other q" in new_state
+
+
+def test_handler_drops_superseded_question_from_history(monkeypatch):
+    """Clicking a fuzzy-match suggestion re-runs the corrected question and
+    must drop the original mistyped one from history — not leave it sitting
+    alongside the correction as a dead-end entry that hits the same 0-row
+    result if clicked again."""
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: _make_result())
+    initial = ["How many detections of Gralari gigantae are there?", "other q"]
+    _, _, _, _, _, _, _, new_state, *_ = _run(
+        "How many detections of Grallaria gigantea are there?",
+        session_history=initial,
+        superseded="How many detections of Gralari gigantae are there?",
+    )
+    assert "How many detections of Gralari gigantae are there?" not in new_state
+    assert new_state[0] == "How many detections of Grallaria gigantea are there?"
+    assert "other q" in new_state
+
+
+def test_handler_superseded_question_none_is_a_no_op(monkeypatch):
+    """A normal (non-suggestion-click) run passes no superseded_question and
+    must not accidentally drop anything from history."""
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: _make_result())
+    initial = ["existing q"]
+    _, _, _, _, _, _, _, new_state, *_ = _run("new question", session_history=initial)
+    assert "existing q" in new_state
+    assert "new question" in new_state
 
 
 # ---------------------------------------------------------------------------
