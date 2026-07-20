@@ -28,6 +28,7 @@ def _make_state() -> dict:
         "last_query_result": None,
         "llm_times": [],
         "iterations": 0,
+        "fuzzy_matches": (),
     }
 
 
@@ -128,6 +129,106 @@ def test_build_sql_tool_strips_sensitive_columns():
     assert "latitude" not in result
     assert "longitude" not in result
     assert "Buenaventura" in result
+
+
+# ---------------------------------------------------------------------------
+# _build_sql_tool — fuzzy-match wiring via is_empty_result()
+#
+# These exercise the REAL find_candidates()/is_empty_result() call inside
+# execute_sql's closure (only execute_query is mocked) — the integration
+# point a live-Docker test caught missing a COUNT(*) case that no earlier
+# test here reached, since every test above uses a plain row-returning
+# QueryResult and test_query_loop.py mocks _run_agent entirely, bypassing
+# this closure altogether.
+# ---------------------------------------------------------------------------
+
+
+def test_build_sql_tool_populates_fuzzy_matches_on_zero_rows(monkeypatch):
+    qr = QueryResult(columns=("scientific_name",), rows=(), row_count=0)
+    state = _make_state()
+
+    def _fake_find_candidates(sql):
+        from canopy.query.fuzzy_match import FuzzyMatch
+        match = FuzzyMatch(
+            literal="Gralari", candidates=("Grallaria gigantea",), label_key="species"
+        )
+        return (match,)
+
+    monkeypatch.setattr("canopy.query.loop.find_candidates", _fake_find_candidates)
+    with patch("canopy.query.loop.execute_query", return_value=qr):
+        tool = _build_sql_tool(None, state)
+        tool.fn(sql="SELECT scientific_name FROM species WHERE scientific_name ILIKE '%Gralari%'")
+
+    assert len(state["fuzzy_matches"]) == 1
+    assert state["fuzzy_matches"][0].label_key == "species"
+
+
+def test_build_sql_tool_populates_fuzzy_matches_on_count_star_zero(monkeypatch):
+    """The exact live-Docker-discovered case: COUNT(*) returning row_count=1
+    with the aggregate value 0 must still trigger fuzzy-match resolution."""
+    qr = QueryResult(columns=("n",), rows=((0,),), row_count=1)
+    state = _make_state()
+    called_with: list[str] = []
+
+    def _fake_find_candidates(sql):
+        from canopy.query.fuzzy_match import FuzzyMatch
+        called_with.append(sql)
+        match = FuzzyMatch(
+            literal="tyranina",
+            candidates=("Cercomacroides tyrannina",),
+            label_key="species",
+        )
+        return (match,)
+
+    monkeypatch.setattr("canopy.query.loop.find_candidates", _fake_find_candidates)
+    sql = (
+        "SELECT COUNT(*) AS n FROM detections d JOIN species s ON d.species_id = s.id "
+        "WHERE s.scientific_name = 'Cercomacroides tyranina'"
+    )
+    with patch("canopy.query.loop.execute_query", return_value=qr):
+        tool = _build_sql_tool(None, state)
+        tool.fn(sql=sql)
+
+    assert called_with == [sql]
+    assert len(state["fuzzy_matches"]) == 1
+
+
+def test_build_sql_tool_no_fuzzy_matches_on_count_star_nonzero(monkeypatch):
+    """COUNT(*) returning a real nonzero count must NOT trigger find_candidates —
+    it's a genuine successful result, not an empty one."""
+    qr = QueryResult(columns=("n",), rows=((100,),), row_count=1)
+    state = _make_state()
+    call_count = {"n": 0}
+
+    def _fake_find_candidates(sql):
+        call_count["n"] += 1
+        return ()
+
+    monkeypatch.setattr("canopy.query.loop.find_candidates", _fake_find_candidates)
+    with patch("canopy.query.loop.execute_query", return_value=qr):
+        tool = _build_sql_tool(None, state)
+        tool.fn(sql="SELECT COUNT(*) AS n FROM detections WHERE species_id = 12")
+
+    assert call_count["n"] == 0
+    assert state["fuzzy_matches"] == ()
+
+
+def test_build_sql_tool_no_fuzzy_matches_on_nonempty_row_result(monkeypatch):
+    qr = _make_query_result(rows=((1,), (2,)))
+    state = _make_state()
+    call_count = {"n": 0}
+
+    def _fake_find_candidates(sql):
+        call_count["n"] += 1
+        return ()
+
+    monkeypatch.setattr("canopy.query.loop.find_candidates", _fake_find_candidates)
+    with patch("canopy.query.loop.execute_query", return_value=qr):
+        tool = _build_sql_tool(None, state)
+        tool.fn(sql="SELECT n FROM t")
+
+    assert call_count["n"] == 0
+    assert state["fuzzy_matches"] == ()
 
 
 # ---------------------------------------------------------------------------

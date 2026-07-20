@@ -22,7 +22,7 @@ from canopy.history import append_history
 from canopy.i18n import t
 from canopy.models import get_llm
 from canopy.query.executor import QueryResult, execute_query
-from canopy.query.fuzzy_match import FuzzyMatch, find_candidates
+from canopy.query.fuzzy_match import FuzzyMatch, find_candidates, is_empty_result
 from canopy.schema import build_system_prompt
 
 DetectorFactory.seed = 0  # deterministic language detection across calls
@@ -231,7 +231,7 @@ def _build_sql_tool(
         state["last_sql"] = sql
         state["last_query_result"] = result
         _log.debug("db execute: %.3fs — %s", state["db_times"][-1], sql[:120])
-        state["fuzzy_matches"] = find_candidates(sql) if result.row_count == 0 else ()
+        state["fuzzy_matches"] = find_candidates(sql) if is_empty_result(sql, result) else ()
         if status_cb:
             n = result.row_count
             key = "found_detections_singular" if n == 1 else "found_detections_plural"

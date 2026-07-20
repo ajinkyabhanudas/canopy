@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from canopy.query.executor import QueryResult
-from canopy.query.fuzzy_match import _cache, find_candidates
+from canopy.query.fuzzy_match import _cache, find_candidates, is_empty_result
 
 SPECIES_VALUES = ("Grallaria gigantea", "Grallaria ridgelyi", "Tinamus major")
 SITE_VALUES = ("Reserva Narupa", "Reserva Buenaventura", "Reserva Antisana")
@@ -74,6 +74,35 @@ def test_close_typo_on_species_name_resolves(monkeypatch):
     assert matches[0].literal == "Gralari gigantae"
     assert matches[0].label_key == "species"
     assert "Grallaria gigantea" in matches[0].candidates
+
+
+def test_partial_epithet_only_literal_resolves(monkeypatch):
+    """LLM-generated SQL often narrows ILIKE to just the species epithet
+    ("ridgeleyi") rather than the full binomial ("Grallaria ridgelyi") —
+    observed against a live model during Docker verification. Comparing
+    that fragment only against the full candidate string scores well below
+    threshold (0.59) even for an exact match; per-word scoring must catch it."""
+    monkeypatch.setattr(
+        "canopy.query.fuzzy_match.execute_query",
+        _mock_execute_query(("Grallaria ridgelyi", "Grallaria gigantea", "Tinamus major")),
+    )
+    sql = "SELECT * FROM species WHERE scientific_name ILIKE '%ridgeleyi%'"
+    matches = find_candidates(sql)
+    assert len(matches) == 1
+    assert "Grallaria ridgelyi" in matches[0].candidates
+
+
+def test_partial_genus_only_literal_resolves(monkeypatch):
+    """Symmetric case to the epithet-only test: a mistyped genus alone
+    (first word) must also resolve, not just a mistyped epithet (last word)."""
+    monkeypatch.setattr(
+        "canopy.query.fuzzy_match.execute_query",
+        _mock_execute_query(("Grallaria ridgelyi", "Grallaria gigantea", "Tinamus major")),
+    )
+    sql = "SELECT * FROM species WHERE scientific_name ILIKE '%Gralaria%'"
+    matches = find_candidates(sql)
+    assert len(matches) >= 1
+    assert any("Grallaria" in c for m in matches for c in m.candidates)
 
 
 def test_exact_equality_literal_resolves(monkeypatch):
@@ -253,3 +282,80 @@ def test_value_cache_refetches_after_ttl_expiry(monkeypatch):
     find_candidates(sql)
     find_candidates(sql)
     assert call_count["n"] == 2
+
+
+# ---------------------------------------------------------------------------
+# is_empty_result — COUNT(*)/aggregate query detection
+#
+# Found via live Docker verification against a real LLM: "how many detections
+# of X" is the most common phrasing for exactly the questions this module
+# helps with, and the model reliably writes SELECT COUNT(*) for it. Such a
+# query always returns row_count=1 (the single row holding the count value),
+# even when the count itself is 0 — so row_count==0 alone never fires for the
+# single most common real-world trigger shape.
+# ---------------------------------------------------------------------------
+
+
+def test_plain_zero_row_result_is_empty():
+    result = QueryResult(columns=("scientific_name",), rows=(), row_count=0)
+    sql = "SELECT scientific_name FROM species WHERE scientific_name = 'Nonexistent'"
+    assert is_empty_result(sql, result) is True
+
+
+def test_plain_nonzero_row_result_is_not_empty():
+    result = QueryResult(columns=("scientific_name",), rows=(("Grallaria gigantea",),), row_count=1)
+    sql = "SELECT scientific_name FROM species WHERE scientific_name = 'Grallaria gigantea'"
+    assert is_empty_result(sql, result) is False
+
+
+def test_count_star_with_zero_value_is_empty():
+    """The exact shape observed live: COUNT(*) returning a single row with value 0."""
+    result = QueryResult(columns=("approved_detections",), rows=((0,),), row_count=1)
+    sql = (
+        "SELECT COUNT(*) AS approved_detections FROM detections d "
+        "JOIN species s ON d.species_id = s.id "
+        "WHERE s.scientific_name = 'Cercomacroides tyranina' AND d.validation_status = 'approved'"
+    )
+    assert is_empty_result(sql, result) is True
+
+
+def test_count_star_with_nonzero_value_is_not_empty():
+    result = QueryResult(columns=("n",), rows=((100,),), row_count=1)
+    sql = "SELECT COUNT(*) AS n FROM detections WHERE species_id = 12"
+    assert is_empty_result(sql, result) is False
+
+
+def test_lowercase_count_is_detected():
+    result = QueryResult(columns=("n",), rows=((0,),), row_count=1)
+    sql = "select count(*) as n from detections where species_id = 999"
+    assert is_empty_result(sql, result) is True
+
+
+def test_sum_avg_min_max_with_zero_or_none_detected():
+    sql_sum = "SELECT SUM(count) AS total FROM detections WHERE species_id = 999"
+    none_result = QueryResult(columns=("total",), rows=((None,),), row_count=1)
+    zero_result = QueryResult(columns=("total",), rows=((0,),), row_count=1)
+    nonzero_result = QueryResult(columns=("total",), rows=((42,),), row_count=1)
+    assert is_empty_result(sql_sum, none_result) is True
+    assert is_empty_result(sql_sum, zero_result) is True
+    assert is_empty_result(sql_sum, nonzero_result) is False
+
+
+def test_count_with_group_by_is_not_treated_as_aggregate_empty_check():
+    """A GROUP BY query can legitimately return 1 row with count 0 only if
+    that group's count is genuinely 0 — but such queries can also return
+    multiple rows, so row_count==1 with a GROUP BY present is NOT the same
+    structural guarantee as a plain COUNT(*) with no GROUP BY. Excluding
+    GROUP BY queries from the aggregate check avoids false-triggering on a
+    query shape that already reveals real per-group results via row_count."""
+    result = QueryResult(columns=("site", "n"), rows=(("P00001", 0),), row_count=1)
+    sql = "SELECT site, COUNT(*) AS n FROM detections GROUP BY site"
+    assert is_empty_result(sql, result) is False
+
+
+def test_two_column_count_result_is_not_treated_as_aggregate_empty_check():
+    """len(columns) == 1 is part of the guard — a 2-column result (even with
+    COUNT present) isn't the single-value aggregate shape this check targets."""
+    result = QueryResult(columns=("species", "n"), rows=(("X", 0),), row_count=1)
+    sql = "SELECT species, COUNT(*) AS n FROM detections WHERE species = 'X'"
+    assert is_empty_result(sql, result) is False

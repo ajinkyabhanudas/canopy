@@ -364,14 +364,20 @@ def _run_query_handler(
     deduped = [q for q in session_history if q != question]
     new_history = ([question] + deduped)[:20]
 
-    if result.row_count == 0 and result.fuzzy_matches:
+    if result.fuzzy_matches:
         # Deterministic recovery path: one or more mistyped literals (e.g. a
         # species name AND a site name in the same query) each matched a
         # real column value closely enough to suggest it. The LLM's own "0
-        # rows" text in _render_response is left untouched — this is an
-        # additive UI affordance, not a replacement for it. Each affected
-        # column gets its own labeled suggestion group (up to _MAX_GROUPS,
-        # extras silently dropped rather than raising).
+        # rows"/"zero detections" text in _render_response is left untouched
+        # — this is an additive UI affordance, not a replacement for it. Each
+        # affected column gets its own labeled suggestion group (up to
+        # _MAX_GROUPS, extras silently dropped rather than raising).
+        #
+        # Checking fuzzy_matches directly (not row_count == 0) is required:
+        # the backend populates fuzzy_matches using is_empty_result(), which
+        # also recognizes an aggregate query (COUNT(*), no GROUP BY) whose
+        # single mandatory row holds the value 0 — a shape row_count alone
+        # cannot distinguish from "exactly one real row returned."
         #
         # Each button's *value* is the full corrected question (that match's
         # mistyped literal swapped for the clicked candidate within the

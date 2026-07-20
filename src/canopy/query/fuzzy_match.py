@@ -25,13 +25,50 @@ import time
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 
-from canopy.query.executor import execute_query
+from canopy.query.executor import QueryResult, execute_query
 
 _log = logging.getLogger("canopy.fuzzy_match")
 
 _DEFAULT_TTL_SECONDS = 6 * 60 * 60  # 6h — column value lists change rarely
 _MAX_CANDIDATES = 3
 _DEFAULT_THRESHOLD = 0.72  # difflib SequenceMatcher.ratio() scale (0.0-1.0)
+
+# Matches an aggregate query with no GROUP BY: COUNT(*), COUNT(col), SUM(...),
+# etc. Such queries always return exactly 1 row regardless of how many
+# underlying records matched — a "how many detections of X" question that
+# matches nothing still comes back as row_count=1 with the single value 0,
+# not row_count=0. Live-LLM testing (Docker verification) showed this is the
+# SQL shape the model reaches for by default on "how many" questions — the
+# single most common phrasing for exactly the kind of query this module
+# exists to help with — so treating row_count==0 as the only "nothing found"
+# signal missed the majority of real typo cases entirely.
+_AGGREGATE_NO_GROUP_BY_RE = re.compile(
+    r"^\s*SELECT\b(?:(?!\bGROUP\s+BY\b).)*\b(?:COUNT|SUM|AVG|MIN|MAX)\s*\(",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def is_empty_result(sql: str, result: QueryResult) -> bool:
+    """Return True if `result` represents "nothing found" for fuzzy-match purposes.
+
+    Two shapes both count as empty:
+    - row_count == 0 — the ordinary "no rows returned" case (SELECT * ... WHERE
+      no match).
+    - An aggregate query (COUNT/SUM/AVG/MIN/MAX, no GROUP BY) that returns its
+      one mandatory row with a falsy (0/None) value — the aggregate-query
+      equivalent of "nothing found," which row_count alone cannot detect since
+      such queries always return exactly 1 row.
+    """
+    if result.row_count == 0:
+        return True
+    if (
+        result.row_count == 1
+        and len(result.columns) == 1
+        and _AGGREGATE_NO_GROUP_BY_RE.search(sql) is not None
+    ):
+        value = result.rows[0][0]
+        return not value  # 0, None, or any other falsy aggregate result
+    return False
 
 
 @dataclass(frozen=True)
@@ -129,6 +166,26 @@ def _column_pattern(column: str) -> re.Pattern[str]:
     )
 
 
+def _best_word_score(literal_cf: str, candidate: str) -> float:
+    """Score `literal_cf` (already casefolded) against `candidate` and each of
+    its individual whitespace-separated words, returning the best ratio.
+
+    Live-LLM testing showed the model often writes an ILIKE fragment covering
+    only part of a multi-word value — just the species epithet ("ridgeleyi"
+    instead of "Grallaria ridgelyi"), or just the genus — rather than the full
+    binomial. Comparing that fragment only against the full candidate string
+    scores far below threshold even for an obvious match (e.g. 0.59 for
+    "ridgeleyi" vs "Grallaria ridgelyi"), while the correct word-level
+    comparison scores 0.94. Checking every word (not just the last one) is
+    required: a mistyped genus only matches well against the first word, a
+    mistyped epithet only matches well against the last word.
+    """
+    candidates_to_check = [candidate, *candidate.split()]
+    return max(
+        SequenceMatcher(a=literal_cf, b=c.casefold()).ratio() for c in candidates_to_check
+    )
+
+
 def find_candidates(
     sql: str, threshold: float = _DEFAULT_THRESHOLD, limit: int = _MAX_CANDIDATES
 ) -> tuple[FuzzyMatch, ...]:
@@ -162,9 +219,7 @@ def find_candidates(
             continue
 
         literal_cf = literal.casefold()
-        scored = [
-            (SequenceMatcher(a=literal_cf, b=v.casefold()).ratio(), v) for v in values
-        ]
+        scored = [(_best_word_score(literal_cf, v), v) for v in values]
         scored = [(score, v) for score, v in scored if score >= threshold]
         if scored:
             scored.sort(key=lambda sv: sv[0], reverse=True)
