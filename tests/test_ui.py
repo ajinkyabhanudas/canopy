@@ -48,8 +48,8 @@ def _all_yields(question: str, session_history: list | None = None) -> list[tupl
 
 def test_empty_result_structure():
     result = ui_mod._empty_result("some message", [])
-    assert len(result) == 9
-    sql, df, response, count_md, radio, timing, status, state, tabs = result
+    assert len(result) == 16
+    sql, df, response, count_md, radio, timing, status, state, tabs, *_ = result
     assert sql == ""
     assert count_md == ""
     assert response == "some message"
@@ -79,7 +79,7 @@ def test_handler_first_yield_is_loading(monkeypatch):
     """User should see loading state immediately before any model call."""
     monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: _make_result())
     first, *_ = _all_yields("How many detections?")
-    assert len(first) == 9
+    assert len(first) == 16
     _, _, response, _, _, _, status_md, state, *_ = first
     assert t("status_reading") in response
     assert t("status_reading") in status_md
@@ -152,6 +152,79 @@ def test_handler_null_sql(monkeypatch):
     )
     sql, _, _, _, _, _, _, _, *_ = _run("q")
     assert sql == ""
+
+
+# ---------------------------------------------------------------------------
+# Fuzzy suggestion buttons — "did you mean X?" recovery path
+# ---------------------------------------------------------------------------
+
+
+def test_handler_shows_suggestions_on_fuzzy_match(monkeypatch):
+    from canopy.query.fuzzy_match import FuzzyMatch
+
+    match = FuzzyMatch(
+        literal="Gralari gigantae",
+        candidates=("Grallaria gigantea", "Grallaria ridgelyi"),
+    )
+    result = _make_result(sql="...", rows=[], row_count=0, fuzzy_match=match)
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: result)
+
+    (*_, prompt_md, btn1, btn2, btn3, q1, q2, q3) = _run(
+        "How many detections of Gralari gigantae are there?"
+    )
+
+    assert prompt_md["visible"] is True
+    assert btn1["visible"] is True
+    assert btn1["value"] == "Grallaria gigantea"
+    assert btn2["visible"] is True
+    assert btn2["value"] == "Grallaria ridgelyi"
+    assert btn3["visible"] is False
+    assert q1 == "How many detections of Grallaria gigantea are there?"
+    assert q2 == "How many detections of Grallaria ridgelyi are there?"
+    assert q3 is None
+
+
+def test_handler_fuzzy_match_falls_back_to_candidate_when_literal_not_in_question(monkeypatch):
+    """If the SQL literal isn't found verbatim in the user's question (the LLM
+    may have reformatted it), the rewritten question falls back to just the
+    candidate name rather than leaving the question unchanged."""
+    from canopy.query.fuzzy_match import FuzzyMatch
+
+    match = FuzzyMatch(literal="Gralari gigantae", candidates=("Grallaria gigantea",))
+    result = _make_result(sql="...", rows=[], row_count=0, fuzzy_match=match)
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: result)
+
+    (*_, q1, _q2, _q3) = _run("Tell me about the giant antpitta")
+
+    assert q1 == "Grallaria gigantea"
+
+
+def test_handler_no_suggestions_on_normal_success(monkeypatch):
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: _make_result())
+    (*_, prompt_md, btn1, btn2, btn3, q1, q2, q3) = _run("How many detections?")
+    assert prompt_md["visible"] is False
+    assert btn1["visible"] is False
+    assert btn2["visible"] is False
+    assert btn3["visible"] is False
+    assert q1 is None and q2 is None and q3 is None
+
+
+def test_handler_no_suggestions_on_zero_rows_without_fuzzy_match(monkeypatch):
+    """0 rows with no fuzzy_match set (find_candidates found nothing) shows no suggestions."""
+    monkeypatch.setattr(
+        ui_mod, "run_query", lambda q, status_cb=None: _make_result(rows=[], row_count=0)
+    )
+    (*_, prompt_md, btn1, btn2, btn3, q1, q2, q3) = _run("q")
+    assert prompt_md["visible"] is False
+    assert btn1["visible"] is False
+
+
+def test_clear_handler_hides_suggestions(monkeypatch):
+    monkeypatch.setattr(ui_mod, "clear_history", lambda: None)
+    (*_, prompt_md, btn1, btn2, btn3, q1, q2, q3) = ui_mod._clear_handler("q")
+    assert prompt_md["visible"] is False
+    assert btn1["visible"] is False
+    assert q1 is None
 
 
 # ---------------------------------------------------------------------------
@@ -392,7 +465,7 @@ def test_clear_handler_calls_clear_history(monkeypatch):
 def test_clear_handler_empties_question(monkeypatch):
     monkeypatch.setattr(ui_mod, "clear_history", lambda: None)
     # _clear_handler preserves the question box text passed in
-    radio, question, response, row_count, table, sql, timing, status, state = (
+    radio, question, response, row_count, table, sql, timing, status, state, *_ = (
         ui_mod._clear_handler("my question")
     )
     assert question == "my question"

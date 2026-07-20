@@ -22,6 +22,7 @@ import psycopg2.errors
 import pytest
 
 from canopy.query.executor import SQLGuardError
+from canopy.query.fuzzy_match import FuzzyMatch
 from canopy.query.loop import LoopResult
 from canopy.ui.app import build_app
 
@@ -66,6 +67,27 @@ _SUCCESS = LoopResult(
     },
 )
 
+_TYPO_MATCH = LoopResult(
+    question="test",
+    sql="SELECT * FROM species WHERE scientific_name ILIKE '%Gralari gigantae%'",
+    columns=("scientific_name",),
+    rows=(),
+    row_count=0,
+    model_text="I found 0 rows for that species name.",
+    timing={
+        "total_s": 0.6,
+        "cache_hit": False,
+        "llm_s": 0.5,
+        "llm_calls": 1,
+        "db_s": 0.05,
+        "db_calls": 1,
+    },
+    fuzzy_match=FuzzyMatch(
+        literal="Gralari gigantae",
+        candidates=("Grallaria gigantea", "Grallaria ridgelyi"),
+    ),
+)
+
 _GUARDRAIL = LoopResult(
     question="test",
     sql=None,
@@ -97,6 +119,7 @@ def _smart_mock(question: str, status_cb=None) -> LoopResult:
       e2e-overflow    → RuntimeError (MAX_ITERATIONS exhausted)
       e2e-disconnect  → psycopg2 OperationalError (connection lost)
       e2e-guardrail   → LoopResult with conservation-decline model_text (no SQL)
+      e2e-typo        → LoopResult with 0 rows + fuzzy_match candidates set
       anything else   → LoopResult success with model_text mentioning "42 detections"
     """
     q = question.lower()
@@ -113,6 +136,8 @@ def _smart_mock(question: str, status_cb=None) -> LoopResult:
         raise _OperationalError()
     if "e2e-guardrail" in q:
         return _GUARDRAIL
+    if "e2e-typo" in q:
+        return LoopResult(**{**_TYPO_MATCH.__dict__, "question": question})
     return _SUCCESS
 
 

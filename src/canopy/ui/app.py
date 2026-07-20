@@ -81,10 +81,27 @@ CSS = """
 }
 """
 
-# Type alias for the 9-tuple every handler output must match:
+# Type alias for the 16-tuple every handler output must match:
 # [sql_box, results_table, response_box, row_count_md, history_radio,
-#  timing_md, status_md, history_state, result_tabs]
+#  timing_md, status_md, history_state, result_tabs, suggestion_prompt_md,
+#  suggestion_btn_1, suggestion_btn_2, suggestion_btn_3,
+#  suggestion_q_1, suggestion_q_2, suggestion_q_3]
 _Output = tuple
+
+# Suggestion buttons are hidden by default and only shown on a 0-row result
+# with fuzzy candidates. This tuple is yielded for the trailing 7 output
+# slots (prompt + 3 buttons + 3 hidden question states) on every path that
+# isn't the fuzzy-suggestion success case, so the row never lingers visible
+# from a previous query.
+_NO_SUGGESTIONS: tuple = (
+    gr.update(visible=False),
+    gr.update(visible=False, value=""),
+    gr.update(visible=False, value=""),
+    gr.update(visible=False, value=""),
+    None,
+    None,
+    None,
+)
 
 
 def _render_interpretation(interpretation: Interpretation | None) -> str:
@@ -136,7 +153,7 @@ def _render_response(result: LoopResult) -> str:
 
 
 def _empty_result(message: str, session_history: list, status: str = "") -> _Output:
-    """Return a blank 9-tuple with only the response message and optional status set."""
+    """Return a blank 13-tuple with only the response message and optional status set."""
     return (
         "",
         gr.Dataframe(value=None),
@@ -147,11 +164,12 @@ def _empty_result(message: str, session_history: list, status: str = "") -> _Out
         status,
         session_history,
         gr.update(selected=0),
+        *_NO_SUGGESTIONS,
     )
 
 
 def _status_yield(response_text: str, status_text: str, session_history: list) -> _Output:
-    """Return a blank 9-tuple with only status/response text set (for streaming updates)."""
+    """Return a blank 13-tuple with only status/response text set (for streaming updates)."""
     return (
         "",
         gr.Dataframe(value=None),
@@ -162,6 +180,7 @@ def _status_yield(response_text: str, status_text: str, session_history: list) -
         status_text,
         session_history,
         gr.update(selected=0),
+        *_NO_SUGGESTIONS,
     )
 
 
@@ -251,6 +270,7 @@ def _run_query_handler(
                 t("error_guard_readonly_status", operation=exc.operation),
                 session_history,
                 gr.update(selected=0),
+                *_NO_SUGGESTIONS,
             )
         elif isinstance(exc, psycopg2.errors.QueryCanceled):
             _log.warning("statement_timeout exceeded for question: %r", question[:60])
@@ -322,6 +342,41 @@ def _run_query_handler(
     # rather than adding a duplicate entry.
     deduped = [q for q in session_history if q != question]
     new_history = ([question] + deduped)[:20]
+
+    if result.row_count == 0 and result.fuzzy_match is not None:
+        # Deterministic recovery path: a mistyped species/site name matched a
+        # real column value closely enough to suggest it. The LLM's own "0
+        # rows" text in _render_response is left untouched — this is an
+        # additive UI affordance, not a replacement for it.
+        #
+        # Each button's *value* is the full corrected question (the mistyped
+        # literal swapped for that candidate within the user's original
+        # question), so clicking it re-runs the whole question with its
+        # original context (date ranges, site filters, etc.) intact — not
+        # just the bare candidate name. Falls back to a minimal question
+        # built from just the candidate if the literal isn't found verbatim
+        # in the user's text (the LLM may have reformatted it before writing
+        # the SQL literal).
+        literal = result.fuzzy_match.literal
+        candidates = list(result.fuzzy_match.candidates[:3])
+        rewritten = [
+            question.replace(literal, c) if literal in question else c
+            for c in candidates
+        ]
+        padded_labels = candidates + [None] * (3 - len(candidates))
+        padded_questions = rewritten + [None] * (3 - len(rewritten))
+        suggestion_updates = (
+            gr.update(visible=True, value=t("fuzzy_suggestion_prompt")),
+            *(
+                gr.update(visible=True, value=label) if label is not None
+                else gr.update(visible=False, value="")
+                for label in padded_labels
+            ),
+            *padded_questions,
+        )
+    else:
+        suggestion_updates = _NO_SUGGESTIONS
+
     yield (
         sql_display,
         df,
@@ -332,6 +387,7 @@ def _run_query_handler(
         "",
         new_history,
         gr.update(selected=0),
+        *suggestion_updates,
     )
 
 
@@ -348,6 +404,7 @@ def _clear_handler(current_question: str) -> tuple:
         "",                     # timing_md
         "",                     # status_md
         [],                     # history_state
+        *_NO_SUGGESTIONS,       # prompt + 3 buttons + 3 hidden question states
     )
 
 
@@ -382,6 +439,23 @@ def build_app() -> gr.Blocks:
             # ── Right panel ────────────────────────────────────────────────────
             with gr.Column(scale=2):
                 status_md = gr.Markdown("", elem_id="canopy-status")
+
+                # Hidden by default — shown only when a 0-row result finds a
+                # close fuzzy match for a mistyped species/site name. Clicking
+                # a suggestion repopulates the question and re-runs it,
+                # mirroring history_radio's own select-and-rerun pattern below.
+                suggestion_prompt_md = gr.Markdown("", visible=False, elem_id="canopy-suggestions")
+                with gr.Row():
+                    suggestion_btn_1 = gr.Button("", visible=False, size="sm", variant="secondary")
+                    suggestion_btn_2 = gr.Button("", visible=False, size="sm", variant="secondary")
+                    suggestion_btn_3 = gr.Button("", visible=False, size="sm", variant="secondary")
+                # Each button's displayed label is just the candidate name
+                # (short, readable); the full corrected question it should
+                # re-run is carried separately here so the two can differ.
+                suggestion_q_1 = gr.State(None)
+                suggestion_q_2 = gr.State(None)
+                suggestion_q_3 = gr.State(None)
+
                 with gr.Tabs() as result_tabs:
                     with gr.Tab(t("tab_answer"), id=0):
                         response_box = gr.Markdown(_IDLE_PROMPT)
@@ -403,6 +477,8 @@ def build_app() -> gr.Blocks:
         _OUTPUTS = [
             sql_box, results_table, response_box, row_count_md,
             history_radio, timing_md, status_md, history_state, result_tabs,
+            suggestion_prompt_md, suggestion_btn_1, suggestion_btn_2, suggestion_btn_3,
+            suggestion_q_1, suggestion_q_2, suggestion_q_3,
         ]
 
         # Restore history sidebar from localStorage on every page load
@@ -441,7 +517,29 @@ def build_app() -> gr.Blocks:
                 history_radio, question_box, response_box,
                 row_count_md, results_table, sql_box,
                 timing_md, status_md, history_state,
+                suggestion_prompt_md, suggestion_btn_1, suggestion_btn_2, suggestion_btn_3,
+                suggestion_q_1, suggestion_q_2, suggestion_q_3,
             ],
         )
+
+        # Clicking a "did you mean" suggestion re-runs the corrected question
+        # (typo swapped for the clicked candidate, rest of the question's
+        # context preserved) carried in that button's paired gr.State — same
+        # select-and-rerun pattern as history_radio.input() above.
+        for suggestion_btn, suggestion_q in (
+            (suggestion_btn_1, suggestion_q_1),
+            (suggestion_btn_2, suggestion_q_2),
+            (suggestion_btn_3, suggestion_q_3),
+        ):
+            suggestion_btn.click(
+                fn=lambda q: q or "",
+                inputs=[suggestion_q],
+                outputs=[question_box],
+            ).then(
+                fn=_run_query_handler,
+                inputs=[question_box, history_state],
+                outputs=_OUTPUTS,
+                concurrency_limit=_QUERY_CONCURRENCY_LIMIT,
+            )
 
     return app
