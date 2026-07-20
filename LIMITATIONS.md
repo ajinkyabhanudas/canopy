@@ -45,6 +45,13 @@ names and ask the user to specify a scientific name.
 **Action required:** Either add a `common_name` / `taxonomic_class` column, or
 integrate a lookup from IUCN/eBird. Deferred to post-v1.
 
+A *mistyped* scientific name (not a common name) is separately handled: if a
+query's `scientific_name` literal returns nothing but closely matches a real
+value, `fuzzy_match.py` surfaces "did you mean X?" candidates as clickable
+suggestions (see § A2 in `DECISIONS.md`). This does not help with common
+names, since there's no common-name data to fuzzy-match against — it only
+catches typos of an otherwise-correct scientific binomial.
+
 ---
 
 ### 3. Missing-year detection gaps not labelled
@@ -76,6 +83,12 @@ All non-approved detections remain `pending` indefinitely. There is currently no
 to distinguish "awaiting review" from "reviewed and rejected." Queries asking "how
 many detections were rejected?" will return 0.
 
+This is a live example of a shape the fuzzy-match fallback had to be taught
+to recognize: `SELECT COUNT(*) ...` always returns exactly one row even when
+the count is 0, so a plain `row_count == 0` check never catches it. See
+`is_empty_result()` in `fuzzy_match.py`, which checks the returned aggregate
+*value*, not just the row count.
+
 ---
 
 ## Tool Scope Limitations
@@ -94,6 +107,11 @@ in v1. See DECISIONS.md § S4 and build step 7.
 
 Common names (e.g. "Jocotoco antpitta") are not stored in this database. All
 species queries must use scientific binomial names.
+
+A *misspelled* scientific name (e.g. "Gralaria ridgelyi") does get a "did
+you mean...?" suggestion if it's close to a real value (see § 2 above and
+`DECISIONS.md` § A2) — but a common name is not a typo of a scientific name,
+so this does not help with "Jocotoco Antpitta" specifically.
 
 ### 7. Single-turn query — no conversational memory
 
