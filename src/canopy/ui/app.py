@@ -89,6 +89,9 @@ CSS = """
 # in fuzzy_match.py currently registers 2 columns, so 2 covers every case
 # today. Extra matches beyond _MAX_GROUPS are silently not shown rather than
 # raising — better to surface the first N corrections than none.
+# _MAX_GROUPS hardcoded to len(FUZZY_COLUMNS), not derived from it →
+# upgrade (bump this value, or assert len(FUZZY_COLUMNS) <= _MAX_GROUPS at
+# import time) when a 3rd fuzzy-checkable column is registered.
 _MAX_GROUPS = 2
 _GROUP_CANDIDATES = 3
 # Per group: 1 prompt + _GROUP_CANDIDATES buttons + _GROUP_CANDIDATES hidden
