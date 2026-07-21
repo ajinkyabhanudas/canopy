@@ -174,7 +174,7 @@ def _render_response(result: LoopResult) -> str:
 
 
 def _empty_result(message: str, session_history: list, status: str = "") -> _Output:
-    """Return a blank 13-tuple with only the response message and optional status set."""
+    """Return a blank output tuple with only the response message and optional status set."""
     return (
         "",
         gr.Dataframe(value=None),
@@ -190,7 +190,7 @@ def _empty_result(message: str, session_history: list, status: str = "") -> _Out
 
 
 def _status_yield(response_text: str, status_text: str, session_history: list) -> _Output:
-    """Return a blank 13-tuple with only status/response text set (for streaming updates)."""
+    """Return a blank output tuple with only status/response text set (for streaming updates)."""
     return (
         "",
         gr.Dataframe(value=None),
