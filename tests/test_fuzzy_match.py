@@ -68,6 +68,16 @@ def test_unregistered_literal_shape_returns_empty(monkeypatch):
     assert find_candidates(sql) == ()
 
 
+def test_whitespace_only_literal_returns_empty(monkeypatch):
+    """A literal that matches the ILIKE pattern but strips down to nothing
+    (e.g. '%   %') must be skipped, not treated as a real mistyped value."""
+    monkeypatch.setattr(
+        "canopy.query.fuzzy_match.execute_query", _mock_execute_query(SPECIES_VALUES)
+    )
+    sql = "SELECT * FROM species WHERE scientific_name ILIKE '%   %'"
+    assert find_candidates(sql) == ()
+
+
 # ---------------------------------------------------------------------------
 # Fuzzy matching behavior
 # ---------------------------------------------------------------------------

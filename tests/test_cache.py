@@ -6,6 +6,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from canopy.cache import _make_key, clear_cache, lookup_cache, write_cache
+from canopy.query.fuzzy_match import FuzzyMatch
 from canopy.query.loop import Interpretation, LoopResult
 
 # ---------------------------------------------------------------------------
@@ -270,6 +271,36 @@ def test_write_then_lookup_roundtrip_preserves_none_interpretation(tmp_path, mon
     result = lookup_cache(r.question)
     assert result is not None
     assert result.interpretation is None
+
+
+def test_write_then_lookup_roundtrip_preserves_fuzzy_matches(tmp_path, monkeypatch):
+    """A cached result with fuzzy_matches set must reconstruct real FuzzyMatch
+    tuples on lookup, not just pass the raw list-of-dicts through unchanged."""
+    cache_path = tmp_path / "cache.json"
+    monkeypatch.setattr("canopy.cache._cache_file", lambda: cache_path)
+    matches = (
+        FuzzyMatch(
+            literal="Gralari gigantae", candidates=("Grallaria gigantea",), label_key="species"
+        ),
+        FuzzyMatch(
+            literal="Buenaventuraa", candidates=("Reserva Buenaventura",), label_key="site"
+        ),
+    )
+    r = _result(fuzzy_matches=matches)
+    write_cache(r)
+    result = lookup_cache(r.question)
+    assert result is not None
+    assert result.fuzzy_matches == matches
+
+
+def test_write_then_lookup_roundtrip_preserves_empty_fuzzy_matches(tmp_path, monkeypatch):
+    cache_path = tmp_path / "cache.json"
+    monkeypatch.setattr("canopy.cache._cache_file", lambda: cache_path)
+    r = _result(fuzzy_matches=())
+    write_cache(r)
+    result = lookup_cache(r.question)
+    assert result is not None
+    assert result.fuzzy_matches == ()
 
 
 def test_lookup_defaults_interpretation_to_none_for_old_format_entry(tmp_path, monkeypatch):
