@@ -325,6 +325,7 @@ def test_lookup_defaults_interpretation_to_none_for_old_format_entry(tmp_path, m
     result = lookup_cache(question)
     assert result is not None
     assert result.interpretation is None
+    assert result.fuzzy_matches == ()
 
 
 def test_write_overwrites_existing_key(tmp_path, monkeypatch):
