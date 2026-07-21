@@ -134,6 +134,22 @@ def capture(url: str) -> None:
         page.screenshot(path=str(_OUT / "07-spanish-pending-table.png"))
         print("done")
 
+        # ------------------------------------------------------------------
+        # 08 — Fuzzy-match suggestion: mistyped species name
+        # Uses a real but obscure species name so the model is unlikely to
+        # silently self-correct the typo from its own training knowledge
+        # before ever writing SQL (observed live: common species like the
+        # Jocotoco Antpitta are often auto-corrected by the model itself).
+        # ------------------------------------------------------------------
+        print("08-fuzzy-match-suggestion …", end=" ", flush=True)
+        _submit(page, "How many approved detections of Cercomacroides tyranina are there?")
+        page.wait_for_selector("text=no exact match found", timeout=_LIVE_TIMEOUT)
+        time.sleep(0.5)
+        page.get_by_role("tab", name=_ANSWER_TAB).click()
+        time.sleep(0.3)
+        page.screenshot(path=str(_OUT / "08-fuzzy-match-suggestion.png"))
+        print("done")
+
         browser.close()
 
     print(f"\nAll screenshots saved to {_OUT}/")

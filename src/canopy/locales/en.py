@@ -94,4 +94,14 @@ STRINGS: dict[str, str] = {
         "Support for additional languages may be added in the future."
     ),
     "error_unsupported_language_status": "⚠ Language not yet supported — try English or Spanish",
+    # Fuzzy name suggestions (app.py) — shown when a query returns 0 rows and
+    # a close match was found for a mistyped species/site name. {label} is
+    # the translated column name, looked up via t(f"fuzzy_column_{label_key}")
+    # for whichever FuzzyMatch.label_key the backend returned (see
+    # fuzzy_column_* keys below) — a question can have typos in more than
+    # one column at once, each getting its own labeled prompt.
+    "fuzzy_suggestion_prompt": "{label}: no exact match found. Did you mean one of these?",
+    "fuzzy_column_species": "Species",
+    "fuzzy_column_site": "Site",
+    "fuzzy_column_management_unit": "Management unit",
 }

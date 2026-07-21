@@ -40,9 +40,9 @@ SQL (shown in "Database query" tab):
 
 ---
 
-| Idle — question input, history sidebar, example prompts | Result — structured answer with headline, findings, and data notes |
-|---|---|
-| ![Canopy idle state](docs/screenshots/01-idle.png) | ![English query result](docs/screenshots/04-english-sites-answer.png) |
+| Idle — question input, history sidebar, example prompts | Result — structured answer with headline, findings, and data notes | Typo suggestion — mistyped species name, clickable corrections |
+|---|---|---|
+| ![Canopy idle state](docs/screenshots/01-idle.png) | ![English query result](docs/screenshots/04-english-sites-answer.png) | ![Fuzzy-match suggestion](docs/screenshots/08-fuzzy-match-suggestion.png) |
 
 ---
 
@@ -55,6 +55,9 @@ SQL (shown in "Database query" tab):
   (headline → key findings → data notes) alongside the data table and SQL.
 - Caches results for 24 hours by question text so repeated queries return
   instantly without an LLM or DB call.
+- Suggests corrections when a species or site name is mistyped and the query
+  returns nothing — deterministic, works regardless of whether the LLM itself
+  recognizes the typo.
 - Streams live progress while the query runs — what the model understood, which
   pipeline stage is active, how many records were found.
 - Persists query history to disk (last 20 queries surfaced in the UI sidebar);

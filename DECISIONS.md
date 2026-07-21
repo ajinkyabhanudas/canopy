@@ -304,6 +304,8 @@ There is no explicit rejection status in the current dataset. Detections not app
 - Questions that require data from other sources (IUCN conservation status, EarthRanger patrol sightings) correctly result in "I don't have that data" rather than hallucination.
 - Adding a future tool requires the same security analysis as `execute_sql`: what data does it return? What is the sensitive-column equivalent? Can the result be prompt-injected?
 
+**Note on `fuzzy_match.py`:** the deterministic "did you mean X?" fallback (`src/canopy/query/fuzzy_match.py`) does not add a second model-facing tool. It runs entirely inside the `execute_sql` closure in `loop.py`, after the query has already been executed, and its output is only surfaced to the UI layer (`app.py`) — the model never sees it, never calls it, and is unaware it exists. This is why it doesn't violate the single-tool invariant above: it's a deterministic post-processing step on a result the model already has, not a new capability the model can invoke.
+
 > **Audit verdict — ✅ Sound**
 >
 > Correct. The single-tool design is the right conservative starting point. Adding tools is easy; removing them after users depend on them is hard.
@@ -423,6 +425,8 @@ This is acceptable at current schema stability (the VAJocotoco schema is mature 
 - **Schema drift requires a redeployment to fix**, not just a config change.
 - The drift test (`tests/test_schema_drift.py`) detects divergence in CI before it reaches production — but does not fix it automatically.
 - Sensitive columns are safe: `_format_result` strips them from query results, and `_GUARDRAILS` in the system prompt instructs the model never to request them. Neither depends on the schema string being accurate.
+
+**Related registry with the same drift risk:** `FUZZY_COLUMNS` in `src/canopy/query/fuzzy_match.py` is a second hand-maintained registry, not derived from `SCHEMA_CONTEXT` or `information_schema`. If a registered column is renamed or dropped in the DB without a corresponding `FUZZY_COLUMNS` update, `find_candidates()` doesn't error — it just never matches that column again, silently. There is no drift test covering this registry the way `test_schema_drift.py` covers `SCHEMA_CONTEXT`. This was also the source of a separate completeness gap found in practice: `detections.management_unit` was a valid fuzzy-checkable column that went unregistered for a full feature cycle before anyone checked the live schema against the registry's inclusion criteria (see `canopy-wiki/Contributing.md`'s "Registering a new fuzzy-checkable column" section for the completeness-check process now documented for future additions).
 
 > **Audit verdict — ✅ Sound** *(with known limitation)*
 >

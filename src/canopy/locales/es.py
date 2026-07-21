@@ -94,4 +94,15 @@ STRINGS: dict[str, str] = {
         "Es posible que se añada compatibilidad con otros idiomas en el futuro."
     ),
     "error_unsupported_language_status": "⚠ Idioma no compatible aún — pruebe en inglés o español",
+    # Fuzzy name suggestions (app.py) — shown when a query returns 0 rows and
+    # a close match was found for a mistyped species/site name. {label} is
+    # the translated column name, looked up via t(f"fuzzy_column_{label_key}")
+    # — a question can have typos in more than one column at once, each
+    # getting its own labeled prompt.
+    "fuzzy_suggestion_prompt": (
+        "{label}: no se encontró una coincidencia exacta. ¿Quiso decir alguno de estos?"
+    ),
+    "fuzzy_column_species": "Especie",
+    "fuzzy_column_site": "Sitio",
+    "fuzzy_column_management_unit": "Unidad de manejo",
 }
