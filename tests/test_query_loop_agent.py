@@ -10,6 +10,7 @@ import asyncio
 import concurrent.futures
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from canopy.i18n import t
 from canopy.query.executor import QueryResult
 from canopy.query.loop import _build_sql_tool, _run_agent
 
@@ -229,6 +230,67 @@ def test_build_sql_tool_no_fuzzy_matches_on_nonempty_row_result(monkeypatch):
 
     assert call_count["n"] == 0
     assert state["fuzzy_matches"] == ()
+
+
+# ---------------------------------------------------------------------------
+# _build_sql_tool — status message on empty vs. nonempty results
+#
+# A retry-worthy question (e.g. a mistyped name) can trigger several
+# execute_sql calls in one turn, each with its own row count. Showing
+# "Found 0 detections" then "Found 1" then "Found 100" as the model retries
+# with a corrected query reads as nonsensical progress, not a search
+# correction — status_refining replaces the count message on any empty
+# result (plain 0-row or COUNT(*)-with-zero-value) so only a call that
+# actually found something reports a count.
+# ---------------------------------------------------------------------------
+
+
+def test_build_sql_tool_shows_refining_status_on_zero_rows(monkeypatch):
+    qr = QueryResult(columns=("scientific_name",), rows=(), row_count=0)
+    state = _make_state()
+    calls: list[str] = []
+    with patch("canopy.query.loop.execute_query", return_value=qr):
+        tool = _build_sql_tool(lambda msg: calls.append(msg), state)
+        tool.fn(sql="SELECT scientific_name FROM species WHERE scientific_name = 'Nonexistent'")
+    assert t("status_refining") in calls
+    assert not any("found" in c.lower() for c in calls)
+
+
+def test_build_sql_tool_shows_refining_status_on_count_star_zero(monkeypatch):
+    """The exact live-Docker-discovered case: COUNT(*) with aggregate value 0
+    must also show status_refining, not "Found 0 detections"."""
+    qr = QueryResult(columns=("n",), rows=((0,),), row_count=1)
+    state = _make_state()
+    calls: list[str] = []
+    with patch("canopy.query.loop.execute_query", return_value=qr):
+        tool = _build_sql_tool(lambda msg: calls.append(msg), state)
+        tool.fn(sql="SELECT COUNT(*) AS n FROM detections WHERE species_id = 999")
+    assert t("status_refining") in calls
+    assert not any("found" in c.lower() for c in calls)
+
+
+def test_build_sql_tool_shows_found_count_on_nonempty_result(monkeypatch):
+    """A call that actually returns rows still reports "Found N" as before —
+    only empty results are redirected to status_refining."""
+    qr = _make_query_result(rows=((1,), (2,), (3,)))
+    state = _make_state()
+    calls: list[str] = []
+    with patch("canopy.query.loop.execute_query", return_value=qr):
+        tool = _build_sql_tool(lambda msg: calls.append(msg), state)
+        tool.fn(sql="SELECT n FROM t")
+    assert t("found_detections_plural", n=3) in calls
+    assert t("status_refining") not in calls
+
+
+def test_build_sql_tool_shows_found_count_on_count_star_nonzero(monkeypatch):
+    qr = QueryResult(columns=("n",), rows=((100,),), row_count=1)
+    state = _make_state()
+    calls: list[str] = []
+    with patch("canopy.query.loop.execute_query", return_value=qr):
+        tool = _build_sql_tool(lambda msg: calls.append(msg), state)
+        tool.fn(sql="SELECT COUNT(*) AS n FROM detections WHERE species_id = 12")
+    assert t("found_detections_plural", n=100) in calls
+    assert t("status_refining") not in calls
 
 
 # ---------------------------------------------------------------------------

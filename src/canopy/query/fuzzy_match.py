@@ -71,6 +71,26 @@ def is_empty_result(sql: str, result: QueryResult) -> bool:
     return False
 
 
+def effective_count(sql: str, result: QueryResult) -> int:
+    """Return the count that actually matters for a "Found N" style message.
+
+    For an ordinary row-returning query this is just row_count. For an
+    aggregate query (COUNT/SUM/AVG/MIN/MAX, no GROUP BY) row_count is always
+    1 regardless of how many records matched — the real number is the
+    aggregate's own value, not the row count. Without this distinction,
+    "SELECT COUNT(*) FROM detections WHERE species_id = 12" returning 100
+    real matches would report "Found 1 detection" instead of "Found 100".
+    """
+    if (
+        result.row_count == 1
+        and len(result.columns) == 1
+        and _AGGREGATE_NO_GROUP_BY_RE.search(sql) is not None
+    ):
+        value = result.rows[0][0]
+        return int(value) if isinstance(value, (int, float)) else result.row_count
+    return result.row_count
+
+
 @dataclass(frozen=True)
 class FuzzyMatch:
     """A resolved fuzzy match: the literal the model used and close candidates.
