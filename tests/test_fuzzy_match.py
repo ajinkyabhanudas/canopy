@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from canopy.query.executor import QueryResult
-from canopy.query.fuzzy_match import _cache, find_candidates, is_empty_result
+from canopy.query.fuzzy_match import _cache, effective_count, find_candidates, is_empty_result
 
 SPECIES_VALUES = ("Grallaria gigantea", "Grallaria ridgelyi", "Tinamus major")
 SITE_VALUES = ("Reserva Narupa", "Reserva Buenaventura", "Reserva Antisana")
@@ -419,3 +419,45 @@ def test_two_column_count_result_is_not_treated_as_aggregate_empty_check():
     result = QueryResult(columns=("species", "n"), rows=(("X", 0),), row_count=1)
     sql = "SELECT species, COUNT(*) AS n FROM detections WHERE species = 'X'"
     assert is_empty_result(sql, result) is False
+
+
+# ---------------------------------------------------------------------------
+# effective_count — the "how many did we actually find" number for status
+# messages, distinct from row_count for aggregate queries
+# ---------------------------------------------------------------------------
+
+
+def test_effective_count_plain_query_uses_row_count():
+    result = QueryResult(columns=("name",), rows=(("a",), ("b",), ("c",)), row_count=3)
+    sql = "SELECT name FROM species"
+    assert effective_count(sql, result) == 3
+
+
+def test_effective_count_count_star_uses_aggregate_value_not_row_count():
+    """The bug this exists to fix: COUNT(*) always returns row_count=1, so a
+    naive status message would say "Found 1" even when the real count is 100."""
+    result = QueryResult(columns=("n",), rows=((100,),), row_count=1)
+    sql = "SELECT COUNT(*) AS n FROM detections WHERE species_id = 12"
+    assert effective_count(sql, result) == 100
+
+
+def test_effective_count_count_star_zero():
+    result = QueryResult(columns=("n",), rows=((0,),), row_count=1)
+    sql = "SELECT COUNT(*) AS n FROM detections WHERE species_id = 999"
+    assert effective_count(sql, result) == 0
+
+
+def test_effective_count_sum_uses_aggregate_value():
+    result = QueryResult(columns=("total",), rows=((42,),), row_count=1)
+    sql = "SELECT SUM(count) AS total FROM detections WHERE species_id = 999"
+    assert effective_count(sql, result) == 42
+
+
+def test_effective_count_group_by_uses_row_count_not_aggregate_value():
+    """A GROUP BY query's row_count (number of groups) is the meaningful
+    count here, not any individual group's aggregate value."""
+    result = QueryResult(
+        columns=("site", "n"), rows=(("P00001", 5), ("P00002", 3)), row_count=2
+    )
+    sql = "SELECT site, COUNT(*) AS n FROM detections GROUP BY site"
+    assert effective_count(sql, result) == 2
