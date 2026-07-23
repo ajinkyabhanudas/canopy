@@ -33,6 +33,16 @@ _DEFAULT_TTL_SECONDS = 6 * 60 * 60  # 6h — column value lists change rarely
 _MAX_CANDIDATES = 3
 _DEFAULT_THRESHOLD = 0.72  # difflib SequenceMatcher.ratio() scale (0.0-1.0)
 
+# Real model-generated SQL for this schema runs a few hundred characters at
+# most. _column_pattern's regex has O(n^2) worst-case behavior on a long
+# input with no closing quote (each search() restart re-scans the tail) —
+# execute_query() always runs first and would reject malformed SQL as a
+# Postgres syntax error before find_candidates() ever sees it today, but
+# this cap removes the vector outright rather than relying on that call
+# order holding true forever (e.g. if find_candidates() is ever called on
+# unvalidated SQL by a future change).
+_MAX_SQL_LENGTH_FOR_MATCHING = 2000
+
 # Matches an aggregate query with no GROUP BY: COUNT(*), COUNT(col), SUM(...),
 # etc. Such queries always return exactly 1 row regardless of how many
 # underlying records matched — a "how many detections of X" question that
@@ -228,6 +238,9 @@ def find_candidates(
     extracted, or nothing scores above `threshold` for any column (a
     genuinely absent value should not produce noisy suggestions).
     """
+    if len(sql) > _MAX_SQL_LENGTH_FOR_MATCHING:
+        return ()
+
     matches: list[FuzzyMatch] = []
     for key, spec in FUZZY_COLUMNS.items():
         if spec.column not in sql:

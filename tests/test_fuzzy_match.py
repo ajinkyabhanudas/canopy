@@ -6,6 +6,8 @@ execute_query() is monkeypatched throughout so these run in any environment.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from canopy.query.executor import QueryResult
@@ -66,6 +68,24 @@ def test_unregistered_literal_shape_returns_empty(monkeypatch):
     # References the column name but not in a recognizable ILIKE/= literal shape.
     sql = "SELECT scientific_name FROM species ORDER BY scientific_name"
     assert find_candidates(sql) == ()
+
+
+def test_oversized_sql_returns_empty_without_running_regex(monkeypatch):
+    """_column_pattern's regex has O(n^2) worst-case behavior on a long,
+    unterminated string literal (measured: ~1.3s at 40k chars, ~5.4s at
+    100k). execute_query() always runs first in the real pipeline and would
+    reject malformed SQL before find_candidates() sees it, but this length
+    cap removes the vector outright rather than depending on that call order.
+    A pathological input must return fast, not hang."""
+    monkeypatch.setattr(
+        "canopy.query.fuzzy_match.execute_query", _mock_execute_query(SPECIES_VALUES)
+    )
+    evil_sql = "SELECT * FROM species WHERE scientific_name ILIKE '" + ("b" * 100_000)
+    start = time.perf_counter()
+    result = find_candidates(evil_sql)
+    elapsed = time.perf_counter() - start
+    assert result == ()
+    assert elapsed < 0.1, f"find_candidates took {elapsed:.3f}s on oversized input — cap broken"
 
 
 def test_whitespace_only_literal_returns_empty(monkeypatch):
