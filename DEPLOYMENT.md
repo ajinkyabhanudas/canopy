@@ -21,7 +21,7 @@ anything. Deployment is manual, on whatever host runs the container.
    - `PG_HOST`, `PG_PORT`, `PG_DBNAME`, `PG_USER`, `PG_PASSWORD` — required,
      `db/connection.py` raises `ValueError` naming whichever are missing.
    - At least one model API key: `ANTHROPIC_API_KEY` and/or
-     `AZURE_CAPA_API_KEY` (see §3 for which backends are actually usable).
+     `AZURE_CAPA_API_KEY` (see Section 3 for which backends are actually usable).
    - Never commit `.env`.
 3. `make run` — builds the `canopy:dev` image, then runs
    `scripts/docker_run.sh`, which reads `.env` and starts the container with
@@ -49,7 +49,7 @@ anything. Deployment is manual, on whatever host runs the container.
 **Local (no Docker) path** — for development, not recommended for a
 persistent deployment: `pip install -e ".[dev]"`, `cp .env.example .env`,
 `make ui`. Do **not** set `CANOPY_DATA_DIR` locally — it defaults to
-`~/.canopy`; it's a Docker/cloud-only var (see §2).
+`~/.canopy`; it's a Docker/cloud-only var (see Section 2).
 
 ### Env vars not in `.env.example`
 
@@ -82,7 +82,7 @@ automatically. No manual backup step needed for a routine restart.
 - The app is single-instance only against a given `/data` volume — running
   two containers against the same volume causes write races on
   `history.jsonl`/`cache.json`. Don't scale horizontally without changing
-  the persistence layer first (see DECISIONS.md § D3).
+  the persistence layer first (see DECISIONS.md's D3 section).
 - No documented graceful-shutdown handling — `docker stop` sends SIGTERM
   then SIGKILL after Docker's default grace period; in-flight queries are
   not drained.
@@ -98,13 +98,13 @@ Editing either while the container is running has no effect until restart.
 
 There is no automated rotation tooling or documented rotation cadence in
 this repo — key expiry is not tracked anywhere in code. The mechanism,
-inferred from how config is loaded (see §2's caching note): **update the
+inferred from how config is loaded (see Section 2's caching note): **update the
 value in `.env`, then restart the container.** A running process will not
 pick up a changed value.
 
 | Credential | Env var | Used by |
 |---|---|---|
-| Anthropic API key | `ANTHROPIC_API_KEY` | `claude-sonnet` connection (currently inactive — see §4) |
+| Anthropic API key | `ANTHROPIC_API_KEY` | `claude-sonnet` connection (currently inactive — see Section 4) |
 | Azure AI Foundry key | `AZURE_CAPA_API_KEY` | All 4 Azure connections (`gpt-5.1-codex-mini`, `gpt-5.1-2`, `phi-4`, `qwen-3-4b`) — one key shared across the `capa-4249-resource` resource |
 | Postgres credentials | `PG_HOST/PORT/DBNAME/USER/PASSWORD` | `db/connection.py` |
 
@@ -130,7 +130,7 @@ change**: `gpt-5.1-codex-mini` and `gpt-5.1-2`. To switch between them, set
 `MODEL_BACKEND` in `.env` to the connection name and restart.
 
 **Re-enabling Claude Sonnet is not a config-only change**, despite
-DECISIONS.md § M1 reading that way at a glance. Flipping
+DECISIONS.md's M1 section reading that way at a glance. Flipping
 `active: false → true` in `models.yaml` and topping up
 console.anthropic.com credits is necessary but not sufficient:
 `registry.py`'s `get_llm()` unconditionally raises `NotImplementedError` for
@@ -148,7 +148,7 @@ Azure-side deployment activation, not a code gap.
 
 There is no migrations system. The schema the model sees is a hand-maintained
 string constant, `SCHEMA_CONTEXT` in `src/canopy/schema.py` — it does not
-introspect the live database. Per DECISIONS.md § D1, every schema change
+introspect the live database. Per DECISIONS.md's D1 section, every schema change
 (new column, renamed field, new table) requires:
 
 1. Edit `SCHEMA_CONTEXT` in `schema.py` manually to match the new schema.
@@ -162,7 +162,7 @@ introspect the live database. Per DECISIONS.md § D1, every schema change
      pytest tests/test_schema_drift.py -v
    ```
 3. Rebuild the Docker image (`make build`).
-4. Redeploy (§1).
+4. Redeploy (Section 1).
 
 **A new `validation_status` value** (e.g. `rejected`) needs extra care: the
 system prompt's default filter (`ALWAYS filter on validation_status =
@@ -191,7 +191,7 @@ No automated rollback tooling exists. If a bad deploy needs reverting:
    rollback — no data migration needed for a pure code revert.
 
 If the incident is a schema mismatch (model querying columns/values that no
-longer exist), see §5 — this is the failure mode `test_schema_drift.py`
+longer exist), see Section 5 — this is the failure mode `test_schema_drift.py`
 exists to catch before it reaches production.
 
 ---
@@ -203,7 +203,7 @@ exists to catch before it reaches production.
   configured in Settings → Branches (see the comment at the top of
   `.github/workflows/ci.yml`).
 - **Network:** VPN/firewall deployment restrictions are discussed in
-  DECISIONS.md § U1.
+  DECISIONS.md's U1 section.
 - **Data questions:** LIMITATIONS.md documents known data gaps (IUCN
   categories, common names, missing-year handling) — check there before
   assuming a query result is wrong.

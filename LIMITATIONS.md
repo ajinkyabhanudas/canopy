@@ -29,7 +29,7 @@ There is no rejection status in the current dataset.
 (`ALWAYS filter on validation_status = 'approved'`) will not pick up new statuses
 automatically.
 
-**✅ Resolved (2026-07-13):** `tests/test_schema_drift.py` queries `information_schema` and `SELECT DISTINCT validation_status FROM detections` to catch schema drift automatically. See DECISIONS.md § D1. **Note:** this test requires live `PG_*` credentials and self-skips without them (`test_schema_drift.py:18-21`) — GitHub Actions CI (`.github/workflows/ci.yml`) does not have `PG_*` secrets configured, so it currently self-skips on every CI run and only actually executes when run locally or in an environment with real DB credentials. Wiring `PG_*` secrets into CI (or running this test as part of the deployment runbook's schema-change procedure) would close that gap — see `DEPLOYMENT.md`.
+**✅ Resolved (2026-07-13):** `tests/test_schema_drift.py` queries `information_schema` and `SELECT DISTINCT validation_status FROM detections` to catch schema drift automatically. See DECISIONS.md's D1 section. **Note:** this test requires live `PG_*` credentials and self-skips without them (`test_schema_drift.py:18-21`) — GitHub Actions CI (`.github/workflows/ci.yml`) does not have `PG_*` secrets configured, so it currently self-skips on every CI run and only actually executes when run locally or in an environment with real DB credentials. Wiring `PG_*` secrets into CI (or running this test as part of the deployment runbook's schema-change procedure) would close that gap — see `DEPLOYMENT.md`.
 
 ---
 
@@ -48,7 +48,7 @@ integrate a lookup from IUCN/eBird. Deferred to post-v1.
 A *mistyped* scientific name (not a common name) is separately handled: if a
 query's `scientific_name` literal returns nothing but closely matches a real
 value, `fuzzy_match.py` surfaces "did you mean X?" candidates as clickable
-suggestions (see § A2 in `DECISIONS.md`). This does not help with common
+suggestions (see A2 in `DECISIONS.md`). This does not help with common
 names, since there's no common-name data to fuzzy-match against — it only
 catches typos of an otherwise-correct scientific binomial.
 
@@ -101,7 +101,7 @@ designed monitoring protocol, multi-year abundance modelling, and expert scienti
 review.
 
 IUCN threat categories are held in the IUCN Red List — not integrated with Canopy
-in v1. See DECISIONS.md § S4 and build step 7.
+in v1. See DECISIONS.md's S4 section and build step 7.
 
 ### 6. No common name lookup
 
@@ -109,8 +109,8 @@ Common names (e.g. "Jocotoco antpitta") are not stored in this database. All
 species queries must use scientific binomial names.
 
 A *misspelled* scientific name (e.g. "Gralaria ridgelyi") does get a "did
-you mean...?" suggestion if it's close to a real value (see § 2 above and
-`DECISIONS.md` § A2) — but a common name is not a typo of a scientific name,
+you mean...?" suggestion if it's close to a real value (see Section 2 above and
+`DECISIONS.md`'s A2 section) — but a common name is not a typo of a scientific name,
 so this does not help with "Jocotoco Antpitta" specifically.
 
 ### 7. Single-turn query — no conversational memory
@@ -139,7 +139,7 @@ English if it detects another language — this is the fallback for code paths t
 Claude Sonnet 4.6 followed this secondary instruction reliably. Both current Azure models
 (gpt-5.1-codex-mini, gpt-5.1-2) do not — a French question submitted via `run_query()`
 directly returns a French-language answer despite the instruction. This is confirmed by
-eval case A09 across multiple benchmark runs.
+eval case A7 across multiple benchmark runs.
 
 **Who is affected:** UI users are fully protected — the primary gate fires first. Only
 callers that bypass `app.py` (direct `run_query()` calls) are exposed to this gap.
@@ -149,7 +149,7 @@ use, callers should enforce language on the input side before calling `run_query
 
 **Long-term fix:** Add a language normalisation guard inside `run_query()` itself, upstream
 of the model call, so the secondary layer becomes structural rather than instructional.
-See DECISIONS.md § M1.
+See DECISIONS.md's M1 section.
 
 ---
 
@@ -195,7 +195,7 @@ The following properties are actively enforced — not aspirational.
 | Gap | Priority | Status |
 |---|---|---|
 | No eval case checks that `validation_status = 'approved'` filter appears in SQL | High | ✅ Closed — Q31 added 2026-06-30 |
-| A09 secondary-layer language compliance fails on both Azure models | Medium | ✅ Documented — primary gate protects UI; secondary-layer gap acknowledged in DECISIONS.md § M1 |
+| A7 secondary-layer language compliance fails on both Azure models | Medium | ✅ Documented — primary gate protects UI; secondary-layer gap acknowledged in DECISIONS.md's M1 section |
 | Q27 guardrail soft-bypass fails on gpt-5.1-codex-mini (conservation priority framing) | Medium | Open — model-compliance issue; gpt-5.1-2 passes; no code fix available |
 | No eval case for common-name group queries (birds, frogs) | Medium | ✅ Closed — Q38 added 2026-07-13 |
 | No eval case that verifies missing-year gaps are noted explicitly in model response | Low | Open |
@@ -204,5 +204,5 @@ The following properties are actively enforced — not aspirational.
 | No E2E test covering guardrail response (conservation decline) | Medium | ✅ Closed — added 2026-07-07 |
 | Sensitive data adversarial cases not in eval suite (coordinates, user table, credentials) | High | ✅ Closed — A11–A16 added 2026-07-13; both models pass coordinate cases |
 | Q28 (pending-by-site) non-deterministic — model sometimes returns single-aggregate instead of GROUP BY | High | ✅ Closed — check tightened to require GROUP BY + block OVER() window anti-pattern; gpt-5.1-2 now temperature=0 |
-| SQL generation non-deterministic on compat model | High | ✅ Closed — temperature=0 set on CanopyAzureCompatLLM (gpt-5.1-2); codex-mini does not support temperature (documented in DECISIONS.md § S7) |
+| SQL generation non-deterministic on compat model | High | ✅ Closed — temperature=0 set on CanopyAzureCompatLLM (gpt-5.1-2); codex-mini does not support temperature (documented in DECISIONS.md's S7 section) |
 | Benchmark connection-switching used env var mutation + module reload (unreliable) | High | ✅ Closed — `connection_id` parameter added to `get_active_connection`; benchmark passes it directly via `run_query(connection_override=conn.id)` |
