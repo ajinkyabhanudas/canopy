@@ -29,7 +29,7 @@ There is no rejection status in the current dataset.
 (`ALWAYS filter on validation_status = 'approved'`) will not pick up new statuses
 automatically.
 
-**✅ Resolved (2026-07-13):** `tests/test_schema_drift.py` now queries `information_schema` and `SELECT DISTINCT validation_status FROM detections` at CI time. Schema drift is caught automatically. See DECISIONS.md § D1.
+**✅ Resolved (2026-07-13):** `tests/test_schema_drift.py` queries `information_schema` and `SELECT DISTINCT validation_status FROM detections` to catch schema drift automatically. See DECISIONS.md § D1. **Note:** this test requires live `PG_*` credentials and self-skips without them (`test_schema_drift.py:18-21`) — GitHub Actions CI (`.github/workflows/ci.yml`) does not have `PG_*` secrets configured, so it currently self-skips on every CI run and only actually executes when run locally or in an environment with real DB credentials. Wiring `PG_*` secrets into CI (or running this test as part of the deployment runbook's schema-change procedure) would close that gap — see `DEPLOYMENT.md`.
 
 ---
 

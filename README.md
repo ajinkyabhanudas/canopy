@@ -141,6 +141,9 @@ Open **http://localhost:7860** in a browser.
 docker stop $(docker ps -q --filter "ancestor=canopy:dev")
 ```
 
+For restart, credential rotation, schema-change, and incident procedures
+beyond first-time setup, see [DEPLOYMENT.md](DEPLOYMENT.md).
+
 ---
 
 ## Quickstart — Local (no Docker)
