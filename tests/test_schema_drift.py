@@ -3,7 +3,7 @@ Schema drift integration test — skipped when PG_* credentials are absent.
 
 Verifies that every table and a representative set of columns documented in
 schema.py actually exist in the live database. This is the enforcement gate
-for DECISIONS.md § D1 (Static schema representation — ❌ Gap).
+for DECISIONS.md's D1 section (Static schema representation — ❌ Gap).
 
 Run automatically when PG_* env vars are set (developer machine, staging CI).
 Silently skipped in unit-only runs (no credentials present).

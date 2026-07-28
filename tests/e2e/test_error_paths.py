@@ -86,7 +86,7 @@ def test_db_connection_error_shows_actionable_message(page: Page, canopy_url: st
 def test_language_gate_rejects_french_question(page: Page, canopy_url: str) -> None:
     """French question (>30 chars) is rejected by app-layer gate before the model is called.
 
-    Validates DECISIONS.md § S5 primary enforcement layer: the UI shows the
+    Validates DECISIONS.md's S5 section primary enforcement layer: the UI shows the
     unsupported-language error and no SQL is generated (no API call made).
     """
     _submit(page, canopy_url, "Combien d'espèces ont été détectées en 2023?")
