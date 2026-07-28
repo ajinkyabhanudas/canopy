@@ -46,7 +46,7 @@ class UnsupportedLanguageError(ValueError):
 
     schema.py's secondary language instruction asks the model to respond in
     English/Spanish regardless of input language, but that's model
-    compliance, not a guarantee — DECISIONS.md § M1 documents it as
+    compliance, not a guarantee — DECISIONS.md's M1 section documents it as
     unreliable for direct run_query() callers that bypass app.py's UI gate.
     This makes the check structural: it runs inside run_query() itself, so
     every caller is protected, not just the ones that remember to check

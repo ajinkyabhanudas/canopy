@@ -35,7 +35,7 @@ _IDLE_PROMPT = t("idle_prompt")
 # Max simultaneous run_query() calls. Was 1 (serializing the whole app to one
 # query at a time, globally — not per-user), which would visibly queue during
 # the Week 8 multi-user handover session. 3 covers Jajean + reviewers
-# comfortably and stays inside DECISIONS.md § O2's own "1-5 concurrent
+# comfortably and stays inside DECISIONS.md's O2 section's own "1-5 concurrent
 # connections: no action needed" threshold — no connection pooling added,
 # since O2 already covers when that becomes necessary (revisit above 20).
 _QUERY_CONCURRENCY_LIMIT = 3
