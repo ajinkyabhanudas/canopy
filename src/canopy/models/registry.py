@@ -17,13 +17,20 @@ from .azure_responses_llm import AzureResponsesLLM
 from .llamaindex_compat import build_openai_compat_llm
 
 
-def get_llm(model_override: str | None = None) -> FunctionCallingLLM:
-    """Return a LlamaIndex FunctionCallingLLM for the active connection in models.yaml.
+def get_llm(
+    model_override: str | None = None, connection_id: str | None = None
+) -> FunctionCallingLLM:
+    """Return a LlamaIndex FunctionCallingLLM for a connection in models.yaml.
 
     Phase 2a: openai-compat → LlamaIndex OpenAI LLM pointed at Azure endpoint.
     Phase 2b: openai-responses → AzureResponsesLLM (FunctionCallingLLM subclass).
+
+    connection_id bypasses MODEL_BACKEND entirely, same pattern as
+    run_query()'s connection_override — used by canopy.eval.judge to build
+    an LLM for a connection other than the one currently under test,
+    without mutating MODEL_BACKEND.
     """
-    conn = get_active_connection(model_override=model_override)
+    conn = get_active_connection(model_override=model_override, connection_id=connection_id)
     model = model_override or (conn.models[0] if conn.models else "")
     if not model:
         raise ValueError(

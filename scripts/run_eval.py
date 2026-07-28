@@ -14,6 +14,15 @@ Usage:
   python scripts/run_eval.py                  # ground-truth + adversarial
   python scripts/run_eval.py --ground-truth   # ground-truth only
   python scripts/run_eval.py --adversarial    # adversarial only
+  python scripts/run_eval.py --repeat 3       # re-judge judge-backed cases 3x each
+
+--repeat N only affects judge-backed cases (Category 21 cross-matrix, plus
+any future case with a judge_check). It re-judges the SAME model_text N
+times rather than re-querying the model N times — isolating judge variance
+from model variance, since the model has already produced its answer once.
+Judge disagreement across repeats prints inline with a ⚠ marker. Does not
+affect keyword-based cases, which are deterministic given a fixed
+model_text and gain nothing from repetition.
 
 Exit codes:
   0 — all suites met their pass threshold
@@ -40,6 +49,7 @@ try:
 except ImportError:
     pass
 
+from canopy.cache import clear_cache  # noqa: E402
 from canopy.query.executor import SQLGuardError  # noqa: E402
 from canopy.query.loop import UnsupportedLanguageError, run_query  # noqa: E402
 from tests.eval.adversarial import ADVERSARIAL_CASES  # noqa: E402
@@ -97,12 +107,35 @@ def _build_es_cases(cases: list) -> list:
     return es_cases
 
 
+def _report_judge_repeats(case, result, repeat: int) -> None:
+    """For a judge-backed case, call judge_check `repeat` times against the
+    SAME result.model_text and print the verdict distribution.
+
+    Re-judging the same text (not re-querying the model) isolates judge
+    variance from model variance — the model already produced model_text
+    once; what varies across repeats here is only the judge's own
+    consistency. Disagreement across repeats is itself a signal worth
+    printing, not hiding — the judge is not perfectly deterministic either
+    (see canopy.eval.judge's module docstring).
+    """
+    if case.judge_check is None or repeat <= 1:
+        return
+    from collections import Counter
+
+    verdicts = [case.judge_check(result).verdict for _ in range(repeat)]
+    counts = Counter(verdicts)
+    distribution = ", ".join(f"{v}={n}" for v, n in counts.most_common())
+    marker = "" if len(counts) == 1 else "  ⚠ judge disagreed with itself across repeats"
+    print(f"      judge x{repeat}: {distribution}{marker}")
+
+
 def _run_suite(
     cases: list,
     label_prefix: str,
     suite_name: str,
     threshold: float,
     guard_error_is_pass: bool = False,
+    repeat: int = 1,
 ) -> bool:
     """Run one eval suite. Returns True if the suite meets its pass threshold.
 
@@ -110,6 +143,9 @@ def _run_suite(
         guard_error_is_pass: When True, SQLGuardError from run_query counts as PASS.
             Use for adversarial suites where the guard blocking an attack is the
             desired outcome.
+        repeat: For judge-backed cases only, how many times to re-judge the
+            same model_text (see _report_judge_repeats). Ignored by
+            keyword-based cases, which are deterministic given fixed input.
     """
     total = len(cases)
     target = int(total * threshold) if threshold < 1.0 else total
@@ -173,6 +209,17 @@ def _run_suite(
         sql_preview = _truncate((result.sql or "(no SQL)").replace("\n", " "))
         print(f"      [{status}]  {elapsed:.1f}s  rows={result.row_count}  sql={sql_preview}")
 
+        if case.judge_check is not None:
+            # Report the verdict category + rationale on BOTH pass and
+            # fail — a judge case's PASS/FAIL alone loses exactly the
+            # verdict-category distinction (clean_decline vs. partial_hedge
+            # vs. complied) this judge exists to preserve. Cached by
+            # _make_guardrail_judge_fns, so this does not trigger a second
+            # live judge call — check_fn already populated the cache above.
+            verdict = case.judge_check(result)
+            print(f"      judge: {verdict.verdict} — {_truncate(verdict.rationale, 150)}")
+            _report_judge_repeats(case, result, repeat)
+
         if ok:
             passed += 1
         else:
@@ -191,16 +238,42 @@ def _run_suite(
     return passed >= target
 
 
+def _parse_repeat(argv: list[str]) -> int:
+    """Parse --repeat N from argv. Returns 1 (no repetition) if absent."""
+    if "--repeat" not in argv:
+        return 1
+    idx = argv.index("--repeat")
+    if idx + 1 >= len(argv):
+        raise SystemExit("--repeat requires a value, e.g. --repeat 3")
+    try:
+        n = int(argv[idx + 1])
+    except ValueError:
+        raise SystemExit(f"--repeat value must be an integer, got: {argv[idx + 1]!r}")
+    if n < 1:
+        raise SystemExit(f"--repeat must be >= 1, got: {n}")
+    return n
+
+
 def main() -> None:
-    args = set(sys.argv[1:])
+    argv = sys.argv[1:]
+    args = set(argv)
     run_gt = "--adversarial" not in args or "--ground-truth" in args
     run_adv = "--ground-truth" not in args or "--adversarial" in args
     run_es = "--spanish" in args
+    repeat = _parse_repeat(argv)
+
+    # Clear the 24h result cache before running — otherwise a case whose
+    # question was asked recently (by this script, the UI, or a prior eval
+    # run) returns a cached model_text instead of a fresh live answer,
+    # silently making this run judge/check stale text rather than the
+    # model's actual current behavior. Same fix scripts/run_benchmark.py
+    # already applies for the same reason (see its clear_cache() call).
+    clear_cache()
 
     results: list[bool] = []
 
     if run_gt:
-        ok = _run_suite(EVAL_CASES, "Q", "Ground-truth eval", _GT_THRESHOLD)
+        ok = _run_suite(EVAL_CASES, "Q", "Ground-truth eval", _GT_THRESHOLD, repeat=repeat)
         results.append(ok)
 
     if run_es:
