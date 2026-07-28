@@ -65,8 +65,11 @@ def _make_result(
 # ---------------------------------------------------------------------------
 
 
-def test_eval_cases_has_exactly_49_entries():
-    assert len(EVAL_CASES) == 49
+def test_eval_cases_has_exactly_61_entries():
+    """49 original ground-truth cases + 12 Category 21 guardrail cross-matrix
+    cases (judge-checked, added to close the framing x topic coverage gap
+    found via Q27/Q47 — see DECISIONS.md's T3 section)."""
+    assert len(EVAL_CASES) == 61
 
 
 def test_all_questions_are_nonempty_strings():
@@ -316,11 +319,25 @@ def test_q20_passes_with_conservation_caveat():
 
 @pytest.mark.parametrize(
     "case",
-    EVAL_CASES,
-    ids=[f"Q{i + 1:02d}" for i in range(len(EVAL_CASES))],
+    [c for c in EVAL_CASES if c.judge_check is None],
+    ids=[
+        f"Q{i + 1:02d}"
+        for i, c in enumerate(EVAL_CASES)
+        if c.judge_check is None
+    ],
 )
 def test_check_fn_returns_bool_on_minimal_result(case: EvalCase):
-    """Each check_fn must return bool when called with a minimal LoopResult."""
+    """Each keyword-based check_fn must return bool when called with a
+    minimal LoopResult.
+
+    Judge-backed cases (case.judge_check is not None) are excluded here —
+    their check_fn calls a live LLM judge, which would make this "minimal
+    result, no live calls" unit test silently hit a real API on every run
+    (confirmed: this parametrized test took ~6.5s for 2 judge cases vs.
+    near-instant for keyword cases before the exclusion was added). Judge
+    correctness is covered by tests/test_judge_calibration.py against fixed
+    calibration text, not a live model call.
+    """
     r = _make_result(sql=None, columns=[], rows=[], row_count=0, model_text="")
     result = case.check_fn(r)
     assert isinstance(result, bool), \
