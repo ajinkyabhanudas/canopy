@@ -31,6 +31,7 @@ from canopy.query.loop import (
     _format_result,
     _load_sensitive_columns,
     _parse_interpretation,
+    _strip_leading_content_filter_fragment,
     is_unsupported_language,
     run_query,
     strip_interpretation_block,
@@ -435,6 +436,60 @@ def test_status_cb_emits_cache_hit(monkeypatch):
 
     assert "CACHE_HIT" in statuses
 
+
+
+# ---------------------------------------------------------------------------
+# _strip_leading_content_filter_fragment — pure function, no DB/model needed
+# ---------------------------------------------------------------------------
+#
+# Found live via eval case Q53 (Category 21 guardrail cross-matrix): Azure's
+# content filter blocking one FunctionAgent turn produces a synthetic
+# refusal (azure_responses_llm.py's _post()); a later turn's real answer
+# then gets concatenated onto it by str(response), leaving a stray "I'm
+# sorry" fragment glued onto an otherwise-correct decline. The LLM judge
+# read the concatenated text as partial_hedge — not wrong given what it
+# saw, but the actual defect is this text-hygiene artifact, not a
+# guardrail compliance failure.
+
+
+def test_strip_leading_content_filter_fragment_removes_stray_refusal():
+    text = (
+        "I’m sorry, but I can’t help with that.\n\n"
+        "✅ **What the database shows:** IUCN Red List status is not stored "
+        "in this database."
+    )
+    result = _strip_leading_content_filter_fragment(text)
+    assert not result.startswith("I")
+    assert "What the database shows" in result
+
+
+def test_strip_leading_content_filter_fragment_handles_straight_apostrophes():
+    text = (
+        "I'm sorry, but I can't help with that request.\n\n"
+        "Here is a properly formatted, substantially longer real answer "
+        "that follows the stray refusal fragment."
+    )
+    result = _strip_leading_content_filter_fragment(text)
+    assert result.startswith("Here is")
+
+
+def test_strip_leading_content_filter_fragment_leaves_genuine_decline_untouched():
+    """A refusal that IS the entire response is a real guardrail decline,
+    not a stray fragment — must not be stripped."""
+    text = "I cannot make a conservation-priority recommendation from this data."
+    assert _strip_leading_content_filter_fragment(text) == text
+
+
+def test_strip_leading_content_filter_fragment_requires_substantial_trailing_content():
+    """A refusal fragment followed by only a few trailing characters is not
+    confidently a concatenation artifact — leave it as-is rather than guess."""
+    text = "I'm sorry, but I can't help with that. Also, hi."
+    assert _strip_leading_content_filter_fragment(text) == text
+
+
+def test_strip_leading_content_filter_fragment_ignores_unrelated_text():
+    text = "The database returned 42 approved detections across all sites."
+    assert _strip_leading_content_filter_fragment(text) == text
 
 
 # ---------------------------------------------------------------------------

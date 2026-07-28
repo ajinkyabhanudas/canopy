@@ -121,6 +121,47 @@ class LoopResult:
     fuzzy_matches: tuple[FuzzyMatch, ...] = ()
 
 
+# Matches a short leading "I'm sorry, I can't help..." sentence — the
+# synthetic refusal azure_responses_llm.py's _post() substitutes when Azure's
+# content filter blocks one turn (see that module's content_filter handling).
+# The FunctionAgent can retry after that turn and produce a real, correct
+# answer in a LATER turn, but str(response) concatenates every turn's text —
+# leaving the stray refusal fragment glued onto an otherwise-good response
+# (confirmed live: eval case Q53, judged partial_hedge because the leftover
+# fragment reads as a hedge, when the actual defect is a text-hygiene
+# artifact from a filter retry, not a guardrail compliance issue).
+#
+# Bounded and anchored to the start of the string (not a general search) —
+# this is a *fixed* short phrase, not an unbounded pattern over LLM text, so
+# it does not carry the backtracking risk _parse_interpretation's docstring
+# warns about for open-ended regexes.
+_LEADING_REFUSAL_FRAGMENT_RE = re.compile(
+    r"^(?:I['’]?m sorry,? but I can['’]?t help with that\.?(?: request\.?)?)\s*",
+    re.IGNORECASE,
+)
+# Only strip when a meaningfully longer response follows — a refusal that IS
+# the entire response is a real decline, not a stray fragment, and must be
+# left untouched.
+_MIN_TRAILING_CONTENT_LEN = 40
+
+
+def _strip_leading_content_filter_fragment(model_text: str) -> str:
+    """Remove a leading content-filter-refusal fragment left over from a
+    mid-loop retry, when substantial real content follows it.
+
+    Only fires on a short, fixed refusal phrase at the very start of the
+    text — never touches a response that IS a genuine, complete decline.
+    """
+    match = _LEADING_REFUSAL_FRAGMENT_RE.match(model_text)
+    if match is None:
+        return model_text
+    remainder = model_text[match.end():]
+    if len(remainder.strip()) < _MIN_TRAILING_CONTENT_LEN:
+        return model_text
+    _log.info("stripped leading content-filter refusal fragment from model_text")
+    return remainder
+
+
 def _parse_interpretation(model_text: str) -> Interpretation | None:
     """Extract the DATA SOURCE / GAPS / RESEARCH QUESTIONS block from model_text.
 
@@ -285,7 +326,7 @@ async def _run_agent(
     response = await handler
     state["llm_times"].append(time.perf_counter() - t_llm)
 
-    text = str(response)
+    text = _strip_leading_content_filter_fragment(str(response))
     _log.info(
         "loop_iterations=%d question=%r",
         state.get("iterations", 1),
