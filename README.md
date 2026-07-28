@@ -236,7 +236,7 @@ make test           # unit tests only
 make smoke          # Docker runtime validation (requires Docker)
 ```
 
-Expected unit test result: **469 passed**, 100% coverage.
+Expected unit test result: **543 passed**, 100% coverage.
 
 The smoke test validates what `pytest` cannot: Docker volume permissions, Gradio
 startup warnings, and HTTP availability. Run it after any Dockerfile or Gradio change.
@@ -252,31 +252,36 @@ eval suite and prints a comparison table:
 | gpt-5.1-2 | 95% | 92% | 12.1s | $0.003 | $0.012 |
 
 > **codex-mini is the default** — lower cost, competitive ground-truth accuracy, and a
-> perfect adversarial score across all 3 back-to-back runs on the full 65-case suite (49
-> ground-truth + 16 adversarial) on 2026-07-28. The adversarial gate is **100%**; gpt-5.1-2
-> did not meet it in any of the 3 runs (14/16, 15/16, 15/16). codex-mini does not support
-> temperature control (gpt-5.1-2 runs at temperature=0), but individual-case variance shows
-> up on **both** models, not just codex-mini — e.g. A16 (admin-authority bypass) failed once
-> on codex-mini and twice on gpt-5.1-2 across 4 recorded runs, even though codex-mini's
-> adversarial *total* held at 16/16 in all 3 runs this round. See DECISIONS.md's M1 section
-> for the full per-run breakdown.
+> perfect adversarial score across all 3 back-to-back runs on the 49 ground-truth + 16
+> adversarial suite active at the time (2026-07-28, before Category 21 was added — see
+> below). The adversarial gate is **100%**; gpt-5.1-2 did not meet it in any of the 3 runs
+> (14/16, 15/16, 15/16). codex-mini does not support temperature control (gpt-5.1-2 runs at
+> temperature=0), but individual-case variance shows up on **both** models, not just
+> codex-mini — e.g. A16 (admin-authority bypass) failed once on codex-mini and twice on
+> gpt-5.1-2 across 4 recorded runs, even though codex-mini's adversarial *total* held at
+> 16/16 in all 3 runs this round. See DECISIONS.md's M1 section for the full per-run
+> breakdown.
 >
-> **Two specific gaps are not closed by that 100% ADV score, because they're filed in the
-> ground-truth suite, not adversarial:** Q27 (a guardrail soft-bypass) failed 2 of the last 4
-> recorded runs on codex-mini, and **Q47 (a direct trend-inference question — no soft framing
-> needed) failed 2 of 3 runs, more often than Q27.** Neither is a one-off fluke, and neither
-> is guaranteed to fail either. See
+> **Two guardrail-bypass gaps are not closed by that 100% ADV score, because they're filed
+> in the ground-truth suite, not adversarial** — and are now covered by 12 additional
+> judge-checked cases (Category 21, added 2026-07-28, see DECISIONS.md's T3 section): Q27 (a
+> soft-framed bypass) failed 2 of the last 4 recorded runs on codex-mini, and **Q47 (a direct
+> trend-inference question — no soft framing needed) failed 2 of 3 runs, more often than
+> Q27.** Neither is a one-off fluke, and neither is guaranteed to fail either. See
 > [LIMITATIONS.md's Accepted Model Risks section](LIMITATIONS.md#accepted-model-risks) before
 > deciding whether the default configuration is right for your use.
 >
-> Runs: 2026-07-28, `benchmark_results/benchmark_20260728T0{30346,34022,40642}.json`. Run
+> Runs: 2026-07-28, `benchmark_results/benchmark_20260728T0{30346,34022,40642}.json` (49+16
+> suite, before Category 21). The eval suite (`tests/eval/queries.py`) is now 61 ground-truth
+> cases (49 original + 12 Category 21) + 16 adversarial — `make benchmark` reads from the
+> same `EVAL_CASES` list, so re-running it will pick up the full 61-case suite. Run
 > `make benchmark` to refresh — numbers are a point-in-time sample, not a permanent guarantee.
 
 Connections marked `active: false` in `models.yaml` are skipped. Currently inactive:
 `claude-sonnet` (Anthropic API credits required — re-enable at console.anthropic.com),
 `phi-4`, `qwen-3-4b` (pending admin deployment activation).
 
-Columns: **GT%** = ground-truth pass rate (49 cases, target ≥85%), **ADV%** = adversarial
+Columns: **GT%** = ground-truth pass rate (61 cases, target ≥85%), **ADV%** = adversarial
 pass rate (16 cases, target 100%), **Lat(s)** = average latency per case.
 
 Results are also written to `benchmark_results/benchmark_<timestamp>.json` and `.csv`
@@ -342,7 +347,7 @@ date, see `DECISIONS.md` (O4) and run `git log --before=<date> --grep="model\|sc
 | Schema context + system prompt | Done |
 | SQL executor with SELECT-only guard | Done |
 | Agentic query loop | Done |
-| Ground-truth eval set (49 queries) | Done |
+| Ground-truth eval set (61 queries) | Done |
 | Query history (JSONL, Docker-safe) | Done |
 | Production hardening (logging, timeout, Dockerfile) | Done |
 | Gradio UI with streaming progress | Done |
@@ -350,7 +355,8 @@ date, see `DECISIONS.md` (O4) and run `git log --before=<date> --grep="model\|sc
 | Coordinate filtering (lat/lon never sent to AI layer) | Done |
 | Read-only DB connection enforcement | Done |
 | Resilient query history | Done |
-| Faithfulness + adversarial evals (49 GT + 16 adversarial) | Done |
+| Faithfulness + adversarial evals (61 GT + 16 adversarial) | Done |
+| Guardrail-bypass LLM judge, framing×topic cross-matrix (Category 21) | Done |
 | Query result cache (SHA-256+NFC, TTL, LRU, model-scoped key) | Done |
 | Spanish language support (auto-detect responses + UI labels) | Done |
 | Spanish eval suite (8 GT parallel cases) | Done |

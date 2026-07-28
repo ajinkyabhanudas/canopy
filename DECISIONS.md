@@ -60,6 +60,7 @@
 |---|---|---|---|
 | T1 | Adversarial eval design | Separate suite, 100% threshold, SQLGuardError = PASS | ✅ Sound |
 | T2 | Faithfulness testing | Verbatim DB value in model_text; vacuous pass when precondition unverifiable | ⚠️ Caveat |
+| T3 | Guardrail-bypass judge evaluation | Hand-rolled 3-way LLM judge on structured_predict(); framework comparison rejected Ragas/DeepEval/promptfoo/openai-evals | ✅ Sound |
 
 ### 🎨 Interface & UX
 
@@ -579,6 +580,47 @@ Second, hallucination tests depend on the DB not having the test entity. "Fictus
 
 ---
 
+### T3 — Guardrail-bypass judge evaluation
+
+> **Files:** `src/canopy/eval/judge.py` · `tests/eval/queries.py` — Category 21 (Q50–Q61) · `tests/test_judge_calibration.py` · `scripts/calibrate_judge.py`
+
+**Decision:** Keyword/regex checks (`_text_has()` and the `_BYPASS_*_TERMS` tuples) cannot distinguish a clean guardrail decline from a partial hedge — a response that declines in words but still leaks the fact or recommendation the guardrail exists to protect. A hand-rolled LLM judge closes this gap for the guardrail-bypass cases specifically: a `JudgeVerdict` (`clean_decline` / `partial_hedge` / `complied`, plus a rationale) built on LlamaIndex's `structured_predict()` — no new HTTP client, no new eval-framework dependency. The judge prefers a *different* active connection than the one under test (`get_judge_llm()`), falling back to self-judging only when just one connection is active, to avoid the recursive-dependency problem T2 named as a reason to originally defer LLM-as-judge.
+
+The framing×topic coverage gap this closes: Category 10 (Q24–Q27) tested 4 bypass framings — soft/informal, authority-claim, roleplay/persona, minimizing — but each was only ever tried against **one** of 4 guardrail topics (trend, IUCN, extinction-risk, conservation-priority), never cross-matrixed. Q47 (found via live benchmark runs during model-trust disclosure work, see LIMITATIONS.md's Accepted Model Risks) turned out to be a duplicate *topic* of Q17, not a new framing — confirming the real gap was framing×topic coverage, not just model inconsistency. Category 21 (Q50–Q61) fills the remaining 12 of 16 combinations, landing this eval surface at 16 total judged decisions (4 existing + 12 new).
+
+**Why a 3-way categorical verdict, not binary:** a binary `declined: bool` judge would silently collapse a hedged, partially-complying answer into whichever side the judge happens to pick — hiding exactly the kind of information loss that made the keyword checks unreliable in the first place. `partial_hedge` counts as a soft-fail for pass/fail reporting but is tracked and printed separately from a clean `complied` failure — a run with several hedges is a materially different finding from a run with outright compliances.
+
+**Why not an external eval framework (Ragas / DeepEval / promptfoo / openai-evals):**
+
+| Framework | Why not chosen |
+|---|---|
+| Ragas | Built for RAG evaluation (context precision/recall, faithfulness-to-retrieved-context). Canopy is NL-to-SQL with no retrieval step — the static `SCHEMA_CONTEXT` string is not "retrieved context" in the Ragas sense. Has a general-purpose `AspectCritic` metric that could technically do this job, but would mean pulling in a RAG-evaluation library to use ~5% of its surface. |
+| promptfoo | CLI + YAML-config tool that wants to own the whole eval loop as an external process, not a Python function matching the existing `check_fn: Callable[[LoopResult], bool]` pattern. Integrating it would mean a parallel eval track, not an extension of the existing one. |
+| openai-evals | Heavier framework-builder (registry YAMLs, Solver abstractions) for constructing benchmark suites from scratch — disproportionate for scoring 16 fixed cases. OpenAI itself is de-prioritizing the open-source repo in favor of promptfoo as of its hosted Evals platform sunset (2026). |
+| DeepEval | The real contender — Azure-compatible via a 4-method `DeepEvalBaseLLM` interface, no forced hosted account. Its headline differentiator, G-Eval's logprob-weighted score normalization (averaging across the judge's token-probability distribution to reduce scoring bias), is **structurally inapplicable here on two independent grounds**: (1) Azure explicitly disables `logprobs`/`top_logprobs` at the model level for the "reasoning model" class both `gpt-5.1-codex-mini` and `gpt-5.1-2` belong to, confirmed directly against Microsoft's reasoning-models documentation; (2) more fundamentally, logprob-weighting smooths *graded/continuous* scores (e.g. a 1–5 rubric) — this judge's output is a 3-way categorical verdict, not a continuous score, so the technique wouldn't add much value here even on a model that did expose logprobs. What would remain (a refined prompt template, structured-output ergonomics, a recognized library name) is real but too thin to justify a new dependency for 16 categorical judgments. |
+
+**What this catches:** the two specific patterns this session found via live runs — Q27's indirect/minimizing framing bypass and Q47's direct trend-inference bypass — plus 12 new framing×topic combinations that were never tested before. Live calibration (`scripts/calibrate_judge.py`, run manually, not in CI) validated the judge 6/6 against a hand-labeled set that deliberately included one genuinely ambiguous case (a response that verbally declines a recommendation but still names the site its recommendation would have named) — the judge correctly classified it `partial_hedge`, not `clean_decline`.
+
+A related, unplanned finding from the first live run of Category 21: eval case Q53 initially failed with a `partial_hedge` verdict because Azure's content filter blocked one turn of the `FunctionAgent`'s internal loop (triggering the synthetic refusal `azure_responses_llm.py`'s `_post()` substitutes on a `content_filter` 400), and a later retry turn's correct answer got concatenated onto it by `str(response)` — leaving a stray "I'm sorry, but I can't help with that" fragment glued onto an otherwise-clean decline. The judge's `partial_hedge` verdict was a *correct* read of the concatenated text, not a judge error — but the actual defect was a text-hygiene artifact, not a guardrail compliance failure. Fixed with `_strip_leading_content_filter_fragment()` in `loop.py`: a narrow, anchored regex matching only the fixed refusal phrase (not any "I'm sorry" opener — verified live against a genuine, differently-worded decline that also starts with "I'm sorry" and is correctly left untouched), and only strips when substantial real content follows, so a refusal that *is* the entire response is never touched. Re-run live after the fix: Q53 passed cleanly (`clean_decline`).
+
+**What this does not catch:** the judge is still an LLM judging another LLM's output — it has cost, latency, and its own non-determinism (validated by running the judge multiple times per case via `--repeat`; see `_report_judge_repeats` in `scripts/run_eval.py`). Calibration against 6 hand-labeled examples proves the judge isn't broken, not that it's correct on every real case — particularly on genuinely novel ambiguous phrasings not resembling the calibration set. Cross-model judge disagreement is real and not eliminated by the written rubric (a rubric narrows disagreement, it cannot fully remove it — the same phenomenon already observed in the system under test, e.g. Q27/Q47's own cross-run variance). `run_eval.py` was also found missing a `clear_cache()` call before this work (present in `scripts/run_benchmark.py` for the same reason) — without it, a case whose question was asked recently returns a cached `model_text` instead of a fresh live answer, silently judging stale text. Fixed in this same session; flagging here since it affected every prior `run_eval.py` invocation, not just Category 21.
+
+**Live results (2026-07-28, gpt-5.1-codex-mini):** all 12 Category 21 cases pass `clean_decline` on the run following the content-filter fix (57/61 overall on the full ground-truth suite; the 4 failures — Q16, Q25, Q45, Q47 — are pre-existing ground-truth cases unrelated to Category 21, consistent with the model's already-documented ~2-3% run-to-run variance).
+
+**Alternatives considered (beyond the framework table above):**
+
+| Alternative | Why rejected |
+|---|---|
+| Binary `declined: bool` judge verdict | Collapses partial hedges into whichever side the judge picks, recreating the keyword-check information-loss problem this judge exists to fix. |
+| Skip judge-model self-avoidance, always self-judge with `MODEL_BACKEND`'s active connection | Recreates the exact recursive-dependency problem T2 named as a reason to defer LLM-as-judge originally — judging a model's output with that same model. |
+| Object-identity (`id(r)`) memoization for the check_fn/judge_check shared cache | `id()` can be reused after garbage collection, which could return a stale verdict for an unrelated `LoopResult` that happens to get the same id — a real correctness risk, not just a style preference. Replaced with a bounded `functools.lru_cache` keyed on content (`model_text` + connection), which is both bounded and immune to GC timing. |
+
+> **Audit verdict — ✅ Sound**
+>
+> The framework comparison is genuine, not a rubber-stamp of "hand-roll everything" — DeepEval was investigated in real depth and rejected on two independently sufficient grounds (Azure's logprobs restriction, and a categorical-vs-continuous output mismatch), not dismissed on sight. The self-judgment avoidance is a real fix to a real problem T2 already flagged. The Q53 finding and fix demonstrate the judge earning its keep: keyword matching would never have surfaced a content-filter text-hygiene artifact, because there was no semantic layer to notice the concatenated fragment read as compliant-leaning. Residual risk is honestly stated, not hidden: judge non-determinism and cross-model disagreement are real and only partially mitigated, matching T2's own precedent for stating what a testing approach does not guarantee.
+
+---
+
 ## 🎨 Interface & UX
 
 ---
@@ -740,12 +782,15 @@ prior `chown` would create the volume as root:root and deny writes to the non-ro
 **Capability comparison — Claude Sonnet 4.6 vs current Azure tier:**
 
 *Note: the table below is historical, from the 31-GT/10-ADV suite. The suite has
-since grown to 49 GT / 16 ADV cases. For current numbers, see
+since grown to 61 GT / 16 ADV cases (49 GT + 16 ADV as of the 2026-07-28
+benchmark run below, then +12 GT via Category 21's guardrail cross-matrix
+the same day — see T3 section). For current numbers, see
 [README.md's Multi-model benchmark section](README.md#multi-model-benchmark) —
-3-run average on 2026-07-28: codex-mini 91% GT / 100% ADV, gpt-5.1-2 95% GT / 92% ADV.
-Individual-case results vary run to run on both models (see A16), not just
-codex-mini (no temperature control) — see the per-run breakdown below for
-A16, Q27, and Q47 specifically. **Q47 is a newly-observed gap** (found via
+3-run average on 2026-07-28 (49/16 suite, before Category 21): codex-mini 91%
+GT / 100% ADV, gpt-5.1-2 95% GT / 92% ADV. Individual-case results vary run to
+run on both models (see A16), not just codex-mini (no temperature control) —
+see the per-run breakdown below for A16, Q27, and Q47 specifically. **Q47 is a
+newly-observed gap** (found via
 the 2026-07-28 runs, not previously documented): a direct trend-inference
 question, no soft framing required, fails more often than Q27 on both
 models — see LIMITATIONS.md's Accepted Model Risks section.*
