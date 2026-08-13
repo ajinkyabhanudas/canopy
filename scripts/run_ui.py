@@ -16,8 +16,14 @@ logging.basicConfig(
 
 import gradio as gr  # noqa: E402
 
-from canopy.ui.app import CSS, build_app  # noqa: E402 -- css lives beside the UI definition
+from canopy.ui.app import CSS, STATUS_TICKER_HEAD_SCRIPT, build_app  # noqa: E402
 
 if __name__ == "__main__":
     app = build_app()
-    app.launch(server_name="0.0.0.0", server_port=7860, theme=gr.themes.Soft(), css=CSS)
+    app.launch(
+        server_name="0.0.0.0",
+        server_port=7860,
+        theme=gr.themes.Soft(),
+        css=CSS,
+        head=STATUS_TICKER_HEAD_SCRIPT,
+    )
