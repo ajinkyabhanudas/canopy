@@ -186,11 +186,14 @@ Each question is answered independently. Canopy does not maintain conversation
 history between queries. A follow-up like "tell me more about those sites" will
 not carry context from the previous answer.
 
-### 8. Coordinate data withheld from AI layer
+### 8. Coordinate data withheld from AI layer and UI
 
-Latitude and longitude columns are stripped before the AI model processes results.
+Latitude and longitude columns are stripped before the AI model processes results,
+and (since 2026-08-13) before they reach the UI's Full data table as well.
 Spatial queries (e.g. "which detections were within 5 km of reserve boundary")
-cannot be answered by Canopy.
+cannot be answered by Canopy, and coordinates cannot be read out of the results
+table either — a researcher who genuinely needs them must query the database
+directly. See DECISIONS.md's S3 section for why the UI was included.
 
 The set of withheld columns is configurable via `CANOPY_SENSITIVE_COLUMNS` (comma-separated env var, defaults to `latitude,longitude,hashed_password`). Adding a new sensitive column is a `.env` change — no code deploy required.
 
