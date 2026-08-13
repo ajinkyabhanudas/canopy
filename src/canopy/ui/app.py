@@ -14,7 +14,7 @@ import psycopg2.errors
 from canopy.config import get_ui_lang
 from canopy.history import clear_history
 from canopy.i18n import set_locale, t
-from canopy.query.executor import SQLGuardError
+from canopy.query.executor import QueryResult, SQLGuardError
 from canopy.query.fuzzy_match import FUZZY_COLUMNS
 from canopy.query.loop import (
     Interpretation,
@@ -51,6 +51,48 @@ CSS = """
 }
 #canopy-status p { margin: 0; }
 
+/* Loading pulse — a continuous, gentle opacity breathe on the status text
+   while a query is in flight, so the bar visibly stays alive between the
+   irregular (sometimes 15-40s apart) status_cb() updates instead of
+   sitting frozen. #canopy-status-elapsed is the ticking "· Ns" suffix
+   (see _loading_status_html in app.py). */
+@keyframes canopy-status-pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.55; }
+}
+.canopy-status-loading {
+    animation: canopy-status-pulse 1.6s ease-in-out infinite;
+}
+#canopy-status-elapsed {
+    font-variant-numeric: tabular-nums;
+    opacity: 0.85;
+}
+@media (prefers-reduced-motion: reduce) {
+    .canopy-status-loading { animation: none; }
+}
+
+/* Gradio's default per-component "generating" indicator (Gradio's
+   StreamingBar .generating class) fires on every yielded update to a
+   component — it's NOT a class on the #canopy-status/#canopy-response
+   block div itself, but on a nested child (data-testid="status-tracker")
+   Gradio injects inside it. An earlier fix here targeted
+   "#canopy-status.generating" directly and had zero effect (confirmed
+   live via getComputedStyle — the selector never matched anything) because
+   of that nesting. Because #canopy-status has near-zero height (see
+   min-height: 0 above), the tracker's own 2px border collapses visually
+   into a single thin horizontal "beating" line rather than a full box
+   outline — one such line per component, flashing independently, which is
+   the exact artifact reported in review. Our own pulse
+   (.canopy-status-loading) and the step-log narration already communicate
+   "in progress," so Gradio's indicator is pure noise here — suppress it on
+   just these two components' nested tracker, not globally.
+*/
+#canopy-status [data-testid="status-tracker"].generating,
+#canopy-response [data-testid="status-tracker"].generating {
+    border: none !important;
+    animation: none !important;
+}
+
 /* Timing footer */
 .timing-info p {
     font-size: 0.78em !important;
@@ -79,6 +121,49 @@ CSS = """
 .tabitem hr {
     margin: 1em 0 0.8em 0;
     border-color: var(--border-color-primary);
+}
+
+/* Answer-tab overflow safety net: the model is instructed not to render
+   long markdown tables in the Response (schema.py), but any genuinely
+   long answer — a big bullet list, a long interpretation block — should
+   still communicate "there's more below" rather than silently requiring
+   an unprompted scroll. Cap height, scroll internally.
+
+   The fade itself is added/removed by JS (see the "canopy-has-overflow"
+   class toggle in STATUS_TICKER_HEAD_SCRIPT), not by this pure-CSS block —
+   a first version used a ::after pseudo-element unconditionally, which
+   faded the last line of a fully-visible, non-scrollable answer too
+   (caught in review: it made a *complete* answer look truncated, which is
+   worse than no fade at all — a misleading "there's more" cue on content
+   that has nothing more). Detecting "does this actually overflow" needs a
+   real height comparison, which CSS alone cannot express.
+*/
+#canopy-response {
+    max-height: 70vh;
+    overflow-y: auto;
+    position: relative;
+}
+/* padding-bottom reserves dedicated space for the fade so it never
+   overlaps real text — a first version used margin-top: -32px to pull
+   the fade back over the last 32px of content instead of giving it its
+   own space, which washed out the actual last visible line (e.g. a
+   bullet-list item) under the gradient (caught in review: readable text
+   sat directly under the fade's start point, confirmed via
+   elementsFromPoint at the fade boundary). The padding only applies
+   when overflowing, so a complete answer's layout is unaffected. */
+#canopy-response.canopy-has-overflow {
+    padding-bottom: 32px;
+}
+#canopy-response.canopy-has-overflow::after {
+    content: "";
+    position: sticky;
+    bottom: 0;
+    left: 0;
+    display: block;
+    height: 32px;
+    margin-top: -32px;
+    background: linear-gradient(to bottom, transparent, var(--background-fill-primary));
+    pointer-events: none;
 }
 """
 
@@ -171,6 +256,128 @@ def _render_response(result: LoopResult) -> str:
     return f"{body}\n\n{interpretation_md}"
 
 
+class _StepKind:
+    """Classification tags for step-log entries.
+
+    Replaces an earlier design where the log was a plain list[str] and
+    every operation (dedup, "is this superseded by a retry", collapsing
+    a now-adjacent duplicate after a drop) had to re-derive meaning by
+    string-matching the *rendered*, locale-dependent text. That approach
+    went through several rounds in review, each fixing one interaction
+    the last round's string-matching missed — e.g. dropping a superseded
+    "Found N" line could leave two previously non-adjacent "Searching..."
+    lines newly adjacent, which the string-level dedup check (only ever
+    comparing to the immediately preceding entry) couldn't catch because
+    adjacency changed *after* its check already ran.
+
+    Tagging each entry with its kind at the point status_cb() receives it
+    makes "is this a result", "does a retry supersede this", and
+    "are two entries the same kind" simple field comparisons instead of
+    string pattern-matching — correctness no longer depends on guessing
+    locale template shapes.
+    """
+
+    OTHER = "other"
+    SEARCHING = "searching"
+    RESULT = "result"  # "Found N" / "Refining the search" — superseded by a retry
+    RETRY = "retry"  # "Trying a different approach (attempt N)..."
+
+
+def _classify_step(msg: str) -> str:
+    """Tag a raw status_cb() message with its _StepKind.
+
+    Matches on each locale template's own static prefix (the text before
+    its first "{" placeholder) rather than hardcoded English, so this
+    stays correct under CANOPY_UI_LANG=es. This is the ONLY place in the
+    step-log pipeline that inspects rendered text — every other function
+    downstream operates on the tag, not the string.
+    """
+    if msg == t("status_searching_db"):
+        return _StepKind.SEARCHING
+    if msg == t("status_refining"):
+        return _StepKind.RESULT
+    if msg.startswith(t("status_writing_sql_retry", n=0).split("0", 1)[0].split("(", 1)[0].strip()):
+        return _StepKind.RETRY
+    found_prefixes = (
+        t(key, n=0).split("0", 1)[0]
+        for key in (
+            "found_detections_singular",
+            "found_detections_plural",
+            "found_detections_singular_retry",
+            "found_detections_plural_retry",
+        )
+    )
+    if any(msg.startswith(p) for p in found_prefixes):
+        return _StepKind.RESULT
+    return _StepKind.OTHER
+
+
+def _append_step(steps: list[tuple[str, str]], msg: str) -> None:
+    """Append msg to steps as a (kind, text) pair, in place.
+
+    Handles two real-world orderings confirmed live against the actual
+    agent event stream (see loop.py's _run_agent) — the "Searching the
+    monitoring database..." for a retried attempt can arrive either
+    before or after that attempt's own "Trying a different approach..."
+    announcement, since they're emitted from two different code paths
+    (execute_sql's own status_cb call vs. the agent's ToolCall stream
+    handler) with no fixed ordering between them:
+
+    1. A retry announcement supersedes the most recent RESULT entry
+       (that search's "Found N"/"Refining" didn't produce the answer,
+       this attempt is trying instead) — remove it rather than leave a
+       stale, easily-misread count sitting in the log. Stop scanning
+       backward at the first earlier RETRY entry, so an earlier attempt's
+       already-cleaned boundary is never crossed.
+    2. Removing an entry from the middle of the list can leave two
+       entries of the same kind newly adjacent (e.g. two SEARCHING
+       entries, one from each attempt, with the dropped RESULT between
+       them) — collapse immediate same-kind duplicates after any removal,
+       not just at append time.
+    3. Ordinary consecutive-identical-text de-dup (unrelated to retries)
+       still applies for the general case, e.g. a status repeated as-is.
+
+    Correctness invariant this relies on (enforced by loop.py's status_cb
+    call sites, not by this function): a SEARCHING entry always precedes
+    a RESULT, and two RESULT entries never appear consecutively without
+    an intervening SEARCHING or RETRY. If loop.py's call ordering ever
+    changes, re-verify this function's collapse logic against the new
+    ordering — the single-pair collapse below does not defend against a
+    cascading multi-pair collapse, which the current message vocabulary
+    and call ordering make unreachable but do not structurally prevent.
+    """
+    kind = _classify_step(msg)
+    if kind == _StepKind.RETRY:
+        for i in range(len(steps) - 1, -1, -1):
+            if steps[i][0] == _StepKind.RESULT:
+                del steps[i]
+                if 0 < i < len(steps) and steps[i - 1][0] == steps[i][0]:
+                    del steps[i]
+                break
+            if steps[i][0] == _StepKind.RETRY:
+                break
+    if not steps or steps[-1] != (kind, msg):
+        steps.append((kind, msg))
+
+
+def _step_log_markdown(steps: list[tuple[str, str]]) -> str:
+    """Render the accumulated real status steps as a narrative log.
+
+    Shown in the main Answer panel while a query is in flight — each step
+    is a real event that already happened (status_cb() only fires when
+    something real occurred: a phase started, SQL was retried, results
+    came back), so by the time the final answer replaces this, the trail
+    reads as "here's what led to your answer," not an abstract wait.
+    Completed steps are muted; the current (last) step is emphasized so
+    it's clear what's happening *right now* versus what's already done.
+    """
+    if not steps:
+        return ""
+    texts = [text for _kind, text in steps]
+    lines = [f"~~{s}~~" for s in texts[:-1]] + [f"**{texts[-1]}**"]
+    return "\n\n".join(lines)
+
+
 def _empty_result(message: str, session_history: list, status: str = "") -> _Output:
     """Return a blank output tuple with only the response message and optional status set."""
     return (
@@ -187,152 +394,201 @@ def _empty_result(message: str, session_history: list, status: str = "") -> _Out
     )
 
 
-def _status_yield(response_text: str, status_text: str, session_history: list) -> _Output:
-    """Return a blank output tuple with only status/response text set (for streaming updates)."""
+def _loading_status_html(*, is_first: bool) -> str:
+    """Elapsed-time ticker markup for the thin top status bar.
+
+    Perceived-wait fix (Step 2): the previous status bar only repainted on
+    each status_cb() call, so between calls — sometimes 15-40s apart — the
+    DOM was frozen with no signal the app was still working.
+
+    Deliberately does NOT repeat the current status text — that already
+    lives in response_box's step-log (_step_log_markdown), which has more
+    room to show the full trail. Showing the same "Found N detections"
+    string in both the top bar and the big answer panel was pure
+    duplication (caught in review): the top bar's only job is the ticking
+    "· Ns" — a fixed, generic label plus the counter, not a second copy of
+    whatever the answer panel already says.
+
+    This function only emits static HTML (a `data-canopy-loading` marker
+    span, reset via `data-first` on the very first yield of a run) — it
+    does NOT inject a <script> tag. Gradio's gr.Markdown routes its value
+    through a markdown-to-HTML parser even with sanitize_html=False, which
+    mangles inline <script> content into inert <p> text instead of
+    executing it (confirmed live: window.__canopyStatusStart stayed
+    undefined). The actual ticker is a single persistent script loaded
+    once via Blocks.launch(head=...) in scripts/run_ui.py, using a
+    MutationObserver on #canopy-status to react to these markers — see
+    STATUS_TICKER_HEAD_SCRIPT below.
+    """
+    first_attr = ' data-first="1"' if is_first else ""
     return (
-        "",
-        gr.Dataframe(value=None),
+        f'<span class="canopy-status-loading" data-canopy-loading="1"{first_attr}>'
+        f'{t("status_bar_working")}<span id="canopy-status-elapsed"></span></span>'
+    )
+
+
+# Persistent, page-level script — loaded once via gr.Blocks.launch(head=...)
+# in scripts/run_ui.py, NOT re-injected per status update (Markdown content
+# can't host executable <script> tags, see _loading_status_html above).
+# Watches #canopy-status for the data-canopy-loading marker this function
+# emits and drives a client-side elapsed-time ticker independent of Gradio's
+# irregular (sometimes 15-40s apart) status_cb() update cadence.
+STATUS_TICKER_HEAD_SCRIPT = """
+<script>
+(function() {
+  var observer = null;
+
+  // tick() writes into a node inside the observed subtree (#canopy-status),
+  // which would otherwise re-trigger the MutationObserver on every write —
+  // an infinite synchronous callback loop that hangs the main thread
+  // (confirmed live: reproduced a "Page Unresponsive" browser dialog before
+  // this guard existed). Disconnect before writing, reconnect after.
+  function tick() {
+    var node = document.getElementById('canopy-status-elapsed');
+    if (!node || !window.__canopyStatusStart) return;
+    var s = Math.floor((Date.now() - window.__canopyStatusStart) / 1000);
+    var text = ' \\u00b7 ' + s + 's';
+    if (node.textContent === text) return;
+    if (observer) observer.disconnect();
+    node.textContent = text;
+    if (observer) reattachObserver();
+  }
+  function onStatusChanged() {
+    var host = document.getElementById('canopy-status');
+    if (!host) return;
+    var loading = host.querySelector('[data-canopy-loading="1"]');
+    if (!loading) {
+      window.__canopyStatusStart = null;
+      return;
+    }
+    if (loading.hasAttribute('data-first') || !window.__canopyStatusStart) {
+      // data-first: a new run started, reset the clock. No start time yet:
+      // page loaded or observer attached mid-run — start from now rather
+      // than leaving the counter blank.
+      window.__canopyStatusStart = Date.now();
+    }
+    tick();
+  }
+  function reattachObserver() {
+    var host = document.getElementById('canopy-status');
+    if (!host) return;
+    observer.observe(host, {childList: true, subtree: true});
+  }
+  function attach() {
+    var host = document.getElementById('canopy-status');
+    if (!host) {
+      setTimeout(attach, 200);
+      return;
+    }
+    observer = new MutationObserver(onStatusChanged);
+    reattachObserver();
+    setInterval(tick, 1000);
+    onStatusChanged();
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', attach);
+  } else {
+    attach();
+  }
+})();
+
+// Independent IIFE: toggles .canopy-has-overflow on #canopy-response based
+// on a real scrollHeight vs. clientHeight comparison — the bottom fade
+// (see the CSS block above) only renders when this class is present. A
+// first version applied the fade unconditionally via CSS alone, which
+// faded the last line of answers that fit entirely on screen — making a
+// complete answer look truncated (caught in review). ResizeObserver
+// catches both content growing/shrinking (streaming step-log updates,
+// final answer replacing it) and container resizes (window resize,
+// sidebar collapse).
+(function() {
+  function checkOverflow() {
+    var el = document.getElementById('canopy-response');
+    if (!el) return;
+    var hasOverflow = el.scrollHeight > el.clientHeight + 1;
+    el.classList.toggle('canopy-has-overflow', hasOverflow);
+  }
+  function attach() {
+    var el = document.getElementById('canopy-response');
+    if (!el) {
+      setTimeout(attach, 200);
+      return;
+    }
+    new ResizeObserver(checkOverflow).observe(el);
+    var mo = new MutationObserver(checkOverflow);
+    mo.observe(el, {childList: true, subtree: true, characterData: true});
+    checkOverflow();
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', attach);
+  } else {
+    attach();
+  }
+})();
+</script>
+"""
+
+
+def _status_yield(
+    response_text: str,
+    session_history: list,
+    *,
+    is_first: bool = False,
+    preview: tuple[QueryResult, str] | None = None,
+) -> _Output:
+    """Return a mostly-blank output tuple for streaming updates.
+
+    response_text is the full step-log narration (response_box). The thin
+    top status bar (status_md) intentionally shows only a generic "Working
+    · Ns" ticker, not a second copy of the current step — see
+    _loading_status_html for why duplicating it there was removed.
+
+    preview, when set, is the (rows, sql) pair from a completed execute_sql
+    call. The model still needs 16-25s to write its answer around those rows,
+    so they are rendered into the table and SQL box immediately instead of
+    being withheld until the final yield — the user sees the real data at
+    roughly the halfway point of the wait rather than at the end.
+
+    Deliberately renders the rows as *data only*: no count sentence, no
+    interpretation. The narrative is the only thing that gets to say what the
+    rows mean, so a superseding retry replaces a table (reads as the search
+    refining) rather than retracting a stated answer (reads as a wrong claim).
+    See DECISIONS.md U2 for the failure this avoids.
+    """
+    if preview is not None:
+        result, sql = preview
+        rows = [list(row) for row in result.rows]
+        table = gr.Dataframe(value=rows or None, headers=result.columns or None)
+        sql_text = sql
+    else:
+        table = gr.Dataframe(value=None)
+        sql_text = ""
+    return (
+        sql_text,
+        table,
         response_text,
         "",
         gr.Radio(choices=session_history),
         "",
-        status_text,
+        _loading_status_html(is_first=is_first),
         session_history,
         gr.update(selected=0),
         *_NO_SUGGESTIONS,
     )
 
 
-def _run_query_handler(
-    question: str, session_history: list, superseded_question: str | None = None
-) -> Generator[_Output, None, None]:
-    """Streaming generator: yields status updates then the final result.
+def _success_result(
+    result: LoopResult,
+    question: str,
+    session_history: list,
+    superseded_question: str | None,
+) -> _Output:
+    """Build the final success output tuple from a completed LoopResult.
 
-    Gradio streams each yielded tuple to the UI in real time so the user
-    sees progress instead of a blank screen during the 10-90 second loop.
-
-    session_history is a per-browser list backed by gr.BrowserState
-    (localStorage). It is threaded through every yield unchanged until the
-    final success yield, which prepends the new question.
-
-    superseded_question, when set, is a mistyped question this run is
-    correcting (via a clicked fuzzy-match suggestion) — it's dropped from
-    history rather than kept alongside the corrected question. Without this,
-    clicking a suggestion left the original dead-end query sitting in
-    history: re-running it from there hits the same 0-row result and forces
-    the user through the same suggestion click again.
+    Extracted from _run_query_handler so the success-rendering logic (row
+    rendering, history dedup, fuzzy-suggestion regeneration, timing display)
+    lives in one place rather than inline in the streaming generator.
     """
-    question = question.strip()
-    if not question:
-        yield _empty_result(t("error_empty_question"), session_history)
-        return
-
-    if is_unsupported_language(question):
-        _log.info("language check rejected: %r", question[:60])
-        yield _empty_result(
-            t("error_unsupported_language"),
-            session_history,
-            status=t("error_unsupported_language_status"),
-        )
-        return
-
-    status_q: queue.Queue[str | None] = queue.Queue()
-    result_holder: list = [None]
-    error_holder: list[BaseException | None] = [None]
-    # Pre-populate with the question so the "I understood" message shows
-    # even when the model goes straight to a tool call (no response.text).
-    intent_text: list[str] = [question]
-
-    def _status_cb(msg: str) -> None:
-        status_q.put(msg)
-
-    def _worker() -> None:
-        try:
-            result_holder[0] = run_query(question, status_cb=_status_cb)
-        except BaseException as exc:  # noqa: BLE001
-            error_holder[0] = exc
-        finally:
-            status_q.put(None)
-
-    # Immediate feedback before the thread even starts
-    yield _status_yield(t("status_reading"), t("status_reading"), session_history)
-
-    thread = threading.Thread(target=_worker, daemon=True)
-    thread.start()
-
-    while True:
-        msg = status_q.get()
-        if msg is None:
-            break
-        if msg == "CACHE_HIT":
-            yield _status_yield(t("status_cache_hit"), t("status_cache_hit"), session_history)
-            continue
-        if msg.startswith("INTENT:"):
-            intent_text[0] = msg[7:].strip()
-            response_text = t("status_understood", intent=intent_text[0])
-            status_text = t("status_searching_db")
-        else:
-            response_text = (
-                t("status_understood", intent=intent_text[0])
-                if intent_text[0]
-                else ""
-            )
-            status_text = msg
-        yield _status_yield(response_text, status_text, session_history)
-
-    thread.join()
-
-    exc = error_holder[0]
-    if exc is not None:
-        if isinstance(exc, SQLGuardError):
-            _log.warning("SQL guard blocked %s", exc.operation)
-            yield (
-                exc.sql,
-                gr.Dataframe(value=None),
-                t("error_guard_readonly", operation=exc.operation),
-                "",
-                gr.Radio(choices=session_history),
-                "",
-                t("error_guard_readonly_status", operation=exc.operation),
-                session_history,
-                gr.update(selected=0),
-                *_NO_SUGGESTIONS,
-            )
-        elif isinstance(exc, psycopg2.errors.QueryCanceled):
-            _log.warning("statement_timeout exceeded for question: %r", question[:60])
-            yield _empty_result(t("error_timeout"), session_history, status="⚠ Query timed out")
-        elif isinstance(exc, psycopg2.OperationalError):
-            _log.error("DB connection error: %s", exc)
-            yield _empty_result(
-                t("error_db_connection"), session_history, status="⚠ Database unreachable"
-            )
-        elif isinstance(exc, RuntimeError) and "maximum iterations" in str(exc):
-            _log.warning("loop exhausted for question: %r", question[:60])
-            yield _empty_result(
-                t("error_iterations"), session_history, status="⚠ Question too complex"
-            )
-        elif isinstance(exc, UnsupportedLanguageError):
-            # Defense-in-depth: the is_unsupported_language() check above
-            # already catches this before run_query() is ever called, so
-            # this path is normally unreachable from the UI. It exists so
-            # run_query() itself is self-protecting for any caller that
-            # bypasses this handler (scripts, direct API use).
-            _log.info("run_query rejected unsupported language: %r", question[:60])
-            yield _empty_result(
-                t("error_unsupported_language"),
-                session_history,
-                status=t("error_unsupported_language_status"),
-            )
-        else:
-            _log.error("query failed in UI: %s", exc, exc_info=True)
-            yield _empty_result(
-                t("error_generic_response"),
-                session_history,
-                status=t("error_generic_status"),
-            )
-        return
-
-    result = result_holder[0]
     rows = [list(row) for row in result.rows]
     df = gr.Dataframe(value=rows or None, headers=result.columns or None)
     count = result.row_count
@@ -430,7 +686,7 @@ def _run_query_handler(
     else:
         suggestion_updates = _NO_SUGGESTIONS
 
-    yield (
+    return (
         sql_display,
         df,
         _render_response(result),
@@ -442,6 +698,154 @@ def _run_query_handler(
         gr.update(selected=0),
         *suggestion_updates,
     )
+
+
+def _run_query_handler(
+    question: str, session_history: list, superseded_question: str | None = None
+) -> Generator[_Output, None, None]:
+    """Streaming generator: yields status updates then the final result.
+
+    Gradio streams each yielded tuple to the UI in real time so the user
+    sees progress instead of a blank screen during the 10-90 second loop.
+
+    session_history is a per-browser list backed by gr.BrowserState
+    (localStorage). It is threaded through every yield unchanged until the
+    final success yield, which prepends the new question.
+
+    superseded_question, when set, is a mistyped question this run is
+    correcting (via a clicked fuzzy-match suggestion) — it's dropped from
+    history rather than kept alongside the corrected question. Without this,
+    clicking a suggestion left the original dead-end query sitting in
+    history: re-running it from there hits the same 0-row result and forces
+    the user through the same suggestion click again.
+    """
+    question = question.strip()
+    if not question:
+        yield _empty_result(t("error_empty_question"), session_history)
+        return
+
+    if is_unsupported_language(question):
+        _log.info("language check rejected: %r", question[:60])
+        yield _empty_result(
+            t("error_unsupported_language"),
+            session_history,
+            status=t("error_unsupported_language_status"),
+        )
+        return
+
+    # One queue carrying two kinds of event, tagged rather than two queues:
+    # ordering between a status string and the data payload that follows it
+    # must be preserved, and separate queues would let them interleave wrongly.
+    #   ("status", str)                 — narration for the step log
+    #   ("preview", (QueryResult, str)) — real rows, available ~16-25s early
+    status_q: queue.Queue[tuple[str, object] | None] = queue.Queue()
+    result_holder: list = [None]
+    error_holder: list[BaseException | None] = [None]
+
+    def _status_cb(msg: str) -> None:
+        status_q.put(("status", msg))
+
+    def _result_cb(result: QueryResult, sql: str) -> None:
+        status_q.put(("preview", (result, sql)))
+
+    def _worker() -> None:
+        try:
+            result_holder[0] = run_query(
+                question, status_cb=_status_cb, result_cb=_result_cb
+            )
+        except BaseException as exc:  # noqa: BLE001
+            error_holder[0] = exc
+        finally:
+            status_q.put(None)
+
+    # Immediate feedback before the thread even starts
+    first_status = t("status_reading")
+    steps: list[tuple[str, str]] = []
+    _append_step(steps, first_status)
+    yield _status_yield(_step_log_markdown(steps), session_history, is_first=True)
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+
+    # Accumulating narration: response_box shows every real step taken so
+    # far, not a single sentence that can drift out of sync with the top
+    # status bar (previously "I understood... Searching the database..."
+    # sat directly above a status bar that had already moved on to
+    # "Understanding your question...", reading as a contradiction). See
+    # _append_step's docstring for the supersede/collapse rules.
+    # preview holds the most recent (rows, sql) pair seen so far. A SQL retry
+    # overwrites it rather than appending: the corrected query supersedes the
+    # one before it, so the table always reflects the latest attempt. It is
+    # re-sent on every subsequent yield because Gradio output tuples are
+    # fixed-shape — omitting it would blank the table on the next status tick.
+    preview: tuple[QueryResult, str] | None = None
+    while True:
+        item = status_q.get()
+        if item is None:
+            break
+        kind, payload = item
+        if kind == "preview":
+            preview = payload  # type: ignore[assignment]
+            yield _status_yield(_step_log_markdown(steps), session_history, preview=preview)
+            continue
+        status_text = t("status_cache_hit") if payload == "CACHE_HIT" else payload
+        _append_step(steps, status_text)
+        yield _status_yield(_step_log_markdown(steps), session_history, preview=preview)
+
+    thread.join()
+
+    exc = error_holder[0]
+    if exc is not None:
+        if isinstance(exc, SQLGuardError):
+            _log.warning("SQL guard blocked %s", exc.operation)
+            yield (
+                exc.sql,
+                gr.Dataframe(value=None),
+                t("error_guard_readonly", operation=exc.operation),
+                "",
+                gr.Radio(choices=session_history),
+                "",
+                t("error_guard_readonly_status", operation=exc.operation),
+                session_history,
+                gr.update(selected=0),
+                *_NO_SUGGESTIONS,
+            )
+        elif isinstance(exc, psycopg2.errors.QueryCanceled):
+            _log.warning("statement_timeout exceeded for question: %r", question[:60])
+            yield _empty_result(t("error_timeout"), session_history, status="⚠ Query timed out")
+        elif isinstance(exc, psycopg2.OperationalError):
+            _log.error("DB connection error: %s", exc)
+            yield _empty_result(
+                t("error_db_connection"), session_history, status="⚠ Database unreachable"
+            )
+        elif isinstance(exc, RuntimeError) and "maximum iterations" in str(exc):
+            _log.warning("loop exhausted for question: %r", question[:60])
+            yield _empty_result(
+                t("error_iterations"), session_history, status="⚠ Question too complex"
+            )
+        elif isinstance(exc, UnsupportedLanguageError):
+            # Defense-in-depth: the is_unsupported_language() check above
+            # already catches this before run_query() is ever called, so
+            # this path is normally unreachable from the UI. It exists so
+            # run_query() itself is self-protecting for any caller that
+            # bypasses this handler (scripts, direct API use).
+            _log.info("run_query rejected unsupported language: %r", question[:60])
+            yield _empty_result(
+                t("error_unsupported_language"),
+                session_history,
+                status=t("error_unsupported_language_status"),
+            )
+        else:
+            _log.error("query failed in UI: %s", exc, exc_info=True)
+            yield _empty_result(
+                t("error_generic_response"),
+                session_history,
+                status=t("error_generic_status"),
+            )
+        return
+
+    result = result_holder[0]
+    yield _success_result(result, question, session_history, superseded_question)
 
 
 def _clear_handler(current_question: str) -> tuple:
@@ -491,7 +895,14 @@ def build_app() -> gr.Blocks:
 
             # ── Right panel ────────────────────────────────────────────────────
             with gr.Column(scale=2):
-                status_md = gr.Markdown("", elem_id="canopy-status")
+                # sanitize_html=False: this component only ever receives
+                # server-templated status strings (from t(), never raw user
+                # input) plus the data-canopy-loading marker span from
+                # _loading_status_html() — the default sanitizer strips
+                # data-* attributes, which the head-script ticker needs to
+                # find its target. No <script> tag lives in this value; see
+                # STATUS_TICKER_HEAD_SCRIPT for why.
+                status_md = gr.Markdown("", elem_id="canopy-status", sanitize_html=False)
 
                 # Hidden by default — shown only when a 0-row result finds a
                 # close fuzzy match for a mistyped species/site name. One
@@ -517,12 +928,16 @@ def build_app() -> gr.Blocks:
                         ]
                     q_states = [gr.State(None) for _ in range(_GROUP_CANDIDATES)]
                     suggestion_groups.append(
-                        {"prompt": prompt_md, "buttons": buttons, "q_states": q_states}
+                        {
+                            "prompt": prompt_md,
+                            "buttons": buttons,
+                            "q_states": q_states,
+                        }
                     )
 
                 with gr.Tabs() as result_tabs:
                     with gr.Tab(t("tab_answer"), id=0):
-                        response_box = gr.Markdown(_IDLE_PROMPT)
+                        response_box = gr.Markdown(_IDLE_PROMPT, elem_id="canopy-response")
                     with gr.Tab(t("tab_data"), id=1):
                         row_count_md = gr.Markdown("")
                         results_table = gr.Dataframe(
@@ -600,6 +1015,19 @@ def build_app() -> gr.Blocks:
         # _run_query_handler can drop that dead-end entry from history
         # instead of leaving it alongside the corrected question — clicking
         # it later would just hit the same 0-row result again.
+        #
+        # A "skip the LLM, just swap the name in the last SQL and re-run it"
+        # fast path was built, tested and then removed — see DECISIONS.md's
+        # U2 section. Short version: fuzzy_matches is only ever populated
+        # when a query returned NOTHING (loop.py's execute_sql closure), and
+        # on an empty result the agent often stops without ever writing the
+        # real answer query — so the stored SQL is frequently a
+        # lookup/verification step ("does this species name exist?"), not
+        # the query that answers the user's question. Substituting into it
+        # returns a confidently wrong answer. No SQL-text heuristic
+        # separates the two cases reliably (an exploratory
+        # `SELECT COUNT(*) ... ILIKE '%typo%'` is shape-identical to a real
+        # count answer), so the direction was rejected rather than patched.
         superseded_state = gr.State(None)
         for group in suggestion_groups:
             for suggestion_btn, suggestion_q in zip(group["buttons"], group["q_states"]):

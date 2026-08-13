@@ -29,15 +29,27 @@ STRINGS: dict[str, str] = {
         "✗ Identify species by common name (e.g. \"birds\") — use scientific names"
     ),
     # Streaming status messages
+    "status_bar_working":   "Working",
     "status_reading":       "Reading your question…",
     "status_cache_hit":     "Loading your previous result…",
-    "status_understood":    "**I understood:** {intent}\n\nSearching the database…",
     "status_searching_db":  "Searching the monitoring database…",
     "status_understanding": "Understanding your question…",
     "status_refining":      "Refining the search…",
+    "status_writing_sql_retry":  "Trying a different approach (attempt {n})…",
+    # Shown for the whole 16-25s narrative phase, by which point the rows are
+    # already rendered in the Full data table tab — the pointer tells the user
+    # the data is there to read now instead of waiting on the prose.
+    "status_composing_answer":   (
+        "Composing your answer — the results are ready in the Full data table tab…"
+    ),
     # Detection count (loop.py — user-visible, not tool-result content)
-    "found_detections_singular": "Found {n} detection — writing your answer…",
-    "found_detections_plural":   "Found {n} detections — writing your answer…",
+    "found_detections_singular": "Found {n} detection",
+    "found_detections_plural":   "Found {n} detections",
+    # Same as above but for a retried search (2nd+ attempt) — makes clear
+    # this count supersedes the earlier one rather than reading as a second,
+    # unrelated "found" event in the step log.
+    "found_detections_singular_retry": "Updated search found {n} detection",
+    "found_detections_plural_retry":   "Updated search found {n} detections",
     # Result row count (app.py)
     "count_row_singular": "**{n} row returned**",
     "count_row_plural":   "**{n} rows returned**",
