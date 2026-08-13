@@ -96,3 +96,23 @@ class TestBuildSystemPrompt:
         import inspect
         sig = inspect.signature(build_system_prompt)
         assert len(sig.parameters) == 0
+
+    def test_forbids_markdown_tables_in_response_regardless_of_row_count(self):
+        """A live run rendered a 637-row markdown table directly in the
+        Response despite the pre-existing "Do NOT include the raw data
+        table" instruction — that instruction wasn't explicit that this
+        applies at every row count, not just large ones, and never named
+        the markdown table syntax directly. Strengthened; this test pins
+        the strengthened language so it can't silently regress."""
+        prompt = build_system_prompt()
+        assert "Never render a markdown" in prompt
+        assert "Full data table" in prompt
+        assert "even a 6-row" in prompt
+
+    def test_forbids_trailing_empty_bullets_in_key_findings(self):
+        """A live run rendered a trailing empty bullet ("- " with nothing
+        after it) as the 4th "Key findings" list item — no instruction
+        told the model every bullet must contain real content."""
+        prompt = build_system_prompt()
+        assert "never emit a" in prompt.lower()
+        assert "empty bullet" in prompt.lower()
