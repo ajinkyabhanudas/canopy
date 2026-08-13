@@ -1,4 +1,5 @@
 .env
+.env.testing
 .claude/
 __pycache__/
 *.pyc

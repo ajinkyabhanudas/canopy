@@ -235,17 +235,41 @@ def strip_interpretation_block(model_text: str) -> str:
     return _BLOCK_RE.sub("", model_text).strip()
 
 
-def _format_result(result: QueryResult) -> str:
-    """Format a QueryResult for the model, stripping sensitive columns."""
+def _strip_sensitive_columns(result: QueryResult) -> QueryResult:
+    """Return a QueryResult with CANOPY_SENSITIVE_COLUMNS columns removed.
+
+    Was previously applied only inside _format_result() (the text sent to
+    the LLM as tool output) — the primary defense against sensitive columns
+    reaching a user is the system prompt instructing the model to never
+    SELECT them in the first place (schema.py's guardrail), but that's a
+    prompt-level control, not a code-level guarantee. LoopResult.rows/
+    .columns (what the UI's "Full data table" tab actually renders) were
+    built directly from the raw, unstripped QueryResult and never went
+    through this filter — a defense-in-depth gap: if a query ever did
+    select latitude/longitude despite the prompt instruction, the raw
+    table would have shown it even though the LLM's own text wouldn't
+    mention it. Fixed so both consumers share one stripped result.
+    """
     safe_idx = [i for i, c in enumerate(result.columns) if c not in _SENSITIVE_COLUMNS]
-    safe_cols = [result.columns[i] for i in safe_idx]
-    safe_rows = [tuple(row[i] for i in safe_idx) for row in result.rows[:_ROW_DISPLAY_LIMIT]]
+    if len(safe_idx) == len(result.columns):
+        return result
+    safe_cols = tuple(result.columns[i] for i in safe_idx)
+    safe_rows = tuple(tuple(row[i] for i in safe_idx) for row in result.rows)
+    return QueryResult(columns=safe_cols, rows=safe_rows, row_count=result.row_count)
+
+
+def _format_result(result: QueryResult) -> str:
+    """Format a QueryResult for the model. Caller must already have applied
+    _strip_sensitive_columns — this function only handles row-count capping
+    and text layout, not column filtering (see _build_sql_tool's execute_sql
+    closure, the only caller, for where stripping happens)."""
+    rows = result.rows[:_ROW_DISPLAY_LIMIT]
     lines = [
-        f"Columns: {', '.join(safe_cols)}",
+        f"Columns: {', '.join(result.columns)}",
         f"Row count: {result.row_count}",
         "Rows:",
     ]
-    for row in safe_rows:
+    for row in rows:
         lines.append(f"  {row}")
     if result.row_count > _ROW_DISPLAY_LIMIT:
         lines.append(f"  ... ({result.row_count - _ROW_DISPLAY_LIMIT} more rows truncated)")
@@ -255,8 +279,15 @@ def _format_result(result: QueryResult) -> str:
 def _build_sql_tool(
     status_cb: Callable[[str], None] | None,
     state: dict,
+    result_cb: Callable[[QueryResult, str], None] | None = None,
 ) -> FunctionTool:
-    """Build the execute_sql FunctionTool, capturing status_cb and state via closure."""
+    """Build the execute_sql FunctionTool, capturing the callbacks and state via closure.
+
+    result_cb is a separate channel from status_cb deliberately: status_cb carries
+    display strings, result_cb carries structured data. Overloading one callback
+    with both would force every existing consumer (tests, benchmark runner) to
+    discriminate on payload type.
+    """
 
     def execute_sql(sql: str) -> str:
         """Execute a read-only SQL SELECT query against the species monitoring database.
@@ -269,14 +300,30 @@ def _build_sql_tool(
         Returns:
             Formatted query result with column names, row count, and row data.
         """
+        state["sql_attempts"] = state.get("sql_attempts", 0) + 1
+        is_retry = state["sql_attempts"] > 1
         if status_cb:
             status_cb(t("status_searching_db"))
         t_db = time.perf_counter()
         result = execute_query(sql)
         state["db_times"].append(time.perf_counter() - t_db)
         state["last_sql"] = sql
-        state["last_query_result"] = result
+        # is_empty_result/find_candidates/effective_count all need the RAW
+        # column shape (e.g. distinguishing a COUNT(*) aggregate's single
+        # column from a real 0-row result) — strip sensitive columns only
+        # for what gets stored/displayed (last_query_result -> eventually
+        # LoopResult.rows/.columns, what the UI's "Full data table" tab
+        # renders), after those checks have already run on the raw result.
+        state["last_query_result"] = _strip_sensitive_columns(result)
         _log.debug("db execute: %.3fs — %s", state["db_times"][-1], sql[:120])
+        if result_cb:
+            # Progressive disclosure: the rows are in hand here, but the model
+            # still needs 16-25s to compose its narrative around them (measured
+            # live — the narrative phase is 51-60% of total latency). Push the
+            # stripped result to the UI now rather than holding it until the
+            # final yield. Passes state["last_query_result"], never the raw
+            # `result` — early disclosure must not widen what reaches a user.
+            result_cb(state["last_query_result"], sql)
         empty = is_empty_result(sql, result)
         state["fuzzy_matches"] = find_candidates(sql) if empty else ()
         if status_cb:
@@ -291,9 +338,23 @@ def _build_sql_tool(
                 status_cb(t("status_refining"))
             else:
                 n = effective_count(sql, result)
-                key = "found_detections_singular" if n == 1 else "found_detections_plural"
+                # Two non-empty results in the same turn (e.g. attempt 1
+                # found 14, attempt 2 found 637 after the model corrected
+                # its grouping) both said "Found N detections" with nothing
+                # tying the second count to the retry that produced it —
+                # read as two disconnected "found" events rather than one
+                # search superseding the other. The _retry variant makes
+                # the correction explicit.
+                if is_retry:
+                    key = (
+                        "found_detections_singular_retry"
+                        if n == 1
+                        else "found_detections_plural_retry"
+                    )
+                else:
+                    key = "found_detections_singular" if n == 1 else "found_detections_plural"
                 status_cb(t(key, n=n))
-        return _format_result(result)
+        return _format_result(state["last_query_result"])
 
     return FunctionTool.from_defaults(fn=execute_sql)
 
@@ -304,11 +365,22 @@ async def _run_agent(
     state: dict,
     conn_id: str,
     active_model: str,
+    result_cb: Callable[[QueryResult, str], None] | None = None,
 ) -> str:
-    """Run the LlamaIndex FunctionAgent and return the final model text."""
+    """Run the LlamaIndex FunctionAgent and return the final model text.
+
+    Consumes handler.stream_events() rather than a single `await handler` so
+    status_cb can report real phase transitions (SQL generation decided,
+    retry attempt, final-answer synthesis started) instead of one silent
+    span covering the whole agent turn — confirmed live that a single turn
+    can span 60-90s and multiple SQL retries with nothing in between
+    otherwise. AzureResponsesLLM does not support token streaming (see its
+    astream_chat docstring), so AgentStream.delta is always empty here —
+    only event *boundaries* are available, not live token output.
+    """
     llm = get_llm()
     system_prompt = build_system_prompt()
-    sql_tool = _build_sql_tool(status_cb, state)
+    sql_tool = _build_sql_tool(status_cb, state, result_cb)
 
     agent = FunctionAgent(
         tools=[sql_tool],
@@ -323,8 +395,38 @@ async def _run_agent(
 
     t_llm = time.perf_counter()
     handler = agent.run(question)
+
+    sql_attempts = 0
+    async for ev in handler.stream_events():
+        ev_name = type(ev).__name__
+        if ev_name == "ToolCall":
+            sql_attempts += 1
+            # First attempt: status_understanding (already fired) covers this
+            # lead-in, and status_searching_db fires a beat later from
+            # execute_sql itself — a third message here would be redundant.
+            # Retries are the real gap this closes: previously the UI sat on
+            # a stale "Found 0 — writing your answer…" for the entire silent
+            # LLM turn between one execute_sql call and the next.
+            #
+            # Confirmed live (2026-08-13): LlamaIndex writes ToolCall to the
+            # stream before invoking the tool, so in true execution order
+            # this message precedes status_searching_db — but this async
+            # generator and execute_sql's synchronous status_cb call share
+            # one event loop, so on a retry both can land in the same tick
+            # with either arriving first. Not worth forcing a strict order
+            # for a sub-second difference the user can't perceive either way.
+            if status_cb and sql_attempts > 1:
+                status_cb(t("status_writing_sql_retry", n=sql_attempts))
+        elif (
+            status_cb
+            and ev_name == "AgentOutput"
+            and not getattr(ev, "tool_calls", None)
+        ):
+            status_cb(t("status_composing_answer"))
+
     response = await handler
     state["llm_times"].append(time.perf_counter() - t_llm)
+    state["iterations"] = sql_attempts
 
     text = _strip_leading_content_filter_fragment(str(response))
     _log.info(
@@ -339,6 +441,7 @@ def run_query(
     question: str,
     status_cb: Callable[[str], None] | None = None,
     connection_override: str | None = None,
+    result_cb: Callable[[QueryResult, str], None] | None = None,
 ) -> LoopResult:
     """Translate a natural language question into SQL, execute it, and return the result.
 
@@ -351,6 +454,11 @@ def run_query(
         question: A natural language question about the species monitoring data.
         connection_override: Optional connection ID to use instead of MODEL_BACKEND.
             Used by the benchmark runner to switch connections without env var mutation.
+        result_cb: Optional callback invoked as (stripped_result, sql) the moment
+            execute_sql returns, well before the model finishes composing its
+            answer. Lets a UI show real rows during the narrative wait. Fires once
+            per SQL attempt — a retry calls it again with the corrected result,
+            which supersedes the previous one. Never fires on a cache hit.
 
     Returns:
         LoopResult containing the question, the SQL that was run, the raw query
@@ -396,7 +504,8 @@ def run_query(
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
         model_text = _pool.submit(
-            asyncio.run, _run_agent(question, status_cb, state, conn.id, active_model)
+            asyncio.run,
+            _run_agent(question, status_cb, state, conn.id, active_model, result_cb),
         ).result()
 
     last_query_result: QueryResult | None = state["last_query_result"]

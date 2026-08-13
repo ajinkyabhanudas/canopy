@@ -194,7 +194,7 @@ _GUARDRAIL = LoopResult(
 )
 
 
-def _smart_mock(question: str, status_cb=None) -> LoopResult:
+def _smart_mock(question: str, status_cb=None, **_kw) -> LoopResult:
     """Route by keyword so one mocked server exercises all error paths.
 
     Trigger keywords (all prefixed e2e- to avoid collisions with real queries):

@@ -27,15 +27,23 @@ STRINGS: dict[str, str] = {
         "✗ Identificar especies por nombre común (p. ej. \"aves\") — use nombres científicos"
     ),
     # Streaming status messages
+    "status_bar_working":   "Trabajando",
     "status_reading":       "Leyendo su pregunta…",
     "status_cache_hit":     "Cargando su resultado anterior…",
-    "status_understood":    "**Entendí:** {intent}\n\nBuscando en la base de datos…",
     "status_searching_db":  "Buscando en la base de datos de monitoreo…",
     "status_understanding": "Interpretando su pregunta…",
     "status_refining":      "Refinando la búsqueda…",
+    "status_writing_sql_retry":  "Probando un enfoque diferente (intento {n})…",
+    # Ver la nota en en.py: las filas ya están visibles en la pestaña
+    # "Tabla completa" durante toda esta fase.
+    "status_composing_answer":   (
+        "Redactando su respuesta — los resultados ya están en la pestaña Tabla completa…"
+    ),
     # Detection count
-    "found_detections_singular": "Se encontró {n} detección — escribiendo su respuesta…",
-    "found_detections_plural":   "Se encontraron {n} detecciones — escribiendo su respuesta…",
+    "found_detections_singular": "Se encontró {n} detección",
+    "found_detections_plural":   "Se encontraron {n} detecciones",
+    "found_detections_singular_retry": "Búsqueda actualizada: se encontró {n} detección",
+    "found_detections_plural_retry":   "Búsqueda actualizada: se encontraron {n} detecciones",
     # Result row count
     "count_row_singular": "**{n} fila devuelta**",
     "count_row_plural":   "**{n} filas devueltas**",

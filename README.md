@@ -66,8 +66,9 @@ SQL (shown in "Database query" tab):
   clicking a history item auto-runs the query from cache.
 - Never infers population trends or conservation status — that requires a formal
   scientific review process, not automated inference.
-- Precise species coordinates are filtered before any data reaches the AI layer,
-  keeping sensitive biodiversity locations out of the model context.
+- Precise species coordinates are filtered out of both the AI layer's context and
+  the UI's data table, keeping sensitive biodiversity locations out of model
+  provider logs and out of a shared browser session.
 - Vendor-neutral model interface: swapping the LLM means adding one LlamaIndex `FunctionCallingLLM` subclass.
 
 **Before deploying:** the default model has one known, accepted limitation —
@@ -314,13 +315,20 @@ record of what is deployed on each resource.
   non-SELECT statements before touching the DB. The psycopg2 connection is also
   opened with `readonly=True` as belt-and-suspenders.
 - **Coordinate filtering** — `latitude` and `longitude` are stripped from query
-  results before they reach the model. The user's UI sees the full dataset; the
-  AI layer never does. Complies with the principle of not granting agents direct
-  access to sensitive biodiversity records.
+  results before they reach the model *and* before they reach the UI's Full data
+  table. Neither the AI layer nor the browser sees them. (Until 2026-08-13 the
+  UI table did show coordinates by design; that was narrowed once the app could
+  be exposed over a shared link — see DECISIONS.md's S3 section.) Complies with
+  the principle of not granting agents direct access to sensitive biodiversity
+  records.
 - **Progressive feedback** — the UI streams live status above the output tabs
   (always visible regardless of which tab is active). The model states what it
   understood from the question before executing SQL, so users can catch
-  misinterpretations before waiting 90 seconds.
+  misinterpretations before waiting 90 seconds. Query **results** stream too:
+  the data table and SQL populate as soon as the database returns, roughly
+  halfway through a typical wait, rather than being withheld until the model
+  finishes writing its prose. Early rows are shown as data only — the written
+  answer remains the only thing that interprets them (DECISIONS.md U3).
 - **System prompt is a constant** — `SCHEMA_CONTEXT` is a module-level string.
   `build_system_prompt()` is a function so runtime context (language preference,
   etc.) can be injected later without touching the schema constant.
@@ -352,7 +360,7 @@ date, see `DECISIONS.md` (O4) and run `git log --before=<date> --grep="model\|sc
 | Production hardening (logging, timeout, Dockerfile) | Done |
 | Gradio UI with streaming progress | Done |
 | Live intent explanation (model states its understanding) | Done |
-| Coordinate filtering (lat/lon never sent to AI layer) | Done |
+| Coordinate filtering (lat/lon withheld from AI layer and UI table) | Done |
 | Read-only DB connection enforcement | Done |
 | Resilient query history | Done |
 | Faithfulness + adversarial evals (61 GT + 16 adversarial) | Done |

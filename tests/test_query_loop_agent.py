@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 from canopy.i18n import t
 from canopy.query.executor import QueryResult
@@ -130,6 +130,30 @@ def test_build_sql_tool_strips_sensitive_columns():
     assert "latitude" not in result
     assert "longitude" not in result
     assert "Buenaventura" in result
+
+
+def test_build_sql_tool_strips_sensitive_columns_from_stored_result_too():
+    """Regression test: state["last_query_result"] (what eventually becomes
+    LoopResult.rows/.columns — the UI's "Full data table" tab) must be
+    stripped identically to the LLM-facing text. Previously only the text
+    output was filtered; the raw stored result kept sensitive columns,
+    meaning the UI table could display coordinates the LLM never saw."""
+    state = _make_state()
+    qr = QueryResult(
+        columns=("site", "latitude", "longitude"),
+        rows=(("Buenaventura", -0.45, -77.99),),
+        row_count=1,
+    )
+    with patch("canopy.query.loop.execute_query", return_value=qr):
+        tool = _build_sql_tool(None, state)
+        tool.fn(sql="SELECT site, latitude, longitude FROM detections")
+    stored = state["last_query_result"]
+    assert "latitude" not in stored.columns
+    assert "longitude" not in stored.columns
+    assert stored.columns == ("site",)
+    assert stored.rows == (("Buenaventura",),)
+    # row_count is unaffected by column stripping
+    assert stored.row_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -298,12 +322,36 @@ def test_build_sql_tool_shows_found_count_on_count_star_nonzero(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _mock_agent_run(text: str = "Agent answer"):
-    """Return a FunctionAgent mock whose .run() returns an awaitable response."""
-    mock_response = MagicMock()
-    mock_response.__str__ = lambda self: text
+class _FakeHandler:
+    """Stand-in for LlamaIndex's WorkflowHandler — supports both the
+    stream_events() async-generator interface _run_agent consumes for
+    status transitions, and being awaited directly for the final result,
+    matching the real dual interface (see workflows.handler.WorkflowHandler).
+    """
+
+    def __init__(self, text: str, events: list | None = None):
+        self._text = text
+        self._events = events or []
+
+    async def stream_events(self):
+        for ev in self._events:
+            yield ev
+
+    def __await__(self):
+        text = self._text
+
+        async def _get():
+            mock_response = MagicMock()
+            mock_response.__str__ = lambda _self: text
+            return mock_response
+
+        return _get().__await__()
+
+
+def _mock_agent_run(text: str = "Agent answer", events: list | None = None):
+    """Return a FunctionAgent mock whose .run() returns a _FakeHandler."""
     mock_agent = MagicMock()
-    mock_agent.run.return_value = AsyncMock(return_value=mock_response)()
+    mock_agent.run.return_value = _FakeHandler(text, events)
     return mock_agent
 
 
@@ -381,3 +429,99 @@ def test_run_agent_builds_agent_with_max_iterations():
 
     from canopy.query.loop import MAX_ITERATIONS
     assert captured_kwargs["max_iterations"] == MAX_ITERATIONS
+
+
+# ---------------------------------------------------------------------------
+# _run_agent — stream_events()-driven status transitions (Step 3: closes the
+# silent gap between a ToolCall and the next status_cb call, and reports
+# when the agent moves from tool-calling into final-answer synthesis).
+# ---------------------------------------------------------------------------
+
+
+def _fake_tool_call():
+    ev = MagicMock()
+    ev.__class__.__name__ = "ToolCall"
+    return ev
+
+
+def _fake_agent_output(has_tool_calls: bool):
+    ev = MagicMock()
+    ev.__class__.__name__ = "AgentOutput"
+    ev.tool_calls = ["dummy"] if has_tool_calls else []
+    return ev
+
+
+def test_run_agent_no_retry_message_on_first_tool_call():
+    """A single, non-retried SQL call must not emit status_writing_sql_retry —
+    status_understanding (already fired) and status_searching_db (fired
+    separately by execute_sql itself) already cover the first attempt."""
+    state = _make_state()
+    calls: list[str] = []
+    events = [_fake_tool_call(), _fake_agent_output(has_tool_calls=False)]
+    with patch("canopy.query.loop.FunctionAgent") as mock_fa_cls, \
+         patch("canopy.query.loop.get_llm", return_value=MagicMock()):
+        mock_fa_cls.return_value = _mock_agent_run("done", events=events)
+        _run(_run_agent("q", lambda msg: calls.append(msg), state, "c", "m"))
+    assert not any("attempt" in c.lower() for c in calls)
+
+
+def test_run_agent_emits_retry_message_on_second_tool_call():
+    state = _make_state()
+    calls: list[str] = []
+    events = [
+        _fake_tool_call(),
+        _fake_tool_call(),
+        _fake_agent_output(has_tool_calls=False),
+    ]
+    with patch("canopy.query.loop.FunctionAgent") as mock_fa_cls, \
+         patch("canopy.query.loop.get_llm", return_value=MagicMock()):
+        mock_fa_cls.return_value = _mock_agent_run("done", events=events)
+        _run(_run_agent("q", lambda msg: calls.append(msg), state, "c", "m"))
+    assert t("status_writing_sql_retry", n=2) in calls
+
+
+def test_run_agent_emits_composing_answer_on_final_output():
+    state = _make_state()
+    calls: list[str] = []
+    events = [_fake_tool_call(), _fake_agent_output(has_tool_calls=False)]
+    with patch("canopy.query.loop.FunctionAgent") as mock_fa_cls, \
+         patch("canopy.query.loop.get_llm", return_value=MagicMock()):
+        mock_fa_cls.return_value = _mock_agent_run("done", events=events)
+        _run(_run_agent("q", lambda msg: calls.append(msg), state, "c", "m"))
+    assert t("status_composing_answer") in calls
+
+
+def test_run_agent_no_composing_answer_when_tool_calls_present():
+    """An AgentOutput that still has tool_calls (mid-loop, not final) must
+    not fire status_composing_answer — only the terminal, tool-call-free
+    output should."""
+    state = _make_state()
+    calls: list[str] = []
+    events = [_fake_tool_call(), _fake_agent_output(has_tool_calls=True)]
+    with patch("canopy.query.loop.FunctionAgent") as mock_fa_cls, \
+         patch("canopy.query.loop.get_llm", return_value=MagicMock()):
+        mock_fa_cls.return_value = _mock_agent_run("done", events=events)
+        _run(_run_agent("q", lambda msg: calls.append(msg), state, "c", "m"))
+    assert t("status_composing_answer") not in calls
+
+
+def test_run_agent_sets_iterations_from_tool_call_count():
+    state = _make_state()
+    events = [_fake_tool_call(), _fake_tool_call(), _fake_agent_output(has_tool_calls=False)]
+    with patch("canopy.query.loop.FunctionAgent") as mock_fa_cls, \
+         patch("canopy.query.loop.get_llm", return_value=MagicMock()):
+        mock_fa_cls.return_value = _mock_agent_run("done", events=events)
+        _run(_run_agent("q", None, state, "c", "m"))
+    assert state["iterations"] == 2
+
+
+def test_run_agent_no_status_cb_still_drains_events():
+    """status_cb=None must not prevent stream_events() from being consumed —
+    the loop should still run to completion and return the final text."""
+    state = _make_state()
+    events = [_fake_tool_call(), _fake_agent_output(has_tool_calls=False)]
+    with patch("canopy.query.loop.FunctionAgent") as mock_fa_cls, \
+         patch("canopy.query.loop.get_llm", return_value=MagicMock()):
+        mock_fa_cls.return_value = _mock_agent_run("final answer", events=events)
+        result = _run(_run_agent("q", None, state, "c", "m"))
+    assert result == "final answer"

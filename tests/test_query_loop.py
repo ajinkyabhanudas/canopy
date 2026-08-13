@@ -32,6 +32,7 @@ from canopy.query.loop import (
     _load_sensitive_columns,
     _parse_interpretation,
     _strip_leading_content_filter_fragment,
+    _strip_sensitive_columns,
     is_unsupported_language,
     run_query,
     strip_interpretation_block,
@@ -69,7 +70,7 @@ def _make_agent_mock(
     if query_result is None:
         query_result = QueryResult(columns=("n",), rows=((1,),), row_count=1)
 
-    async def _mock_run_agent(question, status_cb, state, conn_id, active_model):
+    async def _mock_run_agent(question, status_cb, state, conn_id, active_model, *_a):
         state["last_sql"] = sql
         state["last_query_result"] = query_result
         state["llm_times"] = [0.5]
@@ -105,7 +106,7 @@ def test_single_tool_call_round_trip(monkeypatch, mock_conn):
 
 def test_direct_text_response_no_sql(monkeypatch):
     """Agent declines to call the tool — no SQL executed."""
-    async def _no_sql_agent(question, status_cb, state, conn_id, active_model):
+    async def _no_sql_agent(question, status_cb, state, conn_id, active_model, *_a):
         # state left empty: no SQL, no query result
         if status_cb:
             status_cb(t("status_understanding"))
@@ -172,7 +173,7 @@ def test_fuzzy_matches_flow_from_state_to_result():
         label_key="species",
     )
 
-    async def _agent_with_fuzzy_hit(question, status_cb, state, conn_id, active_model):
+    async def _agent_with_fuzzy_hit(question, status_cb, state, conn_id, active_model, *_a):
         state["last_sql"] = "SELECT * FROM species WHERE scientific_name ILIKE '%Gralari%'"
         state["last_query_result"] = zero_row_result
         state["llm_times"] = [0.5]
@@ -205,7 +206,7 @@ def test_fuzzy_matches_multiple_columns_flow_through():
         label_key="site",
     )
 
-    async def _agent_with_two_fuzzy_hits(question, status_cb, state, conn_id, active_model):
+    async def _agent_with_two_fuzzy_hits(question, status_cb, state, conn_id, active_model, *_a):
         state["last_sql"] = (
             "SELECT * FROM species sp JOIN sites si ON sp.site_id = si.id "
             "WHERE sp.scientific_name ILIKE '%Gralari gigantae%' "
@@ -227,12 +228,20 @@ def test_fuzzy_matches_multiple_columns_flow_through():
 
 
 def test_format_result_strips_sensitive_columns():
+    """_strip_sensitive_columns() now happens in execute_sql's closure
+    (loop.py) before _format_result() is called — not inside
+    _format_result() itself, since the raw column shape is also needed by
+    is_empty_result/find_candidates/effective_count before stripping.
+    LoopResult.rows/.columns (the "Full data table" tab) are built from the
+    SAME stripped result, closing a prior gap where only the LLM-facing
+    text was filtered, not the UI table."""
     result = QueryResult(
         columns=("scientific_name", "site", "latitude", "longitude"),
         rows=(("Grallaria gigantea", "Buenaventura", -1.23, -78.45),),
         row_count=1,
     )
-    text = _format_result(result)
+    stripped = _strip_sensitive_columns(result)
+    text = _format_result(stripped)
     assert "latitude" not in text
     assert "longitude" not in text
     assert "-1.23" not in text
@@ -273,7 +282,8 @@ def test_sensitive_columns_env_override(monkeypatch):
 
 
 def test_sensitive_columns_env_override_end_to_end(monkeypatch):
-    """When env var strips secret_col but not lat/lon, format_result reflects this."""
+    """When env var strips secret_col but not lat/lon, the stripped result
+    (and format_result on it) reflects this."""
     import canopy.query.loop as loop_mod
 
     monkeypatch.setenv("CANOPY_SENSITIVE_COLUMNS", "secret_col")
@@ -284,7 +294,8 @@ def test_sensitive_columns_env_override_end_to_end(monkeypatch):
         rows=(("Grallaria gigantea", -1.23, "TOP_SECRET"),),
         row_count=1,
     )
-    text = _format_result(result)
+    stripped = _strip_sensitive_columns(result)
+    text = _format_result(stripped)
     assert "secret_col" not in text
     assert "TOP_SECRET" not in text
     assert "latitude" in text
