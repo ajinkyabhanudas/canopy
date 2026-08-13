@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import canopy.ui.app as ui_mod
-from canopy.i18n import t
+from canopy.i18n import get_lang, set_locale, t
 from canopy.query.executor import SQLGuardError
 from canopy.query.loop import Interpretation, LoopResult, UnsupportedLanguageError
 
@@ -78,13 +78,101 @@ def test_empty_result_passes_session_history_through():
 
 
 def test_handler_first_yield_is_loading(monkeypatch):
-    """User should see loading state immediately before any model call."""
-    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: _make_result())
+    """User should see loading state immediately before any model call.
+    The step-log text lives in response_box; status_md is the generic
+    "Working · Ns" ticker (see test_status_bar_never_duplicates_the_
+    current_step_text for why these are deliberately different)."""
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None, **_kw: _make_result())
     first, *_ = _all_yields("How many detections?")
     assert len(first) == 30
     _, _, response, _, _, _, status_md, state, *_ = first
     assert t("status_reading") in response
-    assert t("status_reading") in status_md
+    assert t("status_bar_working") in status_md
+
+
+# ---------------------------------------------------------------------------
+# _loading_status_html — elapsed-time ticker (Step 2 of the perceived-
+# latency plan). Deliberately shows only a generic "Working · Ns" label,
+# not the current step text — that lives in response_box's step-log
+# instead (_step_log_markdown), to avoid showing the same status in two
+# places at once (caught in review: the top bar and the answer panel were
+# both echoing "Found N detections" simultaneously).
+# ---------------------------------------------------------------------------
+
+
+def test_loading_status_html_contains_working_label():
+    html = ui_mod._loading_status_html(is_first=True)
+    assert t("status_bar_working") in html
+
+
+def test_loading_status_html_first_yield_has_reset_marker():
+    html = ui_mod._loading_status_html(is_first=True)
+    assert 'data-first="1"' in html
+
+
+def test_loading_status_html_later_yield_has_no_reset_marker():
+    html = ui_mod._loading_status_html(is_first=False)
+    assert 'data-first="1"' not in html
+
+
+def test_loading_status_html_contains_no_script_tag():
+    """Gradio's gr.Markdown routes content through a markdown-to-HTML parser
+    even with sanitize_html=False, which mangles inline <script> content
+    into inert text instead of executing it (confirmed live) — the ticker
+    must be a static marker only, never an inline script here."""
+    html = ui_mod._loading_status_html(is_first=False)
+    assert "<script>" not in html
+    assert 'data-canopy-loading="1"' in html
+    assert "canopy-status-elapsed" in html
+
+
+def test_status_ticker_head_script_targets_status_elements():
+    """The actual ticker lives in the page-level head script (loaded once
+    via Blocks.launch(head=...)), not per-yield — confirm it references the
+    marker/target elements _loading_status_html emits."""
+    script = ui_mod.STATUS_TICKER_HEAD_SCRIPT
+    assert "<script>" in script
+    assert "canopy-status" in script
+    assert "data-canopy-loading" in script
+    assert "MutationObserver" in script
+
+
+def test_status_yield_first_call_marks_is_first(monkeypatch):
+    """The handler's very first yield must carry the reset marker —
+    otherwise a second query in the same session would inherit the first
+    query's elapsed-time start and show an inflated counter."""
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None, **_kw: _make_result())
+    first, *_ = _all_yields("How many detections?")
+    status_md = first[6]
+    assert 'data-first="1"' in status_md
+
+
+def test_status_bar_never_duplicates_the_current_step_text(monkeypatch):
+    """Regression test: status_md (top bar) and response_box (step log)
+    must not both show the same status string. Caught in review — the top
+    bar used to echo the exact current step (e.g. "Found 5 detections")
+    that response_box's step log already showed, one line lower."""
+    result = _make_result()
+
+    def _emit_status(q, status_cb=None, **_kw):
+        if status_cb:
+            status_cb("Searching the monitoring database…")
+        return result
+
+    monkeypatch.setattr(ui_mod, "run_query", _emit_status)
+    yields = _all_yields("How many species?")
+    for y in yields[:-1]:  # exclude the final success yield
+        status_md = y[6]
+        assert t("status_bar_working") in status_md
+        assert "Searching the monitoring database…" not in status_md
+
+
+def test_empty_result_status_is_not_wrapped_in_loading_html():
+    """Terminal/error states use the plain status string — they are not
+    "in progress," so they must not carry the loading ticker/pulse."""
+    _, _, _, _, _, _, status, *_ = ui_mod._empty_result("msg", [], status="⚠ Some error")
+    assert status == "⚠ Some error"
+    assert "<script>" not in status
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +190,7 @@ def test_handler_empty_question(monkeypatch):
 
 
 def test_handler_valid_question(monkeypatch):
-    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: _make_result())
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None, **_kw: _make_result())
     sql, df, response, count_md, radio, timing, status, state, *_ = _run("How many detections?")
     assert sql.startswith("SELECT COUNT(*) FROM detections")
     assert response == "There are 5 detections."
@@ -111,7 +199,7 @@ def test_handler_valid_question(monkeypatch):
 
 
 def test_handler_timing_line(monkeypatch):
-    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: _make_result())
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None, **_kw: _make_result())
     sql, _, _, _, _, timing, _, _, *_ = _run("q")
     assert t("timing_live", total=1.0)[:14] in timing
     # dev metrics moved to sql comment
@@ -121,7 +209,7 @@ def test_handler_timing_line(monkeypatch):
 
 def test_handler_singular_row_count(monkeypatch):
     monkeypatch.setattr(
-        ui_mod, "run_query", lambda q, status_cb=None: _make_result(row_count=1, rows=[(1,)])
+        ui_mod, "run_query", lambda q, status_cb=None, **_kw: _make_result(row_count=1, rows=[(1,)])
     )
     _, _, _, count_md, _, _, _, _, *_ = _run("q")
     assert t("count_row_singular", n=1) in count_md
@@ -132,7 +220,7 @@ def test_handler_plural_row_count(monkeypatch):
     monkeypatch.setattr(
         ui_mod,
         "run_query",
-        lambda q, status_cb=None: _make_result(row_count=3, rows=[(1,), (2,), (3,)]),
+        lambda q, status_cb=None, **_kw: _make_result(row_count=3, rows=[(1,), (2,), (3,)]),
     )
     _, _, _, count_md, _, _, _, _, *_ = _run("q")
     assert t("count_row_plural", n=3) in count_md
@@ -140,7 +228,7 @@ def test_handler_plural_row_count(monkeypatch):
 
 def test_handler_rows_converted_to_lists(monkeypatch):
     result = _make_result(rows=[(1, "a"), (2, "b")], columns=["id", "name"], row_count=2)
-    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: result)
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None, **_kw: result)
     _, df, _, _, _, _, _, _, *_ = _run("q")
     import gradio as gr
     assert isinstance(df, gr.Dataframe)
@@ -150,7 +238,7 @@ def test_handler_null_sql(monkeypatch):
     monkeypatch.setattr(
         ui_mod,
         "run_query",
-        lambda q, status_cb=None: _make_result(sql=None, rows=[], row_count=0),
+        lambda q, status_cb=None, **_kw: _make_result(sql=None, rows=[], row_count=0),
     )
     sql, _, _, _, _, _, _, _, *_ = _run("q")
     assert sql == ""
@@ -175,7 +263,7 @@ def test_handler_shows_suggestions_on_fuzzy_match(monkeypatch):
         label_key="species",
     )
     result = _make_result(sql="...", rows=[], row_count=0, fuzzy_matches=(match,))
-    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: result)
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None, **_kw: result)
 
     (*_, g1_prompt, g1_b1, g1_b2, g1_b3, g1_q1, g1_q2, g1_q3,
      g2_prompt, g2_b1, g2_b2, g2_b3, g2_q1, g2_q2, g2_q3,
@@ -214,7 +302,7 @@ def test_handler_fuzzy_match_falls_back_to_candidate_when_literal_not_in_questio
         literal="Gralari gigantae", candidates=("Grallaria gigantea",), label_key="species"
     )
     result = _make_result(sql="...", rows=[], row_count=0, fuzzy_matches=(match,))
-    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: result)
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None, **_kw: result)
 
     (*_, _g1_prompt, _g1_b1, _g1_b2, _g1_b3, g1_q1, _g1_q2, _g1_q3,
      _g2_prompt, _g2_b1, _g2_b2, _g2_b3, _g2_q1, _g2_q2, _g2_q3,
@@ -240,7 +328,7 @@ def test_handler_shows_suggestions_for_two_simultaneous_typos(monkeypatch):
     result = _make_result(
         sql="...", rows=[], row_count=0, fuzzy_matches=(species_match, site_match)
     )
-    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: result)
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None, **_kw: result)
 
     (*_, g1_prompt, g1_b1, _g1_b2, _g1_b3, g1_q1, _g1_q2, _g1_q3,
      g2_prompt, g2_b1, _g2_b2, _g2_b3, g2_q1, _g2_q2, _g2_q3,
@@ -280,7 +368,7 @@ def test_handler_shows_suggestions_for_three_simultaneous_typos(monkeypatch):
     result = _make_result(
         sql="...", rows=[], row_count=0, fuzzy_matches=(species_match, site_match, mu_match)
     )
-    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: result)
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None, **_kw: result)
 
     (*_, g1_prompt, g1_b1, _g1_b2, _g1_b3, g1_q1, _g1_q2, _g1_q3,
      g2_prompt, g2_b1, _g2_b2, _g2_b3, g2_q1, _g2_q2, _g2_q3,
@@ -307,10 +395,12 @@ def test_handler_shows_suggestions_for_three_simultaneous_typos(monkeypatch):
 
 
 def test_handler_no_suggestions_on_normal_success(monkeypatch):
-    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: _make_result())
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None, **_kw: _make_result())
     (*_, g1_prompt, g1_b1, g1_b2, g1_b3, g1_q1, g1_q2, g1_q3,
      g2_prompt, g2_b1, g2_b2, g2_b3, g2_q1, g2_q2, g2_q3,
-     g3_prompt, g3_b1, g3_b2, g3_b3, g3_q1, g3_q2, g3_q3) = _run("How many detections?")
+     g3_prompt, g3_b1, g3_b2, g3_b3, g3_q1, g3_q2, g3_q3) = _run(
+        "How many detections?"
+    )
     for prompt, b1, b2, b3, q1, q2, q3 in (
         (g1_prompt, g1_b1, g1_b2, g1_b3, g1_q1, g1_q2, g1_q3),
         (g2_prompt, g2_b1, g2_b2, g2_b3, g2_q1, g2_q2, g2_q3),
@@ -326,7 +416,7 @@ def test_handler_no_suggestions_on_normal_success(monkeypatch):
 def test_handler_no_suggestions_on_zero_rows_without_fuzzy_match(monkeypatch):
     """0 rows with no fuzzy_matches set (find_candidates found nothing) shows no suggestions."""
     monkeypatch.setattr(
-        ui_mod, "run_query", lambda q, status_cb=None: _make_result(rows=[], row_count=0)
+        ui_mod, "run_query", lambda q, status_cb=None, **_kw: _make_result(rows=[], row_count=0)
     )
     (*_, g1_prompt, g1_b1, _g1_b2, _g1_b3, _g1_q1, _g1_q2, _g1_q3,
      _g2_prompt, _g2_b1, _g2_b2, _g2_b3, _g2_q1, _g2_q2, _g2_q3,
@@ -339,7 +429,9 @@ def test_clear_handler_hides_suggestions(monkeypatch):
     monkeypatch.setattr(ui_mod, "clear_history", lambda: None)
     (*_, g1_prompt, g1_b1, g1_b2, g1_b3, g1_q1, g1_q2, g1_q3,
      g2_prompt, g2_b1, g2_b2, g2_b3, g2_q1, g2_q2, g2_q3,
-     g3_prompt, g3_b1, g3_b2, g3_b3, g3_q1, g3_q2, g3_q3) = ui_mod._clear_handler("q")
+     g3_prompt, g3_b1, g3_b2, g3_b3, g3_q1, g3_q2, g3_q3) = (
+        ui_mod._clear_handler("q")
+    )
     assert g1_prompt["visible"] is False
     assert g1_b1["visible"] is False
     assert g1_q1 is None
@@ -356,7 +448,7 @@ def test_clear_handler_hides_suggestions(monkeypatch):
 
 def test_handler_appends_question_to_session_history(monkeypatch):
     """Successful query prepends the question to session history."""
-    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: _make_result())
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None, **_kw: _make_result())
     _, _, _, _, radio, _, _, new_state, *_ = _run("new question")
     import gradio as gr
     assert isinstance(radio, gr.Radio)
@@ -365,14 +457,14 @@ def test_handler_appends_question_to_session_history(monkeypatch):
 
 def test_handler_prepends_to_existing_history(monkeypatch):
     """New question goes to the front; previous entries are preserved."""
-    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: _make_result())
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None, **_kw: _make_result())
     _, _, _, _, _, _, _, new_state, *_ = _run("new question", session_history=["old question"])
     assert new_state == ["new question", "old question"]
 
 
 def test_handler_caps_history_at_20(monkeypatch):
     """History is capped at 20 entries — oldest entries are dropped."""
-    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: _make_result())
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None, **_kw: _make_result())
     initial = [f"q{i}" for i in range(20)]
     _, _, _, _, _, _, _, new_state, *_ = _run("new question", session_history=initial)
     assert len(new_state) == 20
@@ -382,7 +474,7 @@ def test_handler_caps_history_at_20(monkeypatch):
 
 def test_handler_deduplicates_repeated_question(monkeypatch):
     """Re-running a question moves it to the top instead of adding a duplicate."""
-    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: _make_result())
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None, **_kw: _make_result())
     initial = ["repeated q", "other q"]
     _, _, _, _, _, _, _, new_state, *_ = _run("repeated q", session_history=initial)
     assert new_state.count("repeated q") == 1
@@ -395,7 +487,7 @@ def test_handler_drops_superseded_question_from_history(monkeypatch):
     must drop the original mistyped one from history — not leave it sitting
     alongside the correction as a dead-end entry that hits the same 0-row
     result if clicked again."""
-    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: _make_result())
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None, **_kw: _make_result())
     initial = ["How many detections of Gralari gigantae are there?", "other q"]
     _, _, _, _, _, _, _, new_state, *_ = _run(
         "How many detections of Grallaria gigantea are there?",
@@ -410,7 +502,7 @@ def test_handler_drops_superseded_question_from_history(monkeypatch):
 def test_handler_superseded_question_none_is_a_no_op(monkeypatch):
     """A normal (non-suggestion-click) run passes no superseded_question and
     must not accidentally drop anything from history."""
-    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: _make_result())
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None, **_kw: _make_result())
     initial = ["existing q"]
     _, _, _, _, _, _, _, new_state, *_ = _run("new question", session_history=initial)
     assert "existing q" in new_state
@@ -423,7 +515,7 @@ def test_handler_superseded_question_none_is_a_no_op(monkeypatch):
 
 
 def test_handler_run_query_raises(monkeypatch):
-    def _boom(q, status_cb=None):
+    def _boom(q, status_cb=None, **_kw):
         raise RuntimeError("DB is down")
 
     monkeypatch.setattr(ui_mod, "run_query", _boom)
@@ -441,7 +533,7 @@ def test_handler_sql_guard_error_shows_sql(monkeypatch):
     """SQLGuardError: rejected SQL in sql_box; operation named in response; no internals exposed."""
     bad_sql = "DROP TABLE species"
 
-    def _guard_fail(q, status_cb=None):
+    def _guard_fail(q, status_cb=None, **_kw):
         raise SQLGuardError("Only SELECT queries are permitted", sql=bad_sql)
 
     monkeypatch.setattr(ui_mod, "run_query", _guard_fail)
@@ -460,7 +552,7 @@ def test_handler_guard_names_delete_operation(monkeypatch):
     """DELETE generates a message that names DELETE specifically."""
     bad_sql = "DELETE FROM detections WHERE id = 1"
 
-    def _guard_fail(q, status_cb=None):
+    def _guard_fail(q, status_cb=None, **_kw):
         raise SQLGuardError("Only SELECT queries are permitted", sql=bad_sql)
 
     monkeypatch.setattr(ui_mod, "run_query", _guard_fail)
@@ -473,7 +565,7 @@ def test_handler_statement_timeout_gives_actionable_message(monkeypatch):
     """psycopg2 QueryCanceled (statement_timeout) → specific timeout message."""
     import psycopg2.errors
 
-    def _timeout(q, status_cb=None):
+    def _timeout(q, status_cb=None, **_kw):
         raise psycopg2.errors.QueryCanceled("canceling statement due to statement timeout")
 
     monkeypatch.setattr(ui_mod, "run_query", _timeout)
@@ -491,7 +583,7 @@ def test_handler_catches_unsupported_language_error_from_run_query(monkeypatch):
     uncovered because it's normally unreachable through the UI's own
     pre-check on a real (non-mocked) run_query."""
 
-    def _raise_unsupported_language(q, status_cb=None):
+    def _raise_unsupported_language(q, status_cb=None, **_kw):
         raise UnsupportedLanguageError("Canopy only supports questions in English or Spanish.")
 
     monkeypatch.setattr(ui_mod, "run_query", _raise_unsupported_language)
@@ -504,7 +596,7 @@ def test_handler_db_connection_error_message(monkeypatch):
     """psycopg2 OperationalError (connection lost) → specific connection message."""
     import psycopg2
 
-    def _conn_fail(q, status_cb=None):
+    def _conn_fail(q, status_cb=None, **_kw):
         raise psycopg2.OperationalError("could not connect to server")
 
     monkeypatch.setattr(ui_mod, "run_query", _conn_fail)
@@ -517,7 +609,7 @@ def test_handler_db_connection_error_message(monkeypatch):
 def test_handler_loop_exhausted_message(monkeypatch):
     """RuntimeError from MAX_ITERATIONS → specific complexity message."""
 
-    def _exhaust(q, status_cb=None):
+    def _exhaust(q, status_cb=None, **_kw):
         raise RuntimeError("Query loop exceeded maximum iterations")
 
     monkeypatch.setattr(ui_mod, "run_query", _exhaust)
@@ -538,7 +630,7 @@ def test_handler_cache_hit_shows_cached_status(monkeypatch):
         timing={"cache_hit": True, "cached_at": "2026-06-26T10:00:00+00:00"}
     )
 
-    def _return_cached(q, status_cb=None):
+    def _return_cached(q, status_cb=None, **_kw):
         if status_cb:
             status_cb("CACHE_HIT")
         return cached_result
@@ -546,9 +638,11 @@ def test_handler_cache_hit_shows_cached_status(monkeypatch):
     monkeypatch.setattr(ui_mod, "run_query", _return_cached)
 
     yields = _all_yields("How many detections?")
-    # One of the intermediate yields should mention cache
-    statuses = [y[6] for y in yields]
-    assert any("previous" in s.lower() or "cache" in s.lower() for s in statuses)
+    # One of the intermediate yields' step log (response_box) should
+    # mention cache — status_md is the generic "Working" ticker, not a
+    # copy of the current step (see the no-duplication regression test).
+    responses = [y[2] for y in yields]
+    assert any("previous" in r.lower() or "cache" in r.lower() for r in responses)
 
     # Final yield timing_md should show cached indicator
     final = yields[-1]
@@ -567,7 +661,7 @@ def test_handler_rejects_unsupported_language_before_calling_run_query(monkeypat
     """UI gate must reject non-EN/ES input without ever calling run_query()."""
     called = False
 
-    def _should_not_be_called(q, status_cb=None):
+    def _should_not_be_called(q, status_cb=None, **_kw):
         nonlocal called
         called = True
         return _make_result()
@@ -586,7 +680,7 @@ def test_handler_unsupported_language_rejected(monkeypatch):
     monkeypatch.setattr(
         ui_mod,
         "run_query",
-        lambda q, status_cb=None: spy_calls.append(q) or _make_result(),
+        lambda q, status_cb=None, **_kw: spy_calls.append(q) or _make_result(),
     )
     sql, df, response, count_md, radio, timing, status, state, *_ = _run(
         "Combien d'espèces ont été détectées en 2023?"
@@ -622,33 +716,278 @@ def test_clear_handler_empties_question(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Streaming INTENT: message branch (lines 168-179)
+# Step-log narration — response_box accumulates every real status_cb()
+# message as a running log (replaces the old static "I understood: {intent}
+# ... Searching the database..." text, which could contradict the status
+# bar once it had moved on to a later phase). No special INTENT: parsing
+# exists — loop.py never sends that prefix; any status string, whatever
+# its content, becomes one line in the log.
 # ---------------------------------------------------------------------------
 
 
-def test_handler_yields_intent_status_message(monkeypatch):
-    """When run_query sends INTENT: message, a status with the intent text is yielded."""
-
+def test_handler_step_log_includes_every_status_message(monkeypatch):
     result = _make_result()
 
-    def _emit_intent(q, status_cb=None):
+    def _emit_status(q, status_cb=None, **_kw):
         if status_cb:
-            status_cb("INTENT:Looking for species counts")
+            status_cb("Looking for species counts")
         return result
 
-    monkeypatch.setattr(ui_mod, "run_query", _emit_intent)
+    monkeypatch.setattr(ui_mod, "run_query", _emit_status)
     yields = _all_yields("How many species?")
 
-    # One of the intermediate yields should contain the intent text
     responses = [y[2] for y in yields]
     assert any("Looking for species counts" in r for r in responses)
 
 
-def test_handler_yields_other_status_messages(monkeypatch):
-    """Non-CACHE_HIT, non-INTENT status messages are passed through as status text."""
+# ---------------------------------------------------------------------------
+# Progressive result disclosure — rows reach the UI before the narrative
+# ---------------------------------------------------------------------------
+
+
+def _preview_qr():
+    from canopy.query.executor import QueryResult
+
+    return QueryResult(
+        columns=("site", "n"), rows=(("Tapichalaca", 14), ("Yanacocha", 9)), row_count=2
+    )
+
+
+def _run_with_preview(monkeypatch, *, retry=False):
+    """Drive the handler through a run where execute_sql reports its result early."""
+    qr = _preview_qr()
+    sql = "SELECT site, count(*) n FROM detections GROUP BY site"
+    result = _make_result(row_count=2, rows=list(qr.rows), columns=list(qr.columns), sql=sql)
+
+    def _emit(q, status_cb=None, result_cb=None, **_kw):
+        status_cb(t("status_understanding"))
+        if retry:
+            # First attempt returns nothing, model corrects itself.
+            from canopy.query.executor import QueryResult
+
+            result_cb(QueryResult(columns=("n",), rows=(), row_count=0), "SELECT 1")
+            status_cb(t("status_refining"))
+        result_cb(qr, sql)
+        status_cb(t("found_detections_plural", n=2))
+        return result
+
+    monkeypatch.setattr(ui_mod, "run_query", _emit)
+    return _all_yields("Which sites had the most detections?")
+
+
+def _table_rows(y):
+    value = getattr(y[1], "value", None)
+    if not value:
+        return []
+    return value.get("data") or []
+
+
+def test_handler_shows_rows_before_final_yield(monkeypatch):
+    """The whole point: real rows render while the model is still writing."""
+    yields = _run_with_preview(monkeypatch)
+    early = [i for i, y in enumerate(yields[:-1]) if _table_rows(y)]
+    assert early, "table was still empty on every yield before the final one"
+    assert _table_rows(yields[early[0]]) == [["Tapichalaca", 14], ["Yanacocha", 9]]
+
+
+def test_handler_shows_sql_before_final_yield(monkeypatch):
+    """The generated SQL is disclosed alongside the rows, not held back."""
+    yields = _run_with_preview(monkeypatch)
+    assert any(y[0] for y in yields[:-1]), "SQL box empty on every pre-final yield"
+
+
+def test_handler_preview_persists_across_later_status_updates(monkeypatch):
+    """Gradio tuples are fixed-shape — a later status tick must not blank the table."""
+    yields = _run_with_preview(monkeypatch)
+    first = next(i for i, y in enumerate(yields) if _table_rows(y))
+    assert all(_table_rows(y) for y in yields[first:]), (
+        "a status update after the preview cleared the table"
+    )
+
+
+def test_handler_retry_supersedes_earlier_preview(monkeypatch):
+    """A corrected query replaces the previous table rather than appending to it."""
+    yields = _run_with_preview(monkeypatch, retry=True)
+    assert _table_rows(yields[-1]) == [["Tapichalaca", 14], ["Yanacocha", 9]]
+    # The superseded 0-row attempt must never leave stale rows behind.
+    assert all(
+        rows in ([], [["Tapichalaca", 14], ["Yanacocha", 9]])
+        for rows in (_table_rows(y) for y in yields)
+    )
+
+
+def test_handler_no_preview_when_result_cb_never_fires(monkeypatch):
+    """Cache hits skip execute_sql — the table stays empty until the final yield."""
     result = _make_result()
 
-    def _emit_status(q, status_cb=None):
+    def _emit(q, status_cb=None, result_cb=None, **_kw):
+        status_cb("CACHE_HIT")
+        return result
+
+    monkeypatch.setattr(ui_mod, "run_query", _emit)
+    yields = _all_yields("cached question")
+    assert not any(_table_rows(y) for y in yields[:-1])
+
+
+def test_step_log_markdown_mutes_completed_steps_and_bolds_current():
+    md = ui_mod._step_log_markdown([("other", "Step one"), ("other", "Step two")])
+    assert "~~Step one~~" in md
+    assert "**Step two**" in md
+    assert "~~Step two~~" not in md
+
+
+def test_step_log_markdown_empty_list_returns_empty_string():
+    assert ui_mod._step_log_markdown([]) == ""
+
+
+def test_handler_step_log_does_not_duplicate_consecutive_identical_messages(monkeypatch):
+    """A message repeated back-to-back (e.g. the same phase reported twice)
+    must not create two identical lines in the log."""
+    result = _make_result()
+
+    def _emit_repeated(q, status_cb=None, **_kw):
+        if status_cb:
+            status_cb("Searching the monitoring database…")
+            status_cb("Searching the monitoring database…")
+        return result
+
+    monkeypatch.setattr(ui_mod, "run_query", _emit_repeated)
+    yields = _all_yields("How many species?")
+    # Last intermediate yield (before the final success yield replaces
+    # response_box with the real answer) holds the fullest step log.
+    last_intermediate_response = yields[-2][2]
+    assert last_intermediate_response.count("Searching the monitoring database…") <= 1
+
+
+def test_handler_step_log_drops_superseded_result_on_retry(monkeypatch):
+    """Regression test: a "Found N" line immediately followed by a retry
+    announcement must be removed from the log, not left visible — two
+    "Found N" lines back-to-back (or the same count appearing twice with
+    nothing explaining why) reads as a duplicate/confusing result rather
+    than one search correcting itself."""
+    result = _make_result()
+
+    def _emit_retry_sequence(q, status_cb=None, **_kw):
+        if status_cb:
+            status_cb(t("status_searching_db"))
+            status_cb(t("found_detections_plural", n=14))
+            status_cb(t("status_searching_db"))
+            status_cb(t("status_writing_sql_retry", n=2))
+            status_cb(t("status_searching_db"))
+            status_cb(t("found_detections_plural_retry", n=637))
+        return result
+
+    monkeypatch.setattr(ui_mod, "run_query", _emit_retry_sequence)
+    yields = _all_yields("How many species?")
+    last_intermediate_response = yields[-2][2]
+    # The superseded "Found 14 detections" line must be gone by the time
+    # the retry lands — only the final, current-attempt count remains.
+    assert t("found_detections_plural", n=14) not in last_intermediate_response
+    assert t("found_detections_plural_retry", n=637) in last_intermediate_response
+
+
+def test_handler_step_log_collapses_adjacent_duplicates_after_drop(monkeypatch):
+    """Regression test (caught live in review): attempt 2's own "Searching
+    the monitoring database..." can arrive BEFORE its own retry
+    announcement (execute_sql's status_cb and the agent's ToolCall stream
+    handler run on different code paths with no fixed ordering) — so the
+    sequence is Searching -> Found 14 -> Searching -> Trying again. Once
+    "Found 14" is dropped as superseded, the two "Searching..." lines
+    become adjacent and must collapse into one, not render as two
+    identical lines back-to-back."""
+    result = _make_result()
+
+    def _emit_out_of_order_retry(q, status_cb=None, **_kw):
+        if status_cb:
+            status_cb(t("status_searching_db"))
+            status_cb(t("found_detections_plural", n=14))
+            status_cb(t("status_searching_db"))  # attempt 2's own search
+            status_cb(t("status_writing_sql_retry", n=2))  # arrives after
+            status_cb(t("found_detections_plural_retry", n=637))
+        return result
+
+    monkeypatch.setattr(ui_mod, "run_query", _emit_out_of_order_retry)
+    yields = _all_yields("How many species?")
+    last_intermediate_response = yields[-2][2]
+    assert last_intermediate_response.count(t("status_searching_db")) <= 1
+
+
+def test_classify_step_tags_retry_message():
+    msg = t("status_writing_sql_retry", n=3)
+    assert ui_mod._classify_step(msg) == ui_mod._StepKind.RETRY
+    assert ui_mod._classify_step(t("status_searching_db")) == ui_mod._StepKind.SEARCHING
+
+
+def test_classify_step_tags_found_and_refining_as_result():
+    assert ui_mod._classify_step(t("found_detections_singular", n=1)) == ui_mod._StepKind.RESULT
+    assert ui_mod._classify_step(t("found_detections_plural", n=99)) == ui_mod._StepKind.RESULT
+    assert ui_mod._classify_step(t("status_refining")) == ui_mod._StepKind.RESULT
+    assert ui_mod._classify_step(t("status_searching_db")) != ui_mod._StepKind.RESULT
+    assert ui_mod._classify_step(t("status_writing_sql_retry", n=2)) != ui_mod._StepKind.RESULT
+
+
+def test_classify_step_tags_unrelated_text_as_other():
+    assert ui_mod._classify_step("some arbitrary message") == ui_mod._StepKind.OTHER
+
+
+def test_classify_step_correct_under_spanish_locale():
+    """_classify_step's docstring claims it "stays correct under
+    CANOPY_UI_LANG=es" — this was verified by hand mid-session but never
+    captured as a permanent test (code-review finding). A future edit to
+    es.py's wording could silently break Spanish users' step-log dedup
+    with nothing else catching it."""
+    original_lang = get_lang()
+    try:
+        set_locale("es")
+        assert ui_mod._classify_step(t("status_searching_db")) == ui_mod._StepKind.SEARCHING
+        assert ui_mod._classify_step(t("status_refining")) == ui_mod._StepKind.RESULT
+        assert (
+            ui_mod._classify_step(t("found_detections_singular", n=1))
+            == ui_mod._StepKind.RESULT
+        )
+        assert (
+            ui_mod._classify_step(t("found_detections_plural", n=42))
+            == ui_mod._StepKind.RESULT
+        )
+        assert (
+            ui_mod._classify_step(t("found_detections_plural_retry", n=42))
+            == ui_mod._StepKind.RESULT
+        )
+        assert (
+            ui_mod._classify_step(t("status_writing_sql_retry", n=2))
+            == ui_mod._StepKind.RETRY
+        )
+    finally:
+        set_locale(original_lang)
+
+
+def test_append_step_deduplicates_consecutive_identical_entries():
+    steps: list[tuple[str, str]] = []
+    ui_mod._append_step(steps, t("status_searching_db"))
+    ui_mod._append_step(steps, t("status_searching_db"))
+    assert steps.count((ui_mod._StepKind.SEARCHING, t("status_searching_db"))) == 1
+
+
+def test_append_step_stops_backward_scan_at_earlier_retry():
+    """A retry announcement must only drop the RESULT belonging to the
+    attempt it directly follows — not reach back across an earlier
+    attempt's already-cleaned retry boundary."""
+    steps: list[tuple[str, str]] = []
+    ui_mod._append_step(steps, t("found_detections_plural", n=1))  # attempt 1 result
+    ui_mod._append_step(steps, t("status_writing_sql_retry", n=2))  # clears attempt 1's result
+    ui_mod._append_step(steps, t("found_detections_plural", n=2))  # attempt 2 result
+    ui_mod._append_step(steps, t("status_writing_sql_retry", n=3))  # clears attempt 2's result only
+    kinds = [k for k, _ in steps]
+    assert kinds.count(ui_mod._StepKind.RESULT) == 0
+    assert kinds.count(ui_mod._StepKind.RETRY) == 2
+
+
+def test_handler_yields_other_status_messages(monkeypatch):
+    """Arbitrary status_cb() messages appear in response_box's step log —
+    status_md (top bar) intentionally stays the generic "Working" ticker."""
+    result = _make_result()
+
+    def _emit_status(q, status_cb=None, **_kw):
         if status_cb:
             status_cb("Querying the database...")
         return result
@@ -656,8 +995,8 @@ def test_handler_yields_other_status_messages(monkeypatch):
     monkeypatch.setattr(ui_mod, "run_query", _emit_status)
     yields = _all_yields("How many species?")
 
-    statuses = [y[6] for y in yields]
-    assert any("Querying" in s for s in statuses)
+    responses = [y[2] for y in yields]
+    assert any("Querying" in r for r in responses)
 
 
 # ---------------------------------------------------------------------------
@@ -675,7 +1014,7 @@ def test_handler_timing_shows_conn_slash_model_when_different(monkeypatch):
             "model": "gpt-4o-mini",
         }
     )
-    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: result)
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None, **_kw: result)
 
     _, _, _, _, _, timing_md, _, _, *_ = _run("q")
     assert "my-azure-conn/gpt-4o-mini" in timing_md
@@ -691,7 +1030,7 @@ def test_handler_timing_shows_conn_only_when_same(monkeypatch):
             "model": "gpt-4o",
         }
     )
-    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: result)
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None, **_kw: result)
 
     _, _, _, _, _, timing_md, _, _, *_ = _run("q")
     assert "· gpt-4o" in timing_md
@@ -764,7 +1103,7 @@ def test_handler_response_box_uses_rendered_interpretation(monkeypatch):
         data_source="detections · approved only", gaps=(), research_questions=()
     )
     result = _make_result(model_text=model_text, interpretation=interp)
-    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None: result)
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None, **_kw: result)
 
     _, _, response, *_ = _run("q")
     assert "DATA SOURCE:" not in response
