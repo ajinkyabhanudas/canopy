@@ -30,7 +30,7 @@
 |---|---|---|---|
 | S1 | Architecture boundary | Model generates SQL; PostgreSQL executes it | ✅ Sound |
 | S2 | Mutation prevention | Dual-layer: regex guard + read-only session | ✅ Sound |
-| S3 | Coordinate privacy | Lat/lon stripped before model sees results | ✅ Sound |
+| S3 | Coordinate privacy | Lat/lon stripped from model context *and* (since 2026-08-13) the UI table | ✅ Sound |
 | S4 | Validation-status default | Always filter `approved` in system prompt | ⚠️ Caveat |
 | S5 | Language policy gate | App-layer gate + model instruction fallback | ⚠️ Caveat |
 | S6 | User data guardrail | Hard constraint in schema + adversarial eval | ✅ Sound |
@@ -67,6 +67,7 @@
 | # | Decision | Chosen approach | Verdict |
 |---|---|---|---|
 | U1 | UI framework | Gradio Blocks | 🔄 Revisit |
+| U2 | Fuzzy-match suggestion clicks | Full agent re-run; SQL-substitution fast path built then removed (answers the wrong question) | ✅ Sound |
 
 ### 🤖 Model Selection
 
@@ -147,16 +148,21 @@
 
 ### S3 — Coordinate privacy
 
-> **Files:** `src/canopy/query/loop.py` — `_SENSITIVE_COLUMNS`, `_format_result()`
+> **Files:** `src/canopy/query/loop.py` — `_SENSITIVE_COLUMNS`, `_strip_sensitive_columns()`, `_format_result()`
 
-**Decision:** `latitude` and `longitude` are removed from query results before they are formatted into the model's context, even if the generated SQL explicitly requests them. The user-facing Results tab still shows full data (including coordinates), which is appropriate — the human researcher already has authorised access to this information.
+**Decision:** `latitude` and `longitude` are removed from query results before they are formatted into the model's context, even if the generated SQL explicitly requests them. **As of 2026-08-13 they are also removed from the user-facing Results tab** — see the "Scope widened" note in the audit verdict below for why this reversed the original narrower decision.
 
 **Why:** Precise species coordinates are operationally sensitive — they can reveal nesting sites, protected individuals, or research locations. The risk being addressed is model-provider log access to these values. A researcher querying "how many detections?" does not need the model to reason over GPS coordinates.
 
 **Implementation:**
 ```python
-_SENSITIVE_COLUMNS = frozenset({"latitude", "longitude"})
-# applied in _format_result() before the tool result is appended to messages
+_SENSITIVE_COLUMNS = frozenset({"latitude", "longitude", "hashed_password"})  # env-overridable
+# _strip_sensitive_columns() is applied once in execute_sql's closure, to the
+# QueryResult stored in state["last_query_result"] — which feeds BOTH the
+# model-facing text (_format_result) and LoopResult.rows/.columns (the UI's
+# "Full data table" tab). is_empty_result/find_candidates/effective_count run
+# on the RAW result first, since they need the unstripped column shape (e.g.
+# distinguishing a single-column COUNT(*) aggregate from a real 0-row result).
 ```
 
 **Alternatives considered:**
@@ -164,16 +170,25 @@ _SENSITIVE_COLUMNS = frozenset({"latitude", "longitude"})
 | Alternative | Why rejected |
 |---|---|
 | Remove from `schema.py` only | The model might infer column names from context or database conventions and include them anyway. Stripping at result time is a hard guarantee. |
-| Strip at UI layer | Model's context window already received the coordinates. The problem is in the prompt, not the display. |
+| Strip in `_format_result()` only (model context, not UI) | **This was the original implementation and it is no longer sufficient** — see "Scope widened" below. |
 | Reduce coordinate precision (fuzzy rounding) | More nuanced — the model could still reason about regions. Not implemented because the use case (answering species count questions) has no need for coordinates at all. |
 
 **Consequences:**
 - The model can never reason over precise coordinates, even if it generates SQL that includes them.
 - `_SENSITIVE_COLUMNS` is now driven by the `CANOPY_SENSITIVE_COLUMNS` env var (comma-separated). The current defaults are `latitude,longitude,hashed_password`. Adding a new sensitive column is a config change — not a code deploy.
 
-> **Audit verdict — ✅ Sound** *(updated 2026-07-13)*
+> **Audit verdict — ✅ Sound** *(updated 2026-08-13)*
 >
 > The original caveat (hardcoded set requiring a code change for every new sensitive column) was resolved in `refactor/quality-hardening` Step 2. `_SENSITIVE_COLUMNS` is now loaded from `CANOPY_SENSITIVE_COLUMNS` at startup, with the original three columns as the default. Scope of "sensitive" remains informally defined — this is a deliberate tradeoff; the config mechanism is the right handle for that evolution without over-engineering it now.
+>
+> **Scope widened to the UI (2026-08-13) — this reversed the original decision, deliberately.** As originally written, this entry stated that showing coordinates in the Results tab "is appropriate — the human researcher already has authorised access." Two things changed that:
+>
+> 1. **The threat model changed.** Canopy was set up for external preview over a public tunnel (Cloudflare/ngrok) with a single shared password. "Whoever is looking at the screen is an authorised Jocotoco researcher with DB access" stopped being a safe assumption the moment a link could be forwarded.
+> 2. **The implementation never matched the stated intent anyway.** Stripping happened inside `_format_result()` — the function that builds the *model-facing* text. `LoopResult.rows`/`.columns`, which the Results tab renders, were built directly from the raw unstripped `QueryResult`. So the "hard guarantee" this entry claimed was prompt-level only: the model was instructed (in `schema.py`) never to `SELECT` coordinates, and if it ever ignored that instruction, the raw table would have displayed them with no code-level filter in the way. That gap was found while working in this area, not by a security review.
+>
+> Fixed by extracting `_strip_sensitive_columns()` and applying it once to the stored result, so the model-facing text and the UI table are filtered from the same source. Regression test: `test_build_sql_tool_strips_sensitive_columns_from_stored_result_too`.
+>
+> **Consequence of the reversal:** a researcher who genuinely needs coordinates can no longer get them through Canopy's UI and must query the database directly. Accepted — that is a rare, deliberate operation, and routing it through direct DB access is the more appropriate path for it than a shared-link web tool.
 
 ---
 
@@ -670,6 +685,86 @@ A related, unplanned finding from the first live run of Category 21: eval case Q
 > - *Basic shared-secret auth* — add `auth=[("username", "password")]` to the `app.launch()` call in `scripts/run_ui.py`. One credential for the whole team. Five minutes of work. Does not give per-user isolation but stops anonymous access.
 > - *Per-user auth + separate history* — Gradio `auth=` exposes `request.username` in event handlers. Pass it to `append_history` / `load_history` to namespace `history_{username}.jsonl`. Gives each user their own persistent history. Requires coordinating credentials.
 > - *Full isolation* — React + FastAPI with OAuth/JWT. Correct answer if the tool becomes public-facing or user count grows beyond ~10. Significant rewrite; out of scope for v1.
+
+---
+
+### U2 — Fuzzy-match suggestion clicks re-run the full agent loop (no SQL fast path)
+
+> **Files:** `src/canopy/ui/app.py`, `src/canopy/query/fuzzy_match.py`
+
+**Decision:** Clicking a "did you mean X" suggestion re-runs the entire question through the LLM agent loop, paying the full 15-90s latency again. A "fast path" that substitutes the corrected name into the already-executed SQL and re-runs just that query was built, tested, verified working (1.6s), and then **removed** — not deferred, removed.
+
+**Why the fast path looked right:** Clicking a suggestion changes exactly one literal in a query the system already ran successfully. Re-deriving the whole query from scratch through a 15-90s model call to change one string is obviously wasteful, and the mechanical substitution works fine — `substitute_literal()` handled quoting (via psycopg2's `QuotedString`), multi-clause rejection, and UTF-8 correctly.
+
+**Why it is wrong anyway — the structural argument:**
+
+1. `state["fuzzy_matches"]` is populated **only when a query returns nothing** (`loop.py`'s `execute_sql` closure — `find_candidates(sql) if empty else ()`).
+2. When a lookup returns nothing, the agent frequently **stops there** and reports "couldn't find that name" — without ever writing the query that would answer the user's actual question.
+3. So the SQL stored at suggestion time is disproportionately likely to be an intermediate **verification step** (`SELECT id, scientific_name FROM species WHERE scientific_name ILIKE '%typo%'`), not an **answer query** (`SELECT COUNT(*) FROM detections JOIN species ... WHERE scientific_name = '...'`).
+4. Substituting into a verification query and presenting its result as the answer silently answers a different question than the one asked. Confirmed live: "How many detections of *Grallaria gigantia*?" fast-pathed into "1 result for Grallaria hypoleuca" — the species-existence lookup's answer, not a detection count.
+
+**Why it cannot be patched with a classifier:** The obvious fix is to detect "is this SQL an answer query or a lookup?" and only fast-path the former. Tested against five realistic query shapes, the best available signal (is it an aggregate with no `GROUP BY`? — the same regex `is_empty_result` already uses) fails in **both** directions:
+
+| SQL shape | Aggregate? | Actually an answer query? | Verdict |
+|---|---|---|---|
+| `SELECT COUNT(*) FROM detections … WHERE scientific_name='X'` | yes | yes | ✅ correct |
+| `SELECT id, scientific_name FROM species WHERE … ILIKE '%X%'` | no | no | ✅ correct |
+| `SELECT d.recorded_at, si.name FROM detections … WHERE …='X'` | no | **yes** | ❌ false negative (missed optimization — harmless) |
+| `SELECT si.name, COUNT(*) … GROUP BY si.name` | yes | yes | ✅ correct |
+| `SELECT COUNT(*) FROM species WHERE scientific_name ILIKE '%X%'` | yes | **no** | ❌ **false positive — ships a wrong answer** |
+
+The last row is decisive: an *exploratory* count used to check existence is shape-identical to a real count answer. The distinguishing information is the model's **intent**, which exists in the agent's reasoning, not in the SQL text. No text-level heuristic recovers it.
+
+**What was measured instead:** Across 12 real runs this session, LLM time was **97–99.5%** of total latency (15–80s); DB time was a flat 1.5–3.3s regardless of result size. The fast path was optimizing the ~2% that was never the problem.
+
+**Consequences:**
+- Suggestion clicks stay slow (full re-run). Accepted: a slow correct answer beats a fast wrong one, especially in a conservation data tool where a wrong number could reach an external report.
+- `substitute_literal()`, `_try_fast_path()`, the `fast_path_states` plumbing, the fast-path locale strings, and ~15 tests were deleted rather than left inert — dead code that "worked" invites re-enabling without the context for why it was disabled.
+- Two genuine wins from that work were kept: the sensitive-column stripping fix (see the Security section) and the `_success_result()` extraction that removed duplicated success-rendering logic from the streaming generator.
+
+**Alternatives considered:**
+- *Classifier heuristic* — rejected on the evidence above.
+- *Have the model explicitly tag its final answer query* — the only reliable fix. Requires a system-prompt/tool-contract change plus its own eval pass to confirm the tagging is trustworthy. A real feature, not an optimization; not attempted here.
+- *Splitting the single agent call into SQL-generation + narrative-synthesis calls* — targets the actual 97% cost and would let partial results stream before the narrative arrives. The genuinely promising direction; separate work. **Superseded by U3**, which achieved the streaming half without splitting the call.
+
+> **Audit verdict — ✅ Sound**
+>
+> The removal is better engineering than the feature was. The optimization was real, mechanically correct, and measurably fast — and still wrong, because it optimized a proxy (`last_sql`) that does not reliably stand for the thing it was assumed to represent (the query that answers the question). The decisive evidence is the false-positive row in the table above: it was produced by testing the proposed fix against realistic shapes rather than against the one case already observed, which is the difference between finding the next bug now and finding it live. Latency measurement after the fact confirms the whole direction was aimed at 2% of the cost.
+
+---
+
+### U3 — Progressive result disclosure: rows render before the narrative
+
+> **Files:** `src/canopy/query/loop.py`, `src/canopy/ui/app.py`
+
+**Decision:** `execute_sql` reports its result to the UI the moment the DB returns, via a `result_cb` callback separate from `status_cb`. The data table and SQL box populate mid-run instead of staying blank until the agent finishes writing its prose. The agent itself is **not** split into two LLM calls.
+
+**Why:** The wait was never uniform. Instrumenting the agent's event stream across real questions showed the narrative phase — everything after the rows are already in memory — is **51–60% of total latency**:
+
+| Question | Rows in hand | Answer done | Narrative phase |
+|---|---|---|---|
+| Confirmed species per reserve, 2023 | 23.9s | 48.9s | 25.0s (51%) |
+| Detections awaiting review per site | 10.9s | 27.1s | 16.3s (60%) |
+
+The user was being shown a spinner for 16–25 seconds while the answer's data sat complete in `state["last_query_result"]`. Closing that gap needs no new model call — only a channel from the tool closure to the UI.
+
+**Why not the two-call split (the direction U2 pointed at):** The split was proposed to make partial results available early. The measurement above shows they are *already* available early inside the single call — `ToolCallResult` fires at the halfway point. Splitting would add a second prompt, a second failure mode, and a risk of the narrative drifting from the SQL actually executed, to buy an outcome reachable with a callback. Deferred on its remaining merit alone (running SQL-gen on a smaller/faster model), which is a cost question, not a UX one.
+
+**How the U2 failure mode is designed out:** U2's lesson was that showing a result whose relation to the question is unverified ships a wrong answer. Early rows are presented as **data only** — no count sentence, no interpretation, no claim. The narrative remains the sole thing that says what the rows *mean*. So when a retry supersedes an attempt, a table is replaced (reads as the search refining) rather than a stated answer retracted (reads as a wrong claim). `_status_yield`'s docstring carries this constraint at the call site.
+
+**Consequences:**
+- `run_query` gains an optional `result_cb`; existing callers (benchmark runner, eval scripts, tests) are unaffected — it defaults to `None`.
+- Fires once per SQL attempt; a retry supersedes the previous payload rather than appending.
+- Never fires on a cache hit, which skips `execute_sql` entirely — cached runs render exactly as before.
+- The payload is `state["last_query_result"]`, already `_strip_sensitive_columns`-filtered. Early disclosure must never widen what reaches a user, so it deliberately reuses the stripped result rather than the raw one (see S3).
+- The UI queue carries tagged `("status", …)` / `("preview", …)` events on one queue rather than two, so a status string and the payload that follows it cannot be reordered.
+- `status_composing_answer` now points at the data table, since that phase is exactly when the rows are already readable.
+
+**Verified:** Live in Docker — rows visible at 22.1s against an answer at 33.4s, i.e. **11.3s (34%) earlier**. Five regression tests cover early population, SQL disclosure, persistence across later status ticks, retry supersession, and the cache-hit no-op.
+
+> **Audit verdict — ✅ Sound**
+>
+> The measurement came before the design, which is what U2's retrospective asked for. The instrumentation didn't merely confirm the premise — it changed the plan, showing the requested two-call split was solving a problem the single call had already solved internally, and reducing the work to a callback. The U2 hazard is addressed structurally (data is never labelled as answer) rather than by convention, so a retry degrades into a visibly refining search instead of a retracted claim.
 
 ---
 
