@@ -54,7 +54,8 @@ class ModelConnection:
     models: list[str] = field(default_factory=list)
     endpoint: str = ""
     timeout: float = 60.0
-    api_style: str = "azure-inference"  # "azure-inference" | "openai-compat" | "openai-responses"
+    # "azure-inference" | "openai-compat" | "openai-responses" | "openai-standard"
+    api_style: str = "azure-inference"
     active: bool = True                 # False = skip in benchmark until admin activates
 
 

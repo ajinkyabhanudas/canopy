@@ -122,6 +122,7 @@ corresponding `AZURE_<NAME>_API_KEY` to `.env`. No code changes needed.
 |---|---|---|
 | `ANTHROPIC_API_KEY` | If using Anthropic | Anthropic API key (requires separate API credits at console.anthropic.com) |
 | `AZURE_CAPA_API_KEY` | If using Azure | Key for all capa connections in models.yaml |
+| `NVIDIA_API_KEY` | If using NVIDIA | Key for the NVIDIA integrate API connections (`nvidia-kimi-k3`) — a separate personal account, not the capa Azure resource |
 | `MODEL_BACKEND` | No | Active connection `id` from models.yaml (default: `gpt-5.1-codex-mini`) |
 | `PG_HOST` | Yes | PostgreSQL host |
 | `PG_PORT` | Yes | PostgreSQL port (usually `5432`) |

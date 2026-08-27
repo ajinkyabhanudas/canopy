@@ -4,8 +4,10 @@ models/registry.py
 Single entry point: get_llm() returns a LlamaIndex FunctionCallingLLM for the
 active connection declared in models.yaml.
 
-  openai-compat     → CanopyAzureCompatLLM  (wraps LlamaIndex OpenAI LLM)
-  openai-responses  → AzureResponsesLLM     (custom Responses API adapter)
+  openai-compat     → CanopyAzureCompatLLM   (wraps LlamaIndex OpenAI LLM, Azure quirks patched)
+  openai-responses  → AzureResponsesLLM      (custom Responses API adapter)
+  openai-standard   → stock LlamaIndex OpenAI LLM, no Azure patching — third-party
+                       OpenAI-SDK-compatible hosts (e.g. NVIDIA's integrate.api.nvidia.com)
 """
 
 from __future__ import annotations
@@ -14,7 +16,10 @@ from llama_index.core.llms.function_calling import FunctionCallingLLM
 
 from ..config import get_active_connection
 from .azure_responses_llm import AzureResponsesLLM
-from .llamaindex_compat import build_openai_compat_llm
+from .llamaindex_compat import (
+    build_openai_compat_llm,
+    build_openai_standard_llm,
+)
 
 
 def get_llm(
@@ -60,9 +65,17 @@ def get_llm(
             timeout=conn.timeout,
         )
 
+    if conn.api_style == "openai-standard":
+        return build_openai_standard_llm(
+            model=model,
+            api_key=conn.api_key,
+            endpoint=conn.endpoint,
+            timeout=conn.timeout,
+        )
+
     raise ValueError(
         f"Unknown api_style '{conn.api_style}' for connection '{conn.id}'. "
-        "Expected: openai-compat, openai-responses"
+        "Expected: openai-compat, openai-responses, openai-standard"
     )
 
 
