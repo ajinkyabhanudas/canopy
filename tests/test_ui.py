@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import canopy.ui.app as ui_mod
 from canopy.i18n import get_lang, set_locale, t
 from canopy.query.executor import SQLGuardError
@@ -27,12 +29,15 @@ def _make_result(**overrides) -> LoopResult:
 
 
 def _run(
-    question: str, session_history: list | None = None, superseded: str | None = None
+    question: str,
+    session_history: list | None = None,
+    superseded: str | None = None,
+    last_trace: dict | None = None,
 ) -> tuple:
     """Drain the streaming generator and return the last yielded tuple."""
     history = session_history if session_history is not None else []
     result = None
-    for result in ui_mod._run_query_handler(question, history, superseded):
+    for result in ui_mod._run_query_handler(question, history, superseded, last_trace):
         pass
     return result
 
@@ -50,7 +55,7 @@ def _all_yields(question: str, session_history: list | None = None) -> list[tupl
 
 def test_empty_result_structure():
     result = ui_mod._empty_result("some message", [])
-    assert len(result) == 30
+    assert len(result) == 31  # +1 for last_trace_state (Langfuse tracing, index 9)
     sql, df, response, count_md, radio, timing, status, state, tabs, *_ = result
     assert sql == ""
     assert count_md == ""
@@ -84,7 +89,7 @@ def test_handler_first_yield_is_loading(monkeypatch):
     current_step_text for why these are deliberately different)."""
     monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None, **_kw: _make_result())
     first, *_ = _all_yields("How many detections?")
-    assert len(first) == 30
+    assert len(first) == 31  # +1 for last_trace_state (Langfuse tracing, index 9)
     _, _, response, _, _, _, status_md, state, *_ = first
     assert t("status_reading") in response
     assert t("status_bar_working") in status_md
@@ -1108,3 +1113,124 @@ def test_handler_response_box_uses_rendered_interpretation(monkeypatch):
     _, _, response, *_ = _run("q")
     assert "DATA SOURCE:" not in response
     assert t("interpretation_heading") in response
+
+
+# ---------------------------------------------------------------------------
+# _check_rephrase — no_rephrase_within_5min acceptance proxy
+# ---------------------------------------------------------------------------
+
+
+def test_check_rephrase_none_when_no_previous_trace():
+    assert ui_mod._check_rephrase(None, "any question") is None
+
+
+def test_check_rephrase_none_when_already_scored():
+    last_trace = {
+        "trace_id": "t1", "question": "how many species", "at": time.monotonic(), "scored": True,
+    }
+    assert ui_mod._check_rephrase(last_trace, "how many species") is None
+
+
+def test_check_rephrase_none_when_no_trace_id():
+    last_trace = {"trace_id": None, "question": "q", "at": time.monotonic(), "scored": False}
+    assert ui_mod._check_rephrase(last_trace, "q") is None
+
+
+def test_check_rephrase_none_when_outside_window():
+    """A previous trace older than the window ages out unscored rather than guessed at."""
+    last_trace = {
+        "trace_id": "t1",
+        "question": "how many species",
+        "at": time.monotonic() - (ui_mod._REPHRASE_WINDOW_S + 30),
+        "scored": False,
+    }
+    assert ui_mod._check_rephrase(last_trace, "how many species were seen") is None
+
+
+def test_check_rephrase_similar_question_scores_not_accepted():
+    """A near-duplicate asked again soon means the previous answer didn't satisfy."""
+    last_trace = {
+        "trace_id": "t1",
+        "question": "how many species were detected at Tapichalaca",
+        "at": time.monotonic(),
+        "scored": False,
+    }
+    result = ui_mod._check_rephrase(last_trace, "how many species detected at Tapichalaca")
+    assert result == ("t1", False)
+
+
+def test_check_rephrase_dissimilar_question_scores_accepted():
+    """A completely different next question means the previous one was resolved."""
+    last_trace = {
+        "trace_id": "t1",
+        "question": "how many species were detected at Tapichalaca",
+        "at": time.monotonic(),
+        "scored": False,
+    }
+    result = ui_mod._check_rephrase(last_trace, "what is the busiest reserve by detections")
+    assert result == ("t1", True)
+
+
+# ---------------------------------------------------------------------------
+# Trace bookkeeping through the streaming handler (tracing disabled — the
+# only state possible in tests, since run_query is monkeypatched directly
+# and never touches canopy.observability). These confirm last_trace flows
+# through the tuple shape correctly regardless of tracing being on/off.
+# ---------------------------------------------------------------------------
+
+
+def test_handler_last_trace_passes_through_when_run_query_yields_none(monkeypatch):
+    """run_query's trace_id_cb is never called when tracing is disabled (the
+    default and the only state in tests) — last_trace_state must stay None,
+    not silently populate with garbage."""
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None, **_kw: _make_result())
+    result = _run("q", last_trace=None)
+    # last_trace_state sits at index 9 in the output tuple.
+    assert result[9] is None
+
+
+def test_handler_new_trace_id_populates_last_trace_state(monkeypatch):
+    """When run_query DOES call trace_id_cb (tracing enabled in production),
+    the new trace becomes last_trace_state so the NEXT query can score it."""
+
+    def _fake_run_query(q, status_cb=None, result_cb=None, trace_id_cb=None, **_kw):
+        if trace_id_cb:
+            trace_id_cb("trace-123")
+        return _make_result()
+
+    monkeypatch.setattr(ui_mod, "run_query", _fake_run_query)
+    result = _run("how many species", last_trace=None)
+    new_trace = result[9]
+    assert new_trace["trace_id"] == "trace-123"
+    assert new_trace["question"] == "how many species"
+    assert new_trace["scored"] is False
+
+
+def test_handler_scores_previous_trace_before_new_query_runs(monkeypatch):
+    """The rephrase check on the incoming last_trace must fire even though
+    this test's run_query stub never touches tracing itself — _check_rephrase
+    is pure logic in app.py, independent of whether Langfuse is reachable."""
+    scored = []
+    monkeypatch.setattr(
+        ui_mod, "score_no_rephrase", lambda tid, *, accepted: scored.append((tid, accepted))
+    )
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None, **_kw: _make_result())
+
+    last_trace = {
+        "trace_id": "prev-trace",
+        "question": "how many detections at Yanacocha",
+        "at": time.monotonic(),
+        "scored": False,
+    }
+    _run("what is the busiest reserve by detections", last_trace=last_trace)
+    assert scored == [("prev-trace", True)]  # dissimilar next question -> accepted
+
+
+def test_handler_empty_input_passes_last_trace_through_unscored():
+    """Submitting empty input must not score or discard the previous trace —
+    nothing happened that says anything about whether it was accepted."""
+    last_trace = {
+        "trace_id": "prev-trace", "question": "q", "at": time.monotonic(), "scored": False,
+    }
+    result = _run("   ", last_trace=last_trace)
+    assert result[9] == last_trace
