@@ -18,6 +18,12 @@ dependencies = [
     "pyyaml>=6.0",
     "llama-index-core>=0.14",
     "llama-index-llms-openai>=0.4",
+    # Pinned to the v2 client API (trace()/span()/score()) that observability.py
+    # targets. v3+ moved to an OTel-based client with a different surface —
+    # revisit when Langfuse tracing is actually turned on for real traffic,
+    # not before, since this feature is dormant (CANOPY_LANGFUSE_ENABLED
+    # unset) until Canopy has real users. See DECISIONS.md's Operations entry.
+    "langfuse==2.60.10",
 ]
 
 [project.optional-dependencies]

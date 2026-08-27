@@ -198,3 +198,27 @@ def get_ui_lang() -> str:
     Supported: 'en', 'es'. Unknown values fall back to 'en' at set_locale().
     """
     return os.environ.get("CANOPY_UI_LANG", "en").lower().strip()
+
+
+# ---------------------------------------------------------------------------
+# Langfuse tracing — dormant until Canopy has real production traffic.
+# See DECISIONS.md's Operations section for why this is built now but
+# defaults off: the online-eval work (AI-Skills-Build file 06) needs the
+# instrumentation in place before traffic exists, not written reactively
+# once it does. NEVER set CANOPY_LANGFUSE_ENABLED in tests — traces must not
+# leave the process during a test run.
+# ---------------------------------------------------------------------------
+
+def is_langfuse_enabled() -> bool:
+    """Return whether Langfuse tracing is active.
+
+    Off by default. Requires both the flag and a public/secret keypair —
+    a truthy flag with no keys is treated as disabled rather than raising,
+    so an incomplete .env fails safe into "no tracing" instead of crashing
+    the query loop.
+    """
+    if os.environ.get("CANOPY_LANGFUSE_ENABLED", "").lower().strip() not in ("1", "true", "yes"):
+        return False
+    return bool(
+        os.environ.get("LANGFUSE_PUBLIC_KEY") and os.environ.get("LANGFUSE_SECRET_KEY")
+    )
