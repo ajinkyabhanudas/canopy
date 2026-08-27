@@ -112,6 +112,7 @@ def test_trace_query_never_sends_raw_rows(monkeypatch):
 
     sig = inspect.signature(obs.trace_query)
     assert "rows" not in sig.parameters
+    assert "row_count" in sig.parameters
 
 
 # ---------------------------------------------------------------------------
