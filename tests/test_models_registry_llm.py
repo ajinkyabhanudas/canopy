@@ -12,7 +12,7 @@ from unittest.mock import patch
 import pytest
 
 from canopy.models.azure_responses_llm import AzureResponsesLLM
-from canopy.models.llamaindex_compat import CanopyAzureCompatLLM
+from canopy.models.llamaindex_compat import CanopyAzureCompatLLM, CanopyOpenAIStandardLLM
 from canopy.models.registry import get_llm
 
 
@@ -106,6 +106,87 @@ def test_get_llm_openai_responses_sets_model(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 # Error paths
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# openai-standard → CanopyOpenAIStandardLLM (third-party OpenAI-compatible
+# hosts, e.g. NVIDIA's integrate.api.nvidia.com — no Azure quirks patched)
+# ---------------------------------------------------------------------------
+
+
+def test_get_llm_openai_standard_returns_standard_llm(tmp_path, monkeypatch):
+    monkeypatch.setenv("MODEL_BACKEND", "nvidia-test")
+    monkeypatch.setenv("NVIDIA_TEST_KEY", "test-key")
+    with _patch_yaml(monkeypatch, tmp_path, """
+        connections:
+          - id: nvidia-test
+            backend: nvidia
+            api_key_env: NVIDIA_TEST_KEY
+            models: [moonshotai/kimi-k3]
+            endpoint: https://integrate.api.nvidia.com/v1
+            api_style: openai-standard
+    """):
+        llm = get_llm()
+    assert isinstance(llm, CanopyOpenAIStandardLLM)
+
+
+def test_get_llm_openai_standard_sets_model(tmp_path, monkeypatch):
+    monkeypatch.setenv("MODEL_BACKEND", "nvidia-test")
+    monkeypatch.setenv("NVIDIA_TEST_KEY", "test-key")
+    with _patch_yaml(monkeypatch, tmp_path, """
+        connections:
+          - id: nvidia-test
+            backend: nvidia
+            api_key_env: NVIDIA_TEST_KEY
+            models: [moonshotai/kimi-k3]
+            endpoint: https://integrate.api.nvidia.com/v1
+            api_style: openai-standard
+    """):
+        llm = get_llm()
+    assert llm.model == "moonshotai/kimi-k3"
+
+
+def test_get_llm_openai_standard_does_not_rewrite_max_tokens(tmp_path, monkeypatch):
+    """The Azure-only max_completion_tokens patch must NOT apply here — a
+    third-party host that expects standard max_tokens would reject the
+    renamed parameter."""
+    monkeypatch.setenv("MODEL_BACKEND", "nvidia-test")
+    monkeypatch.setenv("NVIDIA_TEST_KEY", "test-key")
+    with _patch_yaml(monkeypatch, tmp_path, """
+        connections:
+          - id: nvidia-test
+            backend: nvidia
+            api_key_env: NVIDIA_TEST_KEY
+            models: [moonshotai/kimi-k3]
+            endpoint: https://integrate.api.nvidia.com/v1
+            api_style: openai-standard
+    """):
+        llm = get_llm()
+    kwargs = llm._get_model_kwargs()
+    assert "max_tokens" in kwargs
+    assert "max_completion_tokens" not in kwargs
+
+
+def test_get_llm_openai_standard_metadata_accepts_non_openai_model_name(tmp_path, monkeypatch):
+    """The whole reason this class exists: LlamaIndex's stock .metadata
+    raises ValueError on any model name outside OpenAI's own catalogue —
+    confirmed live against 'deepseek-ai/deepseek-v4-flash-0731' and
+    'moonshotai/kimi-k3'. Must not raise here."""
+    monkeypatch.setenv("MODEL_BACKEND", "nvidia-test")
+    monkeypatch.setenv("NVIDIA_TEST_KEY", "test-key")
+    with _patch_yaml(monkeypatch, tmp_path, """
+        connections:
+          - id: nvidia-test
+            backend: nvidia
+            api_key_env: NVIDIA_TEST_KEY
+            models: [moonshotai/kimi-k3]
+            endpoint: https://integrate.api.nvidia.com/v1
+            api_style: openai-standard
+    """):
+        llm = get_llm()
+    metadata = llm.metadata
+    assert metadata.model_name == "moonshotai/kimi-k3"
+    assert metadata.is_function_calling_model is True
 
 
 def test_get_llm_anthropic_raises_not_implemented(tmp_path, monkeypatch):
