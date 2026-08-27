@@ -21,6 +21,7 @@ from canopy.config import get_active_connection
 from canopy.history import append_history
 from canopy.i18n import t
 from canopy.models import get_llm
+from canopy.observability import trace_query
 from canopy.query.executor import QueryResult, execute_query
 from canopy.query.fuzzy_match import (
     FuzzyMatch,
@@ -442,6 +443,7 @@ def run_query(
     status_cb: Callable[[str], None] | None = None,
     connection_override: str | None = None,
     result_cb: Callable[[QueryResult, str], None] | None = None,
+    trace_id_cb: Callable[[str], None] | None = None,
 ) -> LoopResult:
     """Translate a natural language question into SQL, execute it, and return the result.
 
@@ -459,6 +461,14 @@ def run_query(
             answer. Lets a UI show real rows during the narrative wait. Fires once
             per SQL attempt — a retry calls it again with the corrected result,
             which supersedes the previous one. Never fires on a cache hit.
+        trace_id_cb: Optional callback invoked once with the Langfuse trace_id
+            for this call, letting a UI attach a later acceptance score (thumbs
+            click, no-rephrase check) to the right trace. Deliberately not a
+            field on LoopResult — LoopResult round-trips through the on-disk
+            cache, and a trace_id replayed from a cache hit days later would
+            point at the wrong run. Never fires when tracing is disabled
+            (CANOPY_LANGFUSE_ENABLED unset — the default, and always the case
+            in tests).
 
     Returns:
         LoopResult containing the question, the SQL that was run, the raw query
@@ -489,6 +499,15 @@ def run_query(
         _log.info(
             "cache hit: backend=%s model=%s question=%r", conn.id, active_model, question[:60]
         )
+        trace_id = trace_query(
+            question=question,
+            sql=cached.sql,
+            row_count=cached.row_count,
+            timing=cached.timing,
+            cache_hit=True,
+        )
+        if trace_id and trace_id_cb:
+            trace_id_cb(trace_id)
         return cached
 
     t_total = time.perf_counter()
@@ -549,4 +568,13 @@ def run_query(
         append_history(result)
     except Exception as exc:
         _log.warning("history write failed (check CANOPY_DATA_DIR): %s", exc)
+    trace_id = trace_query(
+        question=question,
+        sql=result.sql,
+        row_count=result.row_count,
+        timing=timing,
+        cache_hit=False,
+    )
+    if trace_id and trace_id_cb:
+        trace_id_cb(trace_id)
     return result
