@@ -68,6 +68,7 @@
 |---|---|---|---|
 | U1 | UI framework | Gradio Blocks | 🔄 Revisit |
 | U2 | Fuzzy-match suggestion clicks | Full agent re-run; SQL-substitution fast path built then removed (answers the wrong question) | ✅ Sound |
+| U3 | Result disclosure | Rows stream at DB-return, ~halfway through the wait; agent not split into two LLM calls | ✅ Sound |
 
 ### 🤖 Model Selection
 
@@ -82,6 +83,8 @@
 | O1 | Configuration access | `config.py` owns all env vars; frozen dataclasses | ✅ Sound |
 | O2 | Database connections | Per-query connection, no pooling | 🔄 Revisit |
 | O3 | Container security | Non-root user `canopy`; persistent `/data` volume | ✅ Sound |
+| O4 | Model/schema state verification | Git history + this document, no separate CHANGELOG | ✅ Sound |
+| O5 | Langfuse tracing | Built dormant ahead of production traffic; `CANOPY_LANGFUSE_ENABLED` default off | ✅ Sound |
 
 ---
 
@@ -1001,6 +1004,36 @@ git show <commit-hash>
 > **Audit verdict — ✅ Sound**
 >
 > Git log is authoritative and always current. DECISIONS.md adds the "why" layer that commit messages omit. The combination is more reliable than a manually-maintained CHANGELOG.
+
+---
+
+### O5 — Langfuse tracing built dormant, ahead of production traffic
+
+> **Files:** `src/canopy/observability.py` · `src/canopy/config.py` · `src/canopy/query/loop.py` · `src/canopy/ui/app.py`
+
+**Decision:** Canopy is not yet in daily use — this is not an online-eval result, it is the instrumentation that a real one will need. Langfuse tracing, a delayed "no rephrase within 5 minutes" acceptance proxy, and an explicit thumbs control are wired into the query path now, gated behind `CANOPY_LANGFUSE_ENABLED` (default off). No PostHog/GrowthBook experimentation plumbing was built alongside it — that work depends on a week of real baseline data this instrumentation doesn't have yet, and on an experiment design that can't be chosen sensibly before real query patterns exist to react to.
+
+**Why now, dormant, rather than waiting:** The alternative was building this reactively the day Canopy gets real users — which means designing an acceptance proxy under time pressure, with no chance to test the plumbing against synthetic load first. Building it now, inert, means flipping one env var starts real measurement with already-verified code.
+
+**Why one trace per `run_query()`, not per-span instrumentation inside the agent loop:** The tempting design instruments `_run_agent`'s internal turns directly. The `timing` dict `run_query()` already assembles (`llm_s`, `db_s`, `iterations`, `connection_id`, `model`) is sufficient to build one trace with two summary spans (llm, db) — no new instrumentation points were added inside the agent loop itself. Building a second observability layer parallel to the existing status_cb/result_cb callbacks (which already mark every real phase transition — see U3) would have been solving an already-solved problem in a new place.
+
+**Why `trace_id` is a callback, never a `LoopResult` field:** `LoopResult` round-trips through the on-disk JSON cache (`cache.py`). A `trace_id` stored on it would be replayed verbatim from a cache hit issued days after the original trace closed, attributing a stale ID to a run that never happened. `trace_id_cb` hands the ID to the caller once, live, and is never persisted.
+
+**Why two independent acceptance scores instead of one blended number:** File 06 of the AI-Skills-Build online-eval plan lists several proxy candidates for "answered without a SQL writer in the loop" — no rephrase, no next-day repeat, explicit thumbs, no escalation email — and states each has a different bias. Blending `no_rephrase_within_5min` (passive, zero UI cost, biased toward false positives on silent dissatisfaction) and `thumbs_explicit` (active, no proxy bias, biased by low click-through) into one score at write time would hide that disagreement. They're logged as two named scores on the same trace; their agreement rate is itself part of what a real online-eval write-up should report.
+
+**Why the rephrase check has no background timer:** `no_rephrase_within_5min` is only knowable in retrospect — a user who is satisfied and never returns cannot be distinguished from one who gave up. Rather than run a scheduled job to detect that silence, the check fires lazily, at the start of the *next* query, comparing it against the *previous* trace's question via `difflib.SequenceMatcher` (already the project's similarity tool — see `fuzzy_match.py`). A previous trace that ages past the 5-minute window unscored is treated honestly as unscored, not defaulted to "accepted." The gap this creates — no signal at all for a user who closes the tab satisfied — was chosen deliberately over a false-positive default.
+
+**Consequences:**
+- New dependency: `langfuse==2.60.10`, pinned to the v2 client API (`trace()`/`span()`/`score()`). v3+ moved to an OpenTelemetry-based client with a different surface; revisit the pin when tracing is actually turned on for real traffic, not before.
+- `_run_query_handler`'s output tuple grew by one element (`last_trace_state`, a `gr.BrowserState`) to carry the previous trace across queries within a browser session. Every yield site in `app.py` threads it through unchanged except the success path, which replaces it with the new run's trace.
+- The thumbs control is the only new UI surface; it renders only when `is_langfuse_enabled()` is true, so a disabled default shows nothing new.
+- Verified live in Docker: with tracing off, behavior (including the tuple shape at every yield) is unchanged from before this work. With tracing on and Langfuse pointed at an unreachable host, `trace_query()` returns a valid trace ID in ~1s (the SDK's own async batching absorbs the eventual network failure in the background) and query failures elsewhere in the loop render their normal error path with no hang.
+
+**Non-goals (explicit):** PostHog/GrowthBook flags and the A/B test itself (file 07) — deferred until file 06 has run against real traffic and produced a baseline. Reporting any acceptance number from this branch's own testing — that would be exactly the fabricated-traffic failure both AI-Skills-Build files warn against.
+
+> **Audit verdict — ✅ Sound**
+>
+> The scope discipline holds: this is instrumentation, not a claim. The trace_id/cache interaction was caught before it shipped — a subtler bug than most, since it wouldn't surface until a cache hit occurred days after a trace closed. The langfuse dependency was initially missing from pyproject.toml despite being present in the developer's local environment; the gap was only found by testing the actual Docker image rather than the local machine, which is the only environment that matters for what ships.
 
 ---
 
