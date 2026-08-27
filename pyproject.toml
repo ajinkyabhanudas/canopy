@@ -24,6 +24,12 @@ dependencies = [
     # not before, since this feature is dormant (CANOPY_LANGFUSE_ENABLED
     # unset) until Canopy has real users. See DECISIONS.md's Operations entry.
     "langfuse==2.60.10",
+    # A/B experiment (show-SQL-by-default): PostHog's server-side
+    # get_feature_flag() gives deterministic, hash-based variant assignment
+    # keyed by distinct_id — no client-side persistence to get wrong, unlike
+    # the hand-rolled gr.BrowserState version this replaced. Dormant until
+    # both CANOPY_AB_SHOW_SQL_ACTIVE and a real project key are set.
+    "posthog==7.44.2",
 ]
 
 [project.optional-dependencies]
