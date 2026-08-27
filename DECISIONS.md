@@ -85,6 +85,7 @@
 | O3 | Container security | Non-root user `canopy`; persistent `/data` volume | ✅ Sound |
 | O4 | Model/schema state verification | Git history + this document, no separate CHANGELOG | ✅ Sound |
 | O5 | Langfuse tracing | Built dormant ahead of production traffic; `CANOPY_LANGFUSE_ENABLED` default off | ✅ Sound |
+| O6 | "Show SQL by default" A/B assignment | PostHog feature flag, deterministic per-browser distinct_id; replaced a hand-rolled version after a live persistence bug | ✅ Sound |
 
 ---
 
@@ -1034,6 +1035,34 @@ git show <commit-hash>
 > **Audit verdict — ✅ Sound**
 >
 > The scope discipline holds: this is instrumentation, not a claim. The trace_id/cache interaction was caught before it shipped — a subtler bug than most, since it wouldn't surface until a cache hit occurred days after a trace closed. The langfuse dependency was initially missing from pyproject.toml despite being present in the developer's local environment; the gap was only found by testing the actual Docker image rather than the local machine, which is the only environment that matters for what ships.
+
+---
+
+### O6 — "Show SQL by default" A/B test: PostHog for assignment, not hand-rolled state
+
+> **Files:** `src/canopy/observability.py` · `src/canopy/config.py` · `src/canopy/ui/app.py` · `pyproject.toml`
+
+**Decision:** Whether the generated SQL renders inline in the Answer tab (treatment) or stays behind the existing "Database query" tab click (control) is now a PostHog multivariate feature flag (`canopy-show-sql-by-default`, 50/50 `control`/`treatment`), evaluated server-side per browser via a stable, opaque `distinct_id`. Exposure is logged as a score on the same Langfuse trace the query already produces (O5), so the acceptance-metric comparison lives in one place. Gated by `CANOPY_AB_SHOW_SQL_ACTIVE` (default off) *and* `CANOPY_LANGFUSE_ENABLED` — an experiment that can assign variants but can't measure them, or vice versa, is not a running experiment.
+
+**Why this reverses O5's own non-goal:** O5 explicitly deferred PostHog/GrowthBook to file 07's timeline. This entry only builds file 07's *assignment mechanism* early, not the experiment itself — no experiment is pre-registered or running; `CANOPY_AB_SHOW_SQL_ACTIVE` stays off until file 06 has a real baseline. The code existing dormant, ahead of need, is the same pattern O5 already established for tracing.
+
+**Why PostHog over a hand-rolled `gr.BrowserState` assignment (the first version built):** The first implementation stored the resolved variant directly in browser state, generated once and persisted. Docker verification surfaced a live persistence bug — the stored value did not survive as expected across queries in the same session — and root-causing it further was abandoned once a materially better design was available: PostHog's `get_feature_flag(key, distinct_id)` is a pure, deterministic function of the flag key and distinct_id, evaluated fresh from the server on every call. There is no client-side "assignment" to persist or lose; only a stable, opaque `distinct_id` needs to survive across queries, which is a much smaller and lower-stakes piece of state to get right.
+
+**Why a challenge round preceded the swap:** Switching mid-build risked replacing one unverified assumption with another. Challenge surfaced that the SDK's actual server-side behavior needed verifying before writing integration code (same discipline as pinning the Langfuse version by testing, not assuming) — resolved by installing `posthog` locally and inspecting `Posthog.get_feature_flag`'s real signature and the client's `disabled=True` no-op mode before any code was written against it.
+
+**Why exposure logs to Langfuse rather than as a second PostHog event:** The trace already holds this run's timing, SQL, and acceptance scores. A second, separate PostHog-side event for the same query would mean the divergence analysis (file 06's whole point) has to join across two systems instead of reading one trace.
+
+**Consequences:**
+- New dependency: `posthog==7.44.2`.
+- `_run_query_handler`'s output tuple grew by one more element (`ab_distinct_id`, via a renamed `gr.BrowserState` — `canopy_ab_distinct_id`) holding ONLY the opaque per-browser ID, never the resolved variant, so a corrupted or stale stored value can't propagate a wrong variant — `assign_variant` re-derives it from PostHog every time.
+- `assign_variant` and `log_exposure` both fail safe to `None`/no-op on any PostHog error (bad key, network failure, missing flag) — assignment failing must never fail a query. Confirmed live: a 0%-rollout release condition (a real setup mistake made while wiring this up) returned `False` for every distinct_id rather than raising; fixing the rollout percentage in PostHog immediately produced a correct, stable 50/50 split with no code change needed.
+- The `get_feature_flag` method used here is deprecated in the installed SDK version in favor of `evaluate_flags`/`flags.get_flag` (a batched multi-flag API) — noted for a future migration, not blocking since the method still functions correctly.
+
+**Verified:** 20 distinct test IDs against the real PostHog project split 10/10 control/treatment with zero unresolved results, and repeat calls with the same ID returned the same variant every time. The pure render function (`_render_response`) was confirmed directly to inline SQL only when `show_sql_inline=True`. Full end-to-end verification through a live LLM call was blocked by an unrelated pre-existing Azure credential issue in the sandbox (same 401 seen during O5's verification) — not a defect in this feature, since the failure occurs before the query loop ever reaches the render step this experiment touches.
+
+> **Audit verdict — ✅ Sound**
+>
+> The mid-build reversal was the right call, and reversing was cheaper than debugging further: the hand-rolled version's persistence bug turned out to be exactly the class of problem a purpose-built tool already solves correctly, and continuing to debug it would have meant re-deriving PostHog's design (deterministic hash-based assignment, no client state) from first principles. The one real setup mistake during manual PostHog configuration (0% rollout) was caught by testing against the real service rather than assuming the UI steps were followed correctly — the same "verify, don't assume" discipline this document keeps returning to.
 
 ---
 

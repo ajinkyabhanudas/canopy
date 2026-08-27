@@ -134,6 +134,9 @@ corresponding `AZURE_<NAME>_API_KEY` to `.env`. No code changes needed.
 | `CANOPY_SENSITIVE_COLUMNS` | No | Comma-separated column names stripped from model context and the UI table (default: `latitude,longitude,hashed_password`) |
 | `CANOPY_LANGFUSE_ENABLED` | No | Enable Langfuse tracing (default: off). Dormant instrumentation ahead of production traffic — see DECISIONS.md's O5. Never set in a test environment. |
 | `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` | If tracing enabled | Langfuse project keypair. Both required together with `CANOPY_LANGFUSE_ENABLED`; an incomplete set fails safe into no tracing. |
+| `CANOPY_POSTHOG_API_KEY` | If the show-SQL A/B test is active | PostHog project token, used server-side to evaluate the `canopy-show-sql-by-default` feature flag. See DECISIONS.md's O6. |
+| `CANOPY_POSTHOG_HOST` | No | PostHog ingestion host (default: `https://us.i.posthog.com`). |
+| `CANOPY_AB_SHOW_SQL_ACTIVE` | No | Activates the show-SQL-by-default A/B test (default: off). Also requires `CANOPY_LANGFUSE_ENABLED` and a real PostHog key — do not turn on until file 06's online-eval baseline exists. |
 
 ### 2. Build and run
 
