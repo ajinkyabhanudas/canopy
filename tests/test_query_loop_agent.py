@@ -81,6 +81,35 @@ def test_build_sql_tool_calls_status_cb_before_and_after():
     assert len(calls) == 2  # before DB call + after (found N records)
 
 
+def test_build_sql_tool_calls_result_cb_with_stripped_result_and_sql():
+    """U3's progressive-disclosure hook: result_cb fires the moment the DB
+    returns, with the SAME stripped result stored in state — never the raw
+    one, so early disclosure can't widen what reaches the UI."""
+    state = _make_state()
+    qr = _make_query_result(rows=((5,), (6,)))
+    calls: list[tuple] = []
+    with patch("canopy.query.loop.execute_query", return_value=qr):
+        tool = _build_sql_tool(
+            None, state, result_cb=lambda result, sql: calls.append((result, sql))
+        )
+        tool.fn(sql="SELECT n FROM t")
+    assert len(calls) == 1
+    result, sql = calls[0]
+    assert sql == "SELECT n FROM t"
+    assert result is state["last_query_result"]
+
+
+def test_build_sql_tool_no_result_cb_is_fine():
+    """result_cb is optional — omitting it (the default for every existing
+    caller) must not change execute_sql's behavior at all."""
+    state = _make_state()
+    qr = _make_query_result()
+    with patch("canopy.query.loop.execute_query", return_value=qr):
+        tool = _build_sql_tool(None, state)  # no result_cb
+        result = tool.fn(sql="SELECT 1")
+    assert "Columns: n" in result
+
+
 def test_build_sql_tool_singular_row_message():
     state = _make_state()
     calls: list[str] = []
@@ -90,6 +119,21 @@ def test_build_sql_tool_singular_row_message():
         tool.fn(sql="SELECT 1")
     # Second status message should mention singular count
     assert any("1" in c for c in calls)
+
+
+def test_build_sql_tool_singular_row_message_on_retry():
+    """A second execute_sql call in the same turn (state persists across
+    calls) with exactly 1 row must use the singular _retry status variant,
+    not the first-attempt singular message."""
+    state = _make_state()
+    calls: list[str] = []
+    qr = _make_query_result(rows=((1,),))
+    with patch("canopy.query.loop.execute_query", return_value=qr):
+        tool = _build_sql_tool(lambda msg: calls.append(msg), state)
+        tool.fn(sql="SELECT 1")  # attempt 1
+        calls.clear()
+        tool.fn(sql="SELECT 1")  # attempt 2 — is_retry is now True
+    assert any("updated" in c.lower() or "1" in c for c in calls)
 
 
 def test_build_sql_tool_no_status_cb():

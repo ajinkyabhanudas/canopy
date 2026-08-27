@@ -333,6 +333,52 @@ def test_cache_hit_skips_agent_call(monkeypatch):
     assert result.timing.get("cache_hit") is True
 
 
+def test_cache_hit_fires_trace_id_cb_when_tracing_returns_a_trace(monkeypatch):
+    """A cache hit still gets traced (O5) — trace_id_cb must fire on the
+    cache-hit path, not just the live-query path."""
+    cached = LoopResult(
+        question="q", sql="SELECT 1", columns=("n",), rows=((1,),), row_count=1,
+        model_text="1.", timing={"cache_hit": True},
+    )
+    monkeypatch.setattr("canopy.query.loop.lookup_cache", lambda q, **_kw: cached)
+    monkeypatch.setattr("canopy.query.loop.trace_query", lambda **_kw: "trace-cache-hit")
+    received: list[str] = []
+
+    with patch("canopy.query.loop._run_agent", new=_make_agent_mock("unused")):
+        run_query("q", trace_id_cb=received.append)
+
+    assert received == ["trace-cache-hit"]
+
+
+def test_cache_hit_no_trace_id_cb_call_when_tracing_disabled(monkeypatch):
+    """The default (and only CI/test) state — trace_query returns None, so
+    trace_id_cb must never fire at all."""
+    cached = LoopResult(
+        question="q", sql="SELECT 1", columns=("n",), rows=((1,),), row_count=1,
+        model_text="1.", timing={"cache_hit": True},
+    )
+    monkeypatch.setattr("canopy.query.loop.lookup_cache", lambda q, **_kw: cached)
+    monkeypatch.setattr("canopy.query.loop.trace_query", lambda **_kw: None)
+    received: list[str] = []
+
+    with patch("canopy.query.loop._run_agent", new=_make_agent_mock("unused")):
+        run_query("q", trace_id_cb=received.append)
+
+    assert received == []
+
+
+def test_live_query_fires_trace_id_cb_when_tracing_returns_a_trace(monkeypatch):
+    monkeypatch.setattr("canopy.query.loop.lookup_cache", lambda q, **_kw: None)
+    monkeypatch.setattr("canopy.query.loop.write_cache", lambda r, **_kw: None)
+    monkeypatch.setattr("canopy.query.loop.trace_query", lambda **_kw: "trace-live")
+    received: list[str] = []
+
+    with patch("canopy.query.loop._run_agent", new=_make_agent_mock("Done.", "SELECT 1")):
+        run_query("A fresh question.", trace_id_cb=received.append)
+
+    assert received == ["trace-live"]
+
+
 def test_cache_miss_writes_result(monkeypatch):
     """On a cache miss, write_cache is called with the LoopResult."""
     written: list = []

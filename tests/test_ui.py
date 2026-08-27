@@ -987,6 +987,18 @@ def test_append_step_stops_backward_scan_at_earlier_retry():
     assert kinds.count(ui_mod._StepKind.RETRY) == 2
 
 
+def test_append_step_retry_with_no_result_since_prior_retry_is_a_noop_scan():
+    """Two retries in a row with no RESULT between them (the agent tried
+    again without ever getting a real result back, e.g. a second guard
+    error) — the backward scan hits the earlier RETRY immediately and stops
+    without deleting anything, since there is no RESULT to clear."""
+    steps: list[tuple[str, str]] = []
+    ui_mod._append_step(steps, t("status_writing_sql_retry", n=2))
+    ui_mod._append_step(steps, t("status_writing_sql_retry", n=3))
+    kinds = [k for k, _ in steps]
+    assert kinds == [ui_mod._StepKind.RETRY, ui_mod._StepKind.RETRY]
+
+
 def test_handler_yields_other_status_messages(monkeypatch):
     """Arbitrary status_cb() messages appear in response_box's step log —
     status_md (top bar) intentionally stays the generic "Working" ticker."""
