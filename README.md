@@ -122,6 +122,7 @@ corresponding `AZURE_<NAME>_API_KEY` to `.env`. No code changes needed.
 |---|---|---|
 | `ANTHROPIC_API_KEY` | If using Anthropic | Anthropic API key (requires separate API credits at console.anthropic.com) |
 | `AZURE_CAPA_API_KEY` | If using Azure | Key for all capa connections in models.yaml |
+| `NVIDIA_API_KEY` | If using NVIDIA | Key for the NVIDIA integrate API connections (`nvidia-kimi-k3`) — a separate personal account, not the capa Azure resource |
 | `MODEL_BACKEND` | No | Active connection `id` from models.yaml (default: `gpt-5.1-codex-mini`) |
 | `PG_HOST` | Yes | PostgreSQL host |
 | `PG_PORT` | Yes | PostgreSQL port (usually `5432`) |
@@ -131,6 +132,12 @@ corresponding `AZURE_<NAME>_API_KEY` to `.env`. No code changes needed.
 | `CANOPY_DATA_DIR` | No | History + cache file location — Docker only, do not set locally |
 | `CANOPY_CACHE_TTL_HOURS` | No | Cache TTL in hours (default: `24`) |
 | `CANOPY_UI_LANG` | No | UI label language: `en` (default) or `es` (Spanish). Questions must be in English or Spanish — other languages are rejected before reaching the model. This env var only controls UI labels (buttons, tabs, error messages). |
+| `CANOPY_SENSITIVE_COLUMNS` | No | Comma-separated column names stripped from model context and the UI table (default: `latitude,longitude,hashed_password`) |
+| `CANOPY_LANGFUSE_ENABLED` | No | Enable Langfuse tracing (default: off). Dormant instrumentation ahead of production traffic — see DECISIONS.md's O5. Never set in a test environment. |
+| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` | If tracing enabled | Langfuse project keypair. Both required together with `CANOPY_LANGFUSE_ENABLED`; an incomplete set fails safe into no tracing. |
+| `CANOPY_POSTHOG_API_KEY` | If the show-SQL A/B test is active | PostHog project token, used server-side to evaluate the `canopy-show-sql-by-default` feature flag. See DECISIONS.md's O6. |
+| `CANOPY_POSTHOG_HOST` | No | PostHog ingestion host (default: `https://us.i.posthog.com`). |
+| `CANOPY_AB_SHOW_SQL_ACTIVE` | No | Activates the show-SQL-by-default A/B test (default: off). Also requires `CANOPY_LANGFUSE_ENABLED` and a real PostHog key — do not turn on until file 06's online-eval baseline exists. |
 
 ### 2. Build and run
 

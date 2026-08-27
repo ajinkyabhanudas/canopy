@@ -5,15 +5,23 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+import time
 from collections.abc import Generator
+from difflib import SequenceMatcher
 
 import gradio as gr
 import psycopg2
 import psycopg2.errors
 
-from canopy.config import get_ui_lang
+from canopy.config import get_ui_lang, is_langfuse_enabled, is_show_sql_experiment_active
 from canopy.history import clear_history
 from canopy.i18n import set_locale, t
+from canopy.observability import (
+    assign_variant,
+    log_exposure,
+    score_no_rephrase,
+    score_thumbs,
+)
 from canopy.query.executor import QueryResult, SQLGuardError
 from canopy.query.fuzzy_match import FUZZY_COLUMNS
 from canopy.query.loop import (
@@ -247,13 +255,24 @@ def _render_interpretation(interpretation: Interpretation | None) -> str:
     return "\n".join(lines)
 
 
-def _render_response(result: LoopResult) -> str:
-    """Build the Answer tab's full markdown: model_text (block stripped) + interpretation."""
+def _render_response(result: LoopResult, *, show_sql_inline: bool = False) -> str:
+    """Build the Answer tab's full markdown: model_text (block stripped) + interpretation.
+
+    show_sql_inline is the entire code surface of the show-SQL-by-default A/B
+    experiment (see observability.assign_variant): when True (treatment arm),
+    the generated SQL — the exact same string already rendered in the
+    "Database query" tab, nothing new computed or exposed — is appended
+    inline so the user sees it without a click. When False (control, and the
+    default for every caller that doesn't pass this explicitly), behavior is
+    byte-for-byte unchanged from before this experiment existed.
+    """
     body = strip_interpretation_block(result.model_text)
     interpretation_md = _render_interpretation(result.interpretation)
-    if not interpretation_md:
-        return body
-    return f"{body}\n\n{interpretation_md}"
+    if interpretation_md:
+        body = f"{body}\n\n{interpretation_md}"
+    if show_sql_inline and result.sql:
+        body = f"{body}\n\n---\n\n**Query used:**\n```sql\n{result.sql}\n```"
+    return body
 
 
 class _StepKind:
@@ -378,8 +397,68 @@ def _step_log_markdown(steps: list[tuple[str, str]]) -> str:
     return "\n\n".join(lines)
 
 
-def _empty_result(message: str, session_history: list, status: str = "") -> _Output:
-    """Return a blank output tuple with only the response message and optional status set."""
+# ---------------------------------------------------------------------------
+# Acceptance-proxy: no_rephrase_within_5min
+#
+# Only knowable in retrospect, and only from the NEXT query this browser
+# makes — there is no live 5-minute clock. A user who is satisfied and never
+# returns gets no score at all, which is the honest gap: scoring a silent
+# tab-close as "accepted" would be a false positive with no evidence behind
+# it, and file 06 itself asks for the bias to be named rather than hidden.
+# No background thread, no scheduled job — this evaluates lazily, the moment
+# (if ever) a following query arrives, reusing difflib the same way
+# fuzzy_match.py already does rather than adding a new similarity dependency.
+# ---------------------------------------------------------------------------
+
+_REPHRASE_WINDOW_S = 300  # 5 minutes
+_REPHRASE_SIMILARITY_THRESHOLD = 0.6  # looser than fuzzy_match's 0.72: a
+# rephrase changes wording, not just one typo'd literal, so demanding a high
+# ratio would miss real rephrases and understate how often users retry.
+
+
+def _check_rephrase(
+    last_trace: dict | None, new_question: str
+) -> tuple[str, bool] | None:
+    """Score the PREVIOUS trace against this new question, if there is one to score.
+
+    Returns (trace_id, accepted) for the previous trace, or None if there was
+    no previous trace, it already scored, or it's outside the window (in
+    which case it ages out unscored rather than being guessed at).
+    """
+    if not last_trace or last_trace.get("scored"):
+        return None
+    trace_id = last_trace.get("trace_id")
+    if not trace_id:
+        return None
+    elapsed = time.monotonic() - last_trace.get("at", 0)
+    if elapsed > _REPHRASE_WINDOW_S:
+        return None  # too late to say anything meaningful — leave unscored
+    similar = (
+        SequenceMatcher(
+            a=last_trace.get("question", "").casefold(),
+            b=new_question.casefold(),
+        ).ratio()
+        >= _REPHRASE_SIMILARITY_THRESHOLD
+    )
+    # A rephrase (similar wording, asked again soon) means the previous
+    # answer did NOT satisfy the user — accepted=False for the PREVIOUS trace.
+    return trace_id, not similar
+
+
+def _empty_result(
+    message: str,
+    session_history: list,
+    status: str = "",
+    *,
+    last_trace: dict | None = None,
+    ab_distinct_id: str | None = None,
+) -> _Output:
+    """Return a blank output tuple with only the response message and optional status set.
+
+    last_trace and ab_distinct_id pass through unchanged — these are error/
+    empty-input paths where no query ran, so there is nothing new to
+    remember, nothing to score, and no exposure to log.
+    """
     return (
         "",
         gr.Dataframe(value=None),
@@ -390,6 +469,8 @@ def _empty_result(message: str, session_history: list, status: str = "") -> _Out
         status,
         session_history,
         gr.update(selected=0),
+        last_trace,
+        ab_distinct_id,
         *_NO_SUGGESTIONS,
     )
 
@@ -535,6 +616,8 @@ def _status_yield(
     *,
     is_first: bool = False,
     preview: tuple[QueryResult, str] | None = None,
+    last_trace: dict | None = None,
+    ab_distinct_id: str | None = None,
 ) -> _Output:
     """Return a mostly-blank output tuple for streaming updates.
 
@@ -554,6 +637,11 @@ def _status_yield(
     rows mean, so a superseding retry replaces a table (reads as the search
     refining) rather than retracting a stated answer (reads as a wrong claim).
     See DECISIONS.md U2 for the failure this avoids.
+
+    last_trace passes through unchanged during streaming — it only changes
+    once, on the final success yield, when this run's own trace is known.
+    ab_distinct_id passes through unchanged for the whole run — it's fixed
+    for the browser, not something a single query changes.
     """
     if preview is not None:
         result, sql = preview
@@ -573,6 +661,8 @@ def _status_yield(
         _loading_status_html(is_first=is_first),
         session_history,
         gr.update(selected=0),
+        last_trace,
+        ab_distinct_id,
         *_NO_SUGGESTIONS,
     )
 
@@ -582,12 +672,24 @@ def _success_result(
     question: str,
     session_history: list,
     superseded_question: str | None,
+    trace_id: str | None = None,
+    show_sql_inline: bool = False,
+    ab_distinct_id: str | None = None,
 ) -> _Output:
     """Build the final success output tuple from a completed LoopResult.
 
     Extracted from _run_query_handler so the success-rendering logic (row
     rendering, history dedup, fuzzy-suggestion regeneration, timing display)
     lives in one place rather than inline in the streaming generator.
+
+    trace_id, when tracing is enabled, becomes this run's last_trace entry —
+    the record the NEXT query checks to score whether this one was a
+    rephrase (see _check_rephrase). None when tracing is disabled (the
+    default), which _check_rephrase already treats as nothing to score.
+
+    ab_distinct_id is passed through to the output tuple unchanged — it was
+    already resolved (generated on first use if the experiment is active)
+    before this run started, by the caller in _run_query_handler.
     """
     rows = [list(row) for row in result.rows]
     df = gr.Dataframe(value=rows or None, headers=result.columns or None)
@@ -686,22 +788,33 @@ def _success_result(
     else:
         suggestion_updates = _NO_SUGGESTIONS
 
+    new_trace = (
+        {"trace_id": trace_id, "question": question, "at": time.monotonic(), "scored": False}
+        if trace_id
+        else None
+    )
     return (
         sql_display,
         df,
-        _render_response(result),
+        _render_response(result, show_sql_inline=show_sql_inline),
         count_md,
         gr.Radio(choices=new_history, value=None),
         timing_md,
         "",
         new_history,
         gr.update(selected=0),
+        new_trace,
+        ab_distinct_id,
         *suggestion_updates,
     )
 
 
 def _run_query_handler(
-    question: str, session_history: list, superseded_question: str | None = None
+    question: str,
+    session_history: list,
+    superseded_question: str | None = None,
+    last_trace: dict | None = None,
+    ab_distinct_id: str | None = None,
 ) -> Generator[_Output, None, None]:
     """Streaming generator: yields status updates then the final result.
 
@@ -718,10 +831,28 @@ def _run_query_handler(
     clicking a suggestion left the original dead-end query sitting in
     history: re-running it from there hits the same 0-row result and forces
     the user through the same suggestion click again.
+
+    last_trace, when Langfuse tracing is enabled, is the previous run's
+    {trace_id, question, at} — checked here (before this run starts) to
+    score whether the PREVIOUS trace was a rephrase, and replaced at the end
+    with this run's own trace. Always None when tracing is disabled, which
+    every consumer already treats as "nothing to score."
+
+    ab_distinct_id is this browser's opaque, stable identity anchor for the
+    show-SQL-by-default experiment — NOT the variant itself. PostHog derives
+    the variant deterministically from (flag key, distinct_id) on every
+    call, so nothing about the assignment is stored here; only the identity
+    anchor persists (generated once, via gr.BrowserState, on first use).
+    None until the experiment has assigned this browser an ID.
     """
     question = question.strip()
     if not question:
-        yield _empty_result(t("error_empty_question"), session_history)
+        yield _empty_result(
+            t("error_empty_question"),
+            session_history,
+            last_trace=last_trace,
+            ab_distinct_id=ab_distinct_id,
+        )
         return
 
     if is_unsupported_language(question):
@@ -730,8 +861,33 @@ def _run_query_handler(
             t("error_unsupported_language"),
             session_history,
             status=t("error_unsupported_language_status"),
+            last_trace=last_trace,
+            ab_distinct_id=ab_distinct_id,
         )
         return
+
+    # A distinct_id is generated only once a question actually clears both
+    # checks above — an empty submission or a rejected language never
+    # allocates an identity, since nothing ran that a variant could affect.
+    show_sql_inline = False
+    if is_show_sql_experiment_active():
+        if not ab_distinct_id:
+            import uuid
+
+            ab_distinct_id = uuid.uuid4().hex
+        variant = assign_variant(ab_distinct_id)
+        show_sql_inline = variant == "treatment"
+
+    # Score the PREVIOUS trace against THIS question before this run starts —
+    # a rephrase means the prior answer didn't satisfy the user. No-op when
+    # tracing is disabled (score_no_rephrase itself checks that) or there is
+    # no previous trace to compare against.
+    rephrase_check = _check_rephrase(last_trace, question)
+    if rephrase_check is not None:
+        prev_trace_id, accepted = rephrase_check
+        score_no_rephrase(prev_trace_id, accepted=accepted)
+        if last_trace is not None:
+            last_trace = {**last_trace, "scored": True}
 
     # One queue carrying two kinds of event, tagged rather than two queues:
     # ordering between a status string and the data payload that follows it
@@ -748,10 +904,18 @@ def _run_query_handler(
     def _result_cb(result: QueryResult, sql: str) -> None:
         status_q.put(("preview", (result, sql)))
 
+    trace_id_holder: list[str | None] = [None]
+
+    def _trace_id_cb(trace_id: str) -> None:
+        trace_id_holder[0] = trace_id
+
     def _worker() -> None:
         try:
             result_holder[0] = run_query(
-                question, status_cb=_status_cb, result_cb=_result_cb
+                question,
+                status_cb=_status_cb,
+                result_cb=_result_cb,
+                trace_id_cb=_trace_id_cb,
             )
         except BaseException as exc:  # noqa: BLE001
             error_holder[0] = exc
@@ -762,7 +926,13 @@ def _run_query_handler(
     first_status = t("status_reading")
     steps: list[tuple[str, str]] = []
     _append_step(steps, first_status)
-    yield _status_yield(_step_log_markdown(steps), session_history, is_first=True)
+    yield _status_yield(
+        _step_log_markdown(steps),
+        session_history,
+        is_first=True,
+        last_trace=last_trace,
+        ab_distinct_id=ab_distinct_id,
+    )
 
     thread = threading.Thread(target=_worker, daemon=True)
     thread.start()
@@ -786,11 +956,23 @@ def _run_query_handler(
         kind, payload = item
         if kind == "preview":
             preview = payload  # type: ignore[assignment]
-            yield _status_yield(_step_log_markdown(steps), session_history, preview=preview)
+            yield _status_yield(
+                _step_log_markdown(steps),
+                session_history,
+                preview=preview,
+                last_trace=last_trace,
+                ab_distinct_id=ab_distinct_id,
+            )
             continue
         status_text = t("status_cache_hit") if payload == "CACHE_HIT" else payload
         _append_step(steps, status_text)
-        yield _status_yield(_step_log_markdown(steps), session_history, preview=preview)
+        yield _status_yield(
+            _step_log_markdown(steps),
+            session_history,
+            preview=preview,
+            last_trace=last_trace,
+            ab_distinct_id=ab_distinct_id,
+        )
 
     thread.join()
 
@@ -808,20 +990,36 @@ def _run_query_handler(
                 t("error_guard_readonly_status", operation=exc.operation),
                 session_history,
                 gr.update(selected=0),
+                last_trace,
+                ab_distinct_id,
                 *_NO_SUGGESTIONS,
             )
         elif isinstance(exc, psycopg2.errors.QueryCanceled):
             _log.warning("statement_timeout exceeded for question: %r", question[:60])
-            yield _empty_result(t("error_timeout"), session_history, status="⚠ Query timed out")
+            yield _empty_result(
+                t("error_timeout"),
+                session_history,
+                status="⚠ Query timed out",
+                last_trace=last_trace,
+                ab_distinct_id=ab_distinct_id,
+            )
         elif isinstance(exc, psycopg2.OperationalError):
             _log.error("DB connection error: %s", exc)
             yield _empty_result(
-                t("error_db_connection"), session_history, status="⚠ Database unreachable"
+                t("error_db_connection"),
+                session_history,
+                status="⚠ Database unreachable",
+                last_trace=last_trace,
+                ab_distinct_id=ab_distinct_id,
             )
         elif isinstance(exc, RuntimeError) and "maximum iterations" in str(exc):
             _log.warning("loop exhausted for question: %r", question[:60])
             yield _empty_result(
-                t("error_iterations"), session_history, status="⚠ Question too complex"
+                t("error_iterations"),
+                session_history,
+                status="⚠ Question too complex",
+                last_trace=last_trace,
+                ab_distinct_id=ab_distinct_id,
             )
         elif isinstance(exc, UnsupportedLanguageError):
             # Defense-in-depth: the is_unsupported_language() check above
@@ -834,6 +1032,8 @@ def _run_query_handler(
                 t("error_unsupported_language"),
                 session_history,
                 status=t("error_unsupported_language_status"),
+                last_trace=last_trace,
+                ab_distinct_id=ab_distinct_id,
             )
         else:
             _log.error("query failed in UI: %s", exc, exc_info=True)
@@ -841,11 +1041,23 @@ def _run_query_handler(
                 t("error_generic_response"),
                 session_history,
                 status=t("error_generic_status"),
+                last_trace=last_trace,
+                ab_distinct_id=ab_distinct_id,
             )
         return
 
     result = result_holder[0]
-    yield _success_result(result, question, session_history, superseded_question)
+    if trace_id_holder[0] and is_show_sql_experiment_active():
+        log_exposure(trace_id_holder[0], variant="treatment" if show_sql_inline else "control")
+    yield _success_result(
+        result,
+        question,
+        session_history,
+        superseded_question,
+        trace_id_holder[0],
+        show_sql_inline,
+        ab_distinct_id,
+    )
 
 
 def _clear_handler(current_question: str) -> tuple:
@@ -861,6 +1073,7 @@ def _clear_handler(current_question: str) -> tuple:
         "",                     # timing_md
         "",                     # status_md
         [],                     # history_state
+        None,                   # last_trace_state — nothing left to score against
         *_NO_SUGGESTIONS,       # prompt + 3 buttons + 3 hidden question states
     )
 
@@ -874,6 +1087,26 @@ def build_app() -> gr.Blocks:
         # isolated per device. Default is empty; app.load() populates the
         # sidebar Radio from localStorage on every page load.
         history_state = gr.BrowserState(default_value=[], storage_key="canopy_history")
+
+        # Per-browser record of the most recent trace, {trace_id, question, at,
+        # scored} — read at the start of the NEXT query to score whether this
+        # one was a rephrase (see _check_rephrase), written at the end of this
+        # one. Always None when Langfuse tracing is disabled (the default).
+        last_trace_state = gr.BrowserState(default_value=None, storage_key="canopy_last_trace")
+
+        # A/B experiment: show-SQL-by-default (see observability.assign_variant,
+        # config.is_show_sql_experiment_active, ~/Desktop/AB-Tests/ab-test-plan.md).
+        # Holds an opaque identity anchor ONLY — never the variant itself.
+        # PostHog's get_feature_flag() derives the variant deterministically
+        # from (flag key, this ID) on every call, so the same ID always maps
+        # to the same arm with nothing about the assignment stored here.
+        # Generated once per browser on first use, then stable for that
+        # browser's lifetime — a fresh random ID on every query would let
+        # PostHog re-derive a DIFFERENT variant each time, which would make
+        # "did the treatment work" unanswerable.
+        ab_distinct_id_state = gr.BrowserState(
+            default_value=None, storage_key="canopy_ab_distinct_id"
+        )
 
         with gr.Row():
             # ── Left panel ─────────────────────────────────────────────────────
@@ -938,6 +1171,22 @@ def build_app() -> gr.Blocks:
                 with gr.Tabs() as result_tabs:
                     with gr.Tab(t("tab_answer"), id=0):
                         response_box = gr.Markdown(_IDLE_PROMPT, elem_id="canopy-response")
+                        # Explicit acceptance-proxy signal (thumbs_explicit —
+                        # see observability.py). Hidden unless tracing is
+                        # enabled: with tracing off there is nowhere for a
+                        # click to go, so showing the control would be a
+                        # dead affordance. This is the ONLY new UI surface
+                        # in the tracing work — everything else reuses
+                        # existing components (see DECISIONS.md's Operations
+                        # entry for the online-eval instrumentation).
+                        if is_langfuse_enabled():
+                            with gr.Row():
+                                thumbs_up_btn = gr.Button(
+                                    "👍", size="sm", variant="secondary", scale=0
+                                )
+                                thumbs_down_btn = gr.Button(
+                                    "👎", size="sm", variant="secondary", scale=0
+                                )
                     with gr.Tab(t("tab_data"), id=1):
                         row_count_md = gr.Markdown("")
                         results_table = gr.Dataframe(
@@ -962,6 +1211,7 @@ def build_app() -> gr.Blocks:
         _OUTPUTS = [
             sql_box, results_table, response_box, row_count_md,
             history_radio, timing_md, status_md, history_state, result_tabs,
+            last_trace_state, ab_distinct_id_state,
             *_suggestion_outputs,
         ]
 
@@ -974,13 +1224,17 @@ def build_app() -> gr.Blocks:
 
         submit_btn.click(
             fn=_run_query_handler,
-            inputs=[question_box, history_state],
+            inputs=[
+                question_box, history_state, gr.State(None), last_trace_state, ab_distinct_id_state,
+            ],
             outputs=_OUTPUTS,
             concurrency_limit=_QUERY_CONCURRENCY_LIMIT,
         )
         question_box.submit(
             fn=_run_query_handler,
-            inputs=[question_box, history_state],
+            inputs=[
+                question_box, history_state, gr.State(None), last_trace_state, ab_distinct_id_state,
+            ],
             outputs=_OUTPUTS,
             concurrency_limit=_QUERY_CONCURRENCY_LIMIT,
         )
@@ -990,7 +1244,9 @@ def build_app() -> gr.Blocks:
             outputs=[question_box],
         ).then(
             fn=_run_query_handler,
-            inputs=[question_box, history_state],
+            inputs=[
+                question_box, history_state, gr.State(None), last_trace_state, ab_distinct_id_state,
+            ],
             outputs=_OUTPUTS,
             concurrency_limit=_QUERY_CONCURRENCY_LIMIT,
         )
@@ -1001,6 +1257,7 @@ def build_app() -> gr.Blocks:
                 history_radio, question_box, response_box,
                 row_count_md, results_table, sql_box,
                 timing_md, status_md, history_state,
+                last_trace_state,
                 *_suggestion_outputs,
             ],
         )
@@ -1041,9 +1298,33 @@ def build_app() -> gr.Blocks:
                     outputs=[question_box],
                 ).then(
                     fn=_run_query_handler,
-                    inputs=[question_box, history_state, superseded_state],
+                    inputs=[
+                        question_box, history_state, superseded_state,
+                        last_trace_state, ab_distinct_id_state,
+                    ],
                     outputs=_OUTPUTS,
                     concurrency_limit=_QUERY_CONCURRENCY_LIMIT,
                 )
+
+        # Explicit acceptance-proxy control — only present when tracing is
+        # enabled (see the Answer tab above). Scores the CURRENT trace, not
+        # the previous one: unlike _check_rephrase, a thumbs click is about
+        # the answer the user is looking at right now.
+        if is_langfuse_enabled():
+
+            def _thumbs(last_trace: dict | None, *, positive: bool) -> None:
+                if last_trace and last_trace.get("trace_id"):
+                    score_thumbs(last_trace["trace_id"], positive=positive)
+
+            thumbs_up_btn.click(
+                fn=lambda lt: _thumbs(lt, positive=True),
+                inputs=[last_trace_state],
+                outputs=[],
+            )
+            thumbs_down_btn.click(
+                fn=lambda lt: _thumbs(lt, positive=False),
+                inputs=[last_trace_state],
+                outputs=[],
+            )
 
     return app

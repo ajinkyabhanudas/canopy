@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import canopy.ui.app as ui_mod
 from canopy.i18n import get_lang, set_locale, t
 from canopy.query.executor import SQLGuardError
@@ -27,12 +29,18 @@ def _make_result(**overrides) -> LoopResult:
 
 
 def _run(
-    question: str, session_history: list | None = None, superseded: str | None = None
+    question: str,
+    session_history: list | None = None,
+    superseded: str | None = None,
+    last_trace: dict | None = None,
+    ab_variant: str | None = None,
 ) -> tuple:
     """Drain the streaming generator and return the last yielded tuple."""
     history = session_history if session_history is not None else []
     result = None
-    for result in ui_mod._run_query_handler(question, history, superseded):
+    for result in ui_mod._run_query_handler(
+        question, history, superseded, last_trace, ab_variant
+    ):
         pass
     return result
 
@@ -50,7 +58,8 @@ def _all_yields(question: str, session_history: list | None = None) -> list[tupl
 
 def test_empty_result_structure():
     result = ui_mod._empty_result("some message", [])
-    assert len(result) == 30
+    # 30 base + last_trace_state (index 9) + ab_variant_state (index 10)
+    assert len(result) == 32
     sql, df, response, count_md, radio, timing, status, state, tabs, *_ = result
     assert sql == ""
     assert count_md == ""
@@ -84,7 +93,8 @@ def test_handler_first_yield_is_loading(monkeypatch):
     current_step_text for why these are deliberately different)."""
     monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None, **_kw: _make_result())
     first, *_ = _all_yields("How many detections?")
-    assert len(first) == 30
+    # 30 base + last_trace_state (index 9) + ab_variant_state (index 10)
+    assert len(first) == 32
     _, _, response, _, _, _, status_md, state, *_ = first
     assert t("status_reading") in response
     assert t("status_bar_working") in status_md
@@ -982,6 +992,18 @@ def test_append_step_stops_backward_scan_at_earlier_retry():
     assert kinds.count(ui_mod._StepKind.RETRY) == 2
 
 
+def test_append_step_retry_with_no_result_since_prior_retry_is_a_noop_scan():
+    """Two retries in a row with no RESULT between them (the agent tried
+    again without ever getting a real result back, e.g. a second guard
+    error) — the backward scan hits the earlier RETRY immediately and stops
+    without deleting anything, since there is no RESULT to clear."""
+    steps: list[tuple[str, str]] = []
+    ui_mod._append_step(steps, t("status_writing_sql_retry", n=2))
+    ui_mod._append_step(steps, t("status_writing_sql_retry", n=3))
+    kinds = [k for k, _ in steps]
+    assert kinds == [ui_mod._StepKind.RETRY, ui_mod._StepKind.RETRY]
+
+
 def test_handler_yields_other_status_messages(monkeypatch):
     """Arbitrary status_cb() messages appear in response_box's step log —
     status_md (top bar) intentionally stays the generic "Working" ticker."""
@@ -1094,6 +1116,155 @@ def test_render_response_unchanged_when_interpretation_none():
     assert ui_mod._render_response(result) == "Plain answer, no block."
 
 
+# ---------------------------------------------------------------------------
+# show-SQL-by-default A/B experiment — _render_response(show_sql_inline=...)
+# ---------------------------------------------------------------------------
+
+
+def test_render_response_default_never_shows_sql():
+    """Every existing caller that doesn't pass show_sql_inline must render
+    byte-for-byte as before this experiment existed — this is the control
+    arm's entire contract."""
+    result = _make_result(model_text="Plain answer.", sql="SELECT COUNT(*) FROM detections")
+    assert ui_mod._render_response(result) == "Plain answer."
+
+
+def test_render_response_control_arm_omits_sql():
+    result = _make_result(model_text="Plain answer.", sql="SELECT COUNT(*) FROM detections")
+    rendered = ui_mod._render_response(result, show_sql_inline=False)
+    assert "SELECT COUNT(*)" not in rendered
+
+
+def test_render_response_treatment_arm_inlines_sql():
+    result = _make_result(model_text="Plain answer.", sql="SELECT COUNT(*) FROM detections")
+    rendered = ui_mod._render_response(result, show_sql_inline=True)
+    assert "SELECT COUNT(*) FROM detections" in rendered
+    assert "Plain answer." in rendered  # the answer itself is never removed
+
+
+def test_render_response_treatment_arm_no_sql_adds_nothing():
+    """A result with no SQL (agent declined to query) must not render an
+    empty query block — nothing to show inline, so nothing is added."""
+    result = _make_result(model_text="I cannot answer that.", sql=None)
+    rendered = ui_mod._render_response(result, show_sql_inline=True)
+    assert rendered == "I cannot answer that."
+
+
+# ---------------------------------------------------------------------------
+# show-SQL-by-default A/B experiment — variant assignment through the handler
+# ---------------------------------------------------------------------------
+
+
+def test_handler_generates_distinct_id_when_experiment_active(monkeypatch):
+    """result[10] holds the opaque identity anchor, never the variant itself
+    — PostHog derives the variant from this ID on every call, so nothing
+    about the assignment is stored in the browser."""
+    monkeypatch.setattr(ui_mod, "is_show_sql_experiment_active", lambda: True)
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None, **_kw: _make_result())
+    result = _run("q", ab_variant=None)
+    new_id = result[10]
+    assert isinstance(new_id, str) and new_id
+
+
+def test_handler_keeps_existing_distinct_id_stable(monkeypatch):
+    """A browser with an existing ID must keep it — generating a fresh one
+    every query would let PostHog derive a different variant each time,
+    breaking the "did the treatment work" comparison."""
+    monkeypatch.setattr(ui_mod, "is_show_sql_experiment_active", lambda: True)
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None, **_kw: _make_result())
+    result = _run("q", ab_variant="existing-stable-id")
+    assert result[10] == "existing-stable-id"
+
+
+def test_handler_no_distinct_id_assigned_when_experiment_inactive(monkeypatch):
+    """The default (and only) state until someone deliberately activates the
+    experiment — no browser should ever get an ID allocated by accident."""
+    monkeypatch.setattr(ui_mod, "is_show_sql_experiment_active", lambda: False)
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None, **_kw: _make_result())
+    result = _run("q", ab_variant=None)
+    assert result[10] is None
+
+
+def test_handler_treatment_variant_renders_sql_inline(monkeypatch):
+    monkeypatch.setattr(ui_mod, "is_show_sql_experiment_active", lambda: True)
+    monkeypatch.setattr(ui_mod, "assign_variant", lambda distinct_id: "treatment")
+    result = _make_result(model_text="5 detections.", sql="SELECT COUNT(*) FROM detections")
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None, **_kw: result)
+    out = _run("q", ab_variant="some-id")
+    response = out[2]
+    assert "SELECT COUNT(*) FROM detections" in response
+
+
+def test_handler_control_variant_does_not_render_sql_inline(monkeypatch):
+    monkeypatch.setattr(ui_mod, "is_show_sql_experiment_active", lambda: True)
+    monkeypatch.setattr(ui_mod, "assign_variant", lambda distinct_id: "control")
+    result = _make_result(model_text="5 detections.", sql="SELECT COUNT(*) FROM detections")
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None, **_kw: result)
+    out = _run("q", ab_variant="some-id")
+    response = out[2]
+    assert "SELECT COUNT(*) FROM detections" not in response
+
+
+def test_handler_none_variant_from_posthog_renders_as_control(monkeypatch):
+    """assign_variant returning None (PostHog unreachable, flag missing) must
+    render exactly like control — never crash, never guess treatment."""
+    monkeypatch.setattr(ui_mod, "is_show_sql_experiment_active", lambda: True)
+    monkeypatch.setattr(ui_mod, "assign_variant", lambda distinct_id: None)
+    result = _make_result(model_text="5 detections.", sql="SELECT COUNT(*) FROM detections")
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None, **_kw: result)
+    out = _run("q", ab_variant="some-id")
+    assert "SELECT COUNT(*) FROM detections" not in out[2]
+
+
+def test_handler_logs_exposure_when_trace_and_variant_present(monkeypatch):
+    logged = []
+    monkeypatch.setattr(ui_mod, "is_show_sql_experiment_active", lambda: True)
+    monkeypatch.setattr(ui_mod, "assign_variant", lambda distinct_id: "treatment")
+    monkeypatch.setattr(
+        ui_mod, "log_exposure", lambda tid, *, variant: logged.append((tid, variant))
+    )
+
+    def _fake_run_query(q, status_cb=None, result_cb=None, trace_id_cb=None, **_kw):
+        if trace_id_cb:
+            trace_id_cb("trace-abc")
+        return _make_result()
+
+    monkeypatch.setattr(ui_mod, "run_query", _fake_run_query)
+    _run("q", ab_variant="some-id")
+    assert logged == [("trace-abc", "treatment")]
+
+
+def test_handler_no_exposure_logged_when_experiment_inactive(monkeypatch):
+    """No trace_id_cb call happens without tracing, so there is nothing to
+    attach an exposure to — confirms no spurious call is attempted."""
+    logged = []
+    monkeypatch.setattr(ui_mod, "is_show_sql_experiment_active", lambda: False)
+    monkeypatch.setattr(
+        ui_mod, "log_exposure", lambda tid, *, variant: logged.append((tid, variant))
+    )
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None, **_kw: _make_result())
+    _run("q", ab_variant=None)
+    assert logged == []
+
+
+def test_handler_unsupported_language_does_not_trigger_assignment(monkeypatch):
+    """Same reasoning as the empty-input case: a rejected-language submission
+    never reaches run_query(), so it must not allocate a distinct_id."""
+    monkeypatch.setattr(ui_mod, "is_show_sql_experiment_active", lambda: True)
+    result = _run("Combien de détections ont été enregistrées en 2022 ?", ab_variant=None)
+    assert result[10] is None
+
+
+def test_handler_empty_input_does_not_trigger_assignment(monkeypatch):
+    """Empty input must not allocate a distinct_id even when the experiment
+    IS active — nothing ran that would need one, and generating an ID on a
+    rejected submission is a wasted PostHog evaluation on a browser that may
+    never actually submit a real query."""
+    monkeypatch.setattr(ui_mod, "is_show_sql_experiment_active", lambda: True)
+    result = _run("   ", ab_variant=None)
+    assert result[10] is None
+
+
 def test_handler_response_box_uses_rendered_interpretation(monkeypatch):
     """End-to-end: the handler's final yield must use _render_response, not raw model_text."""
     model_text = (
@@ -1108,3 +1279,124 @@ def test_handler_response_box_uses_rendered_interpretation(monkeypatch):
     _, _, response, *_ = _run("q")
     assert "DATA SOURCE:" not in response
     assert t("interpretation_heading") in response
+
+
+# ---------------------------------------------------------------------------
+# _check_rephrase — no_rephrase_within_5min acceptance proxy
+# ---------------------------------------------------------------------------
+
+
+def test_check_rephrase_none_when_no_previous_trace():
+    assert ui_mod._check_rephrase(None, "any question") is None
+
+
+def test_check_rephrase_none_when_already_scored():
+    last_trace = {
+        "trace_id": "t1", "question": "how many species", "at": time.monotonic(), "scored": True,
+    }
+    assert ui_mod._check_rephrase(last_trace, "how many species") is None
+
+
+def test_check_rephrase_none_when_no_trace_id():
+    last_trace = {"trace_id": None, "question": "q", "at": time.monotonic(), "scored": False}
+    assert ui_mod._check_rephrase(last_trace, "q") is None
+
+
+def test_check_rephrase_none_when_outside_window():
+    """A previous trace older than the window ages out unscored rather than guessed at."""
+    last_trace = {
+        "trace_id": "t1",
+        "question": "how many species",
+        "at": time.monotonic() - (ui_mod._REPHRASE_WINDOW_S + 30),
+        "scored": False,
+    }
+    assert ui_mod._check_rephrase(last_trace, "how many species were seen") is None
+
+
+def test_check_rephrase_similar_question_scores_not_accepted():
+    """A near-duplicate asked again soon means the previous answer didn't satisfy."""
+    last_trace = {
+        "trace_id": "t1",
+        "question": "how many species were detected at Tapichalaca",
+        "at": time.monotonic(),
+        "scored": False,
+    }
+    result = ui_mod._check_rephrase(last_trace, "how many species detected at Tapichalaca")
+    assert result == ("t1", False)
+
+
+def test_check_rephrase_dissimilar_question_scores_accepted():
+    """A completely different next question means the previous one was resolved."""
+    last_trace = {
+        "trace_id": "t1",
+        "question": "how many species were detected at Tapichalaca",
+        "at": time.monotonic(),
+        "scored": False,
+    }
+    result = ui_mod._check_rephrase(last_trace, "what is the busiest reserve by detections")
+    assert result == ("t1", True)
+
+
+# ---------------------------------------------------------------------------
+# Trace bookkeeping through the streaming handler (tracing disabled — the
+# only state possible in tests, since run_query is monkeypatched directly
+# and never touches canopy.observability). These confirm last_trace flows
+# through the tuple shape correctly regardless of tracing being on/off.
+# ---------------------------------------------------------------------------
+
+
+def test_handler_last_trace_passes_through_when_run_query_yields_none(monkeypatch):
+    """run_query's trace_id_cb is never called when tracing is disabled (the
+    default and the only state in tests) — last_trace_state must stay None,
+    not silently populate with garbage."""
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None, **_kw: _make_result())
+    result = _run("q", last_trace=None)
+    # last_trace_state sits at index 9 in the output tuple.
+    assert result[9] is None
+
+
+def test_handler_new_trace_id_populates_last_trace_state(monkeypatch):
+    """When run_query DOES call trace_id_cb (tracing enabled in production),
+    the new trace becomes last_trace_state so the NEXT query can score it."""
+
+    def _fake_run_query(q, status_cb=None, result_cb=None, trace_id_cb=None, **_kw):
+        if trace_id_cb:
+            trace_id_cb("trace-123")
+        return _make_result()
+
+    monkeypatch.setattr(ui_mod, "run_query", _fake_run_query)
+    result = _run("how many species", last_trace=None)
+    new_trace = result[9]
+    assert new_trace["trace_id"] == "trace-123"
+    assert new_trace["question"] == "how many species"
+    assert new_trace["scored"] is False
+
+
+def test_handler_scores_previous_trace_before_new_query_runs(monkeypatch):
+    """The rephrase check on the incoming last_trace must fire even though
+    this test's run_query stub never touches tracing itself — _check_rephrase
+    is pure logic in app.py, independent of whether Langfuse is reachable."""
+    scored = []
+    monkeypatch.setattr(
+        ui_mod, "score_no_rephrase", lambda tid, *, accepted: scored.append((tid, accepted))
+    )
+    monkeypatch.setattr(ui_mod, "run_query", lambda q, status_cb=None, **_kw: _make_result())
+
+    last_trace = {
+        "trace_id": "prev-trace",
+        "question": "how many detections at Yanacocha",
+        "at": time.monotonic(),
+        "scored": False,
+    }
+    _run("what is the busiest reserve by detections", last_trace=last_trace)
+    assert scored == [("prev-trace", True)]  # dissimilar next question -> accepted
+
+
+def test_handler_empty_input_passes_last_trace_through_unscored():
+    """Submitting empty input must not score or discard the previous trace —
+    nothing happened that says anything about whether it was accepted."""
+    last_trace = {
+        "trace_id": "prev-trace", "question": "q", "at": time.monotonic(), "scored": False,
+    }
+    result = _run("   ", last_trace=last_trace)
+    assert result[9] == last_trace
