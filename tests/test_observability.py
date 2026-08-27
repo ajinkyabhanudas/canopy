@@ -217,3 +217,207 @@ def test_log_exposure_calls_score_with_variant_when_enabled(monkeypatch):
     assert len(calls) == 1
     assert calls[0]["trace_id"] == "trace-123"
     assert calls[0]["value"] == "treatment"
+
+
+def test_log_exposure_swallows_client_exception(monkeypatch):
+    def _boom(**kw):
+        raise RuntimeError("simulated Langfuse failure")
+
+    fake_client = type("FakeClient", (), {"score": lambda self, **kw: _boom()})()
+    monkeypatch.setattr(obs, "_get_client", lambda: fake_client)
+    obs.log_exposure("trace-123", variant="control")  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Success paths — a working (fake) client actually receives the right calls.
+# Everything above this line proves the disabled/failure paths; these prove
+# the enabled path wires through to the client correctly.
+# ---------------------------------------------------------------------------
+
+
+def _fake_trace(trace_id="trace-xyz"):
+    calls = {"spans": []}
+
+    class _FakeSpan:
+        def end(self, **kw):
+            calls["spans"][-1]["end_kwargs"] = kw
+            return self
+
+    class _FakeTrace:
+        id = trace_id
+
+        def span(self, **kw):
+            calls["spans"].append({"span_kwargs": kw})
+            return _FakeSpan()
+
+    return _FakeTrace(), calls
+
+
+def test_trace_query_success_returns_trace_id_and_adds_spans(monkeypatch):
+    fake_trace, calls = _fake_trace()
+    fake_client = type("FakeClient", (), {"trace": lambda self, **kw: fake_trace})()
+    monkeypatch.setattr(obs, "_get_client", lambda: fake_client)
+
+    result = obs.trace_query(
+        question="q",
+        sql="SELECT 1",
+        row_count=5,
+        timing={"llm_s": 1.0, "db_s": 0.1, "llm_calls": 1, "db_calls": 1},
+        cache_hit=False,
+    )
+    assert result == "trace-xyz"
+    assert len(calls["spans"]) == 2  # llm + db
+    assert calls["spans"][0]["span_kwargs"]["name"] == "llm"
+    assert calls["spans"][1]["span_kwargs"]["name"] == "db"
+
+
+def test_trace_query_cache_hit_skips_spans(monkeypatch):
+    """A cache hit never called execute_sql or the LLM — no llm/db spans to add."""
+    fake_trace, calls = _fake_trace()
+    fake_client = type("FakeClient", (), {"trace": lambda self, **kw: fake_trace})()
+    monkeypatch.setattr(obs, "_get_client", lambda: fake_client)
+
+    result = obs.trace_query(
+        question="q", sql="SELECT 1", row_count=5, timing={}, cache_hit=True
+    )
+    assert result == "trace-xyz"
+    assert calls["spans"] == []
+
+
+def test_trace_query_returns_none_and_logs_on_client_exception(monkeypatch):
+    def _boom(**kw):
+        raise RuntimeError("simulated Langfuse API error")
+
+    fake_client = type("FakeClient", (), {"trace": lambda self, **kw: _boom()})()
+    monkeypatch.setattr(obs, "_get_client", lambda: fake_client)
+
+    result = obs.trace_query(
+        question="q", sql="SELECT 1", row_count=1, timing={}, cache_hit=False
+    )
+    assert result is None
+
+
+def test_score_no_rephrase_success_calls_client_score(monkeypatch):
+    calls = []
+    fake_client = type("FakeClient", (), {"score": lambda self, **kw: calls.append(kw)})()
+    monkeypatch.setattr(obs, "_get_client", lambda: fake_client)
+
+    obs.score_no_rephrase("trace-1", accepted=True)
+    assert calls == [
+        {
+            "trace_id": "trace-1",
+            "name": "no_rephrase_within_5min",
+            "value": 1.0,
+            "data_type": "BOOLEAN",
+        }
+    ]
+
+
+def test_score_no_rephrase_swallows_client_exception(monkeypatch):
+    def _boom(**kw):
+        raise RuntimeError("simulated failure")
+
+    fake_client = type("FakeClient", (), {"score": lambda self, **kw: _boom()})()
+    monkeypatch.setattr(obs, "_get_client", lambda: fake_client)
+    obs.score_no_rephrase("trace-1", accepted=False)  # must not raise
+
+
+def test_score_thumbs_success_calls_client_score(monkeypatch):
+    calls = []
+    fake_client = type("FakeClient", (), {"score": lambda self, **kw: calls.append(kw)})()
+    monkeypatch.setattr(obs, "_get_client", lambda: fake_client)
+
+    obs.score_thumbs("trace-2", positive=False)
+    assert calls == [
+        {"trace_id": "trace-2", "name": "thumbs_explicit", "value": 0.0, "data_type": "BOOLEAN"}
+    ]
+
+
+def test_score_thumbs_swallows_client_exception(monkeypatch):
+    def _boom(**kw):
+        raise RuntimeError("simulated failure")
+
+    fake_client = type("FakeClient", (), {"score": lambda self, **kw: _boom()})()
+    monkeypatch.setattr(obs, "_get_client", lambda: fake_client)
+    obs.score_thumbs("trace-2", positive=True)  # must not raise
+
+
+def test_flush_calls_client_flush_when_enabled(monkeypatch):
+    calls = []
+    fake_client = type("FakeClient", (), {"flush": lambda self: calls.append(True)})()
+    monkeypatch.setattr(obs, "_get_client", lambda: fake_client)
+    obs.flush()
+    assert calls == [True]
+
+
+def test_flush_is_noop_when_disabled(monkeypatch):
+    monkeypatch.setattr(obs, "_get_client", lambda: None)
+    obs.flush()  # must not raise
+
+
+def test_flush_swallows_client_exception(monkeypatch):
+    def _boom():
+        raise RuntimeError("simulated failure")
+
+    fake_client = type("FakeClient", (), {"flush": _boom})()
+    monkeypatch.setattr(obs, "_get_client", lambda: fake_client)
+    obs.flush()  # must not raise
+
+
+def test_get_client_returns_cached_instance_on_second_call(monkeypatch):
+    """The lazily-constructed Langfuse client must be built once and reused
+    — a second call with a client already cached takes the early-return
+    branch, not reconstruction."""
+    monkeypatch.setattr(obs, "is_langfuse_enabled", lambda: True)
+    monkeypatch.setattr(obs, "_client_init_failed", False)
+    sentinel = object()
+    monkeypatch.setattr(obs, "_client", sentinel)
+    assert obs._get_client() is sentinel
+
+
+def test_get_posthog_client_constructs_and_caches(monkeypatch):
+    """Exercises the real construction path (not a mocked _get_posthog_client)
+    — confirms Posthog() is built once with the project key/host and cached,
+    not reconstructed on every call."""
+    monkeypatch.setenv("CANOPY_AB_SHOW_SQL_ACTIVE", "true")
+    monkeypatch.setenv("CANOPY_LANGFUSE_ENABLED", "true")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
+    monkeypatch.setenv("CANOPY_POSTHOG_API_KEY", "phc-test")
+    monkeypatch.setattr(obs, "_posthog_client", None)
+    monkeypatch.setattr(obs, "_posthog_client_init_failed", False)
+
+    construct_calls = []
+
+    class _FakePosthog:
+        def __init__(self, **kw):
+            construct_calls.append(kw)
+
+    monkeypatch.setattr("posthog.Posthog", _FakePosthog)
+
+    client1 = obs._get_posthog_client()
+    client2 = obs._get_posthog_client()
+    assert client1 is client2  # cached, not rebuilt
+    assert len(construct_calls) == 1
+    assert construct_calls[0]["project_api_key"] == "phc-test"
+
+
+def test_posthog_client_init_failure_disables_assignment_without_raising(monkeypatch):
+    """A bad key or unreachable host must degrade to no-assignment, never crash."""
+    monkeypatch.setenv("CANOPY_AB_SHOW_SQL_ACTIVE", "true")
+    monkeypatch.setenv("CANOPY_LANGFUSE_ENABLED", "true")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
+    monkeypatch.setenv("CANOPY_POSTHOG_API_KEY", "phc-test")
+    monkeypatch.setattr(obs, "_posthog_client", None)
+    monkeypatch.setattr(obs, "_posthog_client_init_failed", False)
+
+    def _boom(**kw):
+        raise RuntimeError("simulated unreachable host")
+
+    monkeypatch.setattr("posthog.Posthog", _boom)
+    result = obs.assign_variant("browser-abc")
+    assert result is None
+    # Second call must not retry construction — _posthog_client_init_failed short-circuits.
+    result2 = obs.assign_variant("browser-def")
+    assert result2 is None
