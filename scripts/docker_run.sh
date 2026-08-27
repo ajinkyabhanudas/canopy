@@ -19,9 +19,15 @@ set -a
 source "$ENV_FILE"
 set +a
 
-# Build -e flags for every non-comment, non-empty var in .env
+# Build -e flags for every non-comment, non-empty var in .env.
+# The `|| [[ -n "$line" ]]` clause handles a .env with no trailing newline on
+# its last line — plain `while read` silently drops that line otherwise,
+# since `read` returns non-zero (ending the loop) exactly when it hits EOF
+# without a newline, even though it still populated $line correctly. Bitten
+# by this live: a `>>`-appended MODEL_BACKEND line with no trailing newline
+# was silently absent from every container this script started.
 env_args=()
-while IFS= read -r line; do
+while IFS= read -r line || [[ -n "$line" ]]; do
   [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
   key="${line%%=*}"
   [[ -z "$key" ]] && continue
