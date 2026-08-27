@@ -2,13 +2,17 @@
 #
 # Each connection has:
 #   id          — used as MODEL_BACKEND value and in benchmark output
-#   backend     — "anthropic" or "azure"
-#   api_style   — Azure only; one of:
+#   backend     — "anthropic", "azure", or "nvidia" (any string works; only
+#                 "anthropic" is special-cased to raise in registry.py)
+#   api_style   — one of:
 #                   "azure-inference"   (default) azure-ai-inference SDK, /models endpoint
-#                   "openai-compat"     OpenAI SDK, /openai/v1/chat/completions
+#                   "openai-compat"     OpenAI SDK, Azure quirks patched (max_completion_tokens,
+#                                       fixed context window) — Azure project-scoped paths only
 #                   "openai-responses"  urllib POST to /openai/v1/responses (Responses API)
+#                   "openai-standard"   stock OpenAI SDK, no patching — plain third-party
+#                                       OpenAI-compatible hosts (e.g. NVIDIA's integrate API)
 #   active      — false = skip in benchmark until deployment is activated by admin
-#   endpoint    — Azure only; base URL for this connection path
+#   endpoint    — base URL for this connection path
 #   api_key_env — name of the .env variable that holds the API key
 #   models      — list of deployment names to test; empty list = auto-discover
 #   timeout     — optional, seconds (default: 60)
@@ -86,4 +90,40 @@ connections:
     api_key_env: AZURE_CAPA_API_KEY
     models:
       - qwen--qwen3-4b-instruct-2507
+    timeout: 60
+
+  # ------------------------------------------------------------------
+  # NVIDIA integrate API (personal account, standalone from the capa Azure
+  # resource). Added when Azure custom-model access was revoked, to keep the
+  # query loop functional for online-eval instrumentation work. Standard
+  # OpenAI-SDK-compatible endpoint — no Azure-specific request/response
+  # patching needed (see models/llamaindex_compat.py's
+  # build_openai_standard_llm).
+  #
+  # deepseek-v4-flash-0731 was tried first; chat completions 401'd with the
+  # original key even though models.list() succeeded with the same key —
+  # an account-provisioning gap (listing/catalogue access without
+  # inference access), not a model-naming or code issue. A rotated key
+  # resolved it. kimi-k3 (moonshotai) confirmed working via curl with the
+  # new key before being wired in here — see DECISIONS.md's Operations
+  # entry for this connection.
+  # ------------------------------------------------------------------
+  - id: nvidia-kimi-k3
+    backend: nvidia
+    api_style: openai-standard
+    active: true
+    endpoint: https://integrate.api.nvidia.com/v1
+    api_key_env: NVIDIA_API_KEY
+    models:
+      - moonshotai/kimi-k3
+    timeout: 60
+
+  - id: nvidia-deepseek-v4-flash
+    backend: nvidia
+    api_style: openai-standard
+    active: false  # 401'd on inference with the original key; not retested since rotation
+    endpoint: https://integrate.api.nvidia.com/v1
+    api_key_env: NVIDIA_API_KEY
+    models:
+      - deepseek-ai/deepseek-v4-flash-0731
     timeout: 60

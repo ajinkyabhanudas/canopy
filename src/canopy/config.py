@@ -54,7 +54,8 @@ class ModelConnection:
     models: list[str] = field(default_factory=list)
     endpoint: str = ""
     timeout: float = 60.0
-    api_style: str = "azure-inference"  # "azure-inference" | "openai-compat" | "openai-responses"
+    # "azure-inference" | "openai-compat" | "openai-responses" | "openai-standard"
+    api_style: str = "azure-inference"
     active: bool = True                 # False = skip in benchmark until admin activates
 
 
@@ -222,3 +223,42 @@ def is_langfuse_enabled() -> bool:
     return bool(
         os.environ.get("LANGFUSE_PUBLIC_KEY") and os.environ.get("LANGFUSE_SECRET_KEY")
     )
+
+
+# ---------------------------------------------------------------------------
+# A/B experiment: show-SQL-by-default, via PostHog feature flags. See
+# DECISIONS.md's "show SQL by default" entry and
+# ~/Desktop/AB-Tests/ab-test-plan.md for the full design.
+#
+# Deliberately a SEPARATE switch from CANOPY_LANGFUSE_ENABLED, even though
+# the experiment's primary metric (thumbs_explicit) requires tracing to be
+# on to mean anything. The code for this experiment can exist and be tested
+# without ever assigning a real user to a variant — merging the feature must
+# not itself start the experiment. This mirrors the "code exists, dormant
+# until we choose to run it" pattern from the tracing work (O5), applied one
+# level further: tracing being on does not imply an experiment is running.
+#
+# PostHog replaced an earlier hand-rolled gr.BrowserState version after a
+# live persistence bug surfaced during Docker verification — PostHog's
+# get_feature_flag() is deterministic and hash-based per distinct_id, so
+# there is no client-side assignment state that can fail to persist.
+# ---------------------------------------------------------------------------
+
+def is_show_sql_experiment_active() -> bool:
+    """Return whether the show-SQL-by-default experiment is assigning variants.
+
+    Off by default. Requires tracing AND a PostHog project key — an
+    experiment with no way to log exposure/measure its metric (Langfuse) or
+    no way to assign variants (PostHog) is not a running experiment. An
+    incomplete env fails safe into "off" rather than raising.
+    """
+    if os.environ.get("CANOPY_AB_SHOW_SQL_ACTIVE", "").lower().strip() not in ("1", "true", "yes"):
+        return False
+    if not os.environ.get("CANOPY_POSTHOG_API_KEY"):
+        return False
+    return is_langfuse_enabled()
+
+
+def get_posthog_host() -> str:
+    """Return the PostHog ingestion host (default: PostHog Cloud US)."""
+    return os.environ.get("CANOPY_POSTHOG_HOST", "https://us.i.posthog.com")

@@ -75,6 +75,7 @@
 | # | Decision | Chosen approach | Verdict |
 |---|---|---|---|
 | M1 | Primary model tier | Azure AI Foundry (gpt-5.1-codex-mini + gpt-5.1-2); Claude Sonnet inactive | ⚠️ Caveat |
+| M2 | Backup backend after Azure access loss | NVIDIA integrate API (`moonshotai/kimi-k3`), new `openai-standard` api_style | ✅ Sound |
 
 ### ⚙️ Operations
 
@@ -85,6 +86,8 @@
 | O3 | Container security | Non-root user `canopy`; persistent `/data` volume | ✅ Sound |
 | O4 | Model/schema state verification | Git history + this document, no separate CHANGELOG | ✅ Sound |
 | O5 | Langfuse tracing | Built dormant ahead of production traffic; `CANOPY_LANGFUSE_ENABLED` default off | ✅ Sound |
+| O6 | "Show SQL by default" A/B assignment | PostHog feature flag, deterministic per-browser distinct_id; replaced a hand-rolled version after a live persistence bug | ✅ Sound |
+| O7 | `docker_run.sh` env parsing | Fixed silent drop of a `.env`'s last line when unterminated | ✅ Sound |
 
 ---
 
@@ -927,6 +930,33 @@ The eval case A09 submits a French question (`"Combien d'espèces ont été dét
 
 ---
 
+### M2 — NVIDIA integrate API as a backup backend after Azure access loss
+
+> **Files:** `models.yaml` · `src/canopy/models/llamaindex_compat.py` · `src/canopy/models/registry.py` · `src/canopy/config.py`
+
+**Decision:** Azure custom-model API access was revoked mid-session, blocking every real query (`run_query()` requires a working LLM call). A new connection (`nvidia-kimi-k3`, `moonshotai/kimi-k3` via NVIDIA's `integrate.api.nvidia.com`) was wired in as a `backend: nvidia` / `api_style: openai-standard` entry so the query loop stays functional on a personal account, independent of the capa Azure resource.
+
+**Why a new `api_style` rather than reusing `openai-compat`:** `CanopyAzureCompatLLM` (the `openai-compat` class) patches three Azure-specific quirks — `max_completion_tokens` instead of `max_tokens`, a fixed context-window override, and Azure's double-pathed `/openai/` endpoint. NVIDIA's endpoint is a plain OpenAI-SDK-compatible host that needs none of the `max_tokens` rewrite. Reusing the Azure class would have risked silently sending the wrong parameter name to a provider that never asked for the fix — confirmed as a real, distinct failure mode by testing the class it inherits from first (see below), not assumed. `CanopyOpenAIStandardLLM` inherits only the `metadata` override (needed by any non-canonical-OpenAI model name, not just Azure deployment names — see Consequences) and nothing else.
+
+**The debugging path — three separate causes stacked on top of each other, each isolated before moving to the next:**
+
+1. **Unknown model name.** `deepseek-ai/deepseek-v4-flash-0731` (the first model tried) raised `ValueError: Unknown model... Please provide a valid OpenAI model name` — LlamaIndex's stock `OpenAI.metadata` validates against a hardcoded catalogue of OpenAI's own model names. Same failure class S7/M1 already solved for Azure deployment names; fixed the same way, by overriding `metadata` with a fixed context window instead of asking LlamaIndex to look the name up. This is why `CanopyOpenAIStandardLLM` exists as its own class rather than a bare `_LlamaOpenAI(...)` call.
+2. **Account-side 401s.** After the metadata fix, every real `chat.completions.create()` call 401'd — across three different, catalogue-confirmed-valid model names — while `models.list()` succeeded with the identical key. List access without inference access on a fresh account/key is an external, account-provisioning gap, not a code defect; confirmed by testing with NVIDIA's own reference `curl` payload verbatim, which also 401'd. Resolved by rotating the key.
+3. **Docker quoting bug (the real root cause of the "hang").** Even after rotating, an ad-hoc diagnostic using `docker run --env-file .env` still 401'd, while the exact same key worked from the host machine directly. `docker run --env-file` takes `.env` literally — it does not strip the surrounding double quotes the way `docker_run.sh`'s `source "$ENV_FILE"` does — so the container received a corrupted, 2-byte-longer key (`"nvapi-...` with literal quote characters attached). `docker_run.sh` itself was never affected; only bypassing it for a quick diagnostic reintroduced the bug it exists to prevent. The original DeepSeek "hang" earlier in this session was very likely the same corrupted-key 401 pattern, with the OpenAI SDK's retry-on-401 logic making a fast, clean failure look like a stall.
+
+**Consequences:**
+- `models.yaml` gains two `backend: nvidia` entries: `nvidia-kimi-k3` (`active: true`, confirmed working end-to-end) and `nvidia-deepseek-v4-flash` (`active: false` — 401'd with the pre-rotation key, never retested since; the model-name/metadata fix that unblocked it was verified independently, so it likely works, but "likely" is not "confirmed").
+- New `api_style: openai-standard` in the registry, with its own `CanopyOpenAIStandardLLM` class — see `registry.py`'s updated module docstring for the three-way `api_style` dispatch.
+- `NVIDIA_API_KEY` added to `.env.example` and README's key table.
+- NVIDIA's free/trial tier rate-limits aggressively — two real queries within ~30s triggered a `429` that took over 90s to clear. Not a code issue; a usage constraint worth knowing before assuming a stall means a bug.
+- `scripts/docker_run.sh` was hardened (see O-series operations note) to handle a `.env` with no trailing newline on its last line — a related, separately-caught bug from the same debugging session, affecting `MODEL_BACKEND` itself, not this connection specifically.
+
+> **Audit verdict — ✅ Sound**
+>
+> Each of the three stacked failures was isolated with a targeted test before moving to the next — the model-name fix was verified via the metadata property directly, the account issue was confirmed by testing NVIDIA's own sample code with the same key, and the Docker quoting bug was found by comparing key length and byte content between host and container rather than guessing. No fix was applied on assumption; each was applied only after the specific cause was reproduced in isolation. The end-to-end result — a real query, real SQL, real answer, 8.5s round trip — was confirmed live before considering this connection complete.
+
+---
+
 ### S6 — User data guardrail
 
 **Decision:** The `users` table is referenced in the schema context (so the model understands FK relationships) but protected by a hard constraint in `_GUARDRAILS`: the model is explicitly forbidden from querying or revealing usernames, roles, or `hashed_password`. Six adversarial eval cases (A11–A16) verify this boundary, including a direct SQL injection attempt with an admin authority claim.
@@ -1034,6 +1064,50 @@ git show <commit-hash>
 > **Audit verdict — ✅ Sound**
 >
 > The scope discipline holds: this is instrumentation, not a claim. The trace_id/cache interaction was caught before it shipped — a subtler bug than most, since it wouldn't surface until a cache hit occurred days after a trace closed. The langfuse dependency was initially missing from pyproject.toml despite being present in the developer's local environment; the gap was only found by testing the actual Docker image rather than the local machine, which is the only environment that matters for what ships.
+
+---
+
+### O6 — "Show SQL by default" A/B test: PostHog for assignment, not hand-rolled state
+
+> **Files:** `src/canopy/observability.py` · `src/canopy/config.py` · `src/canopy/ui/app.py` · `pyproject.toml`
+
+**Decision:** Whether the generated SQL renders inline in the Answer tab (treatment) or stays behind the existing "Database query" tab click (control) is now a PostHog multivariate feature flag (`canopy-show-sql-by-default`, 50/50 `control`/`treatment`), evaluated server-side per browser via a stable, opaque `distinct_id`. Exposure is logged as a score on the same Langfuse trace the query already produces (O5), so the acceptance-metric comparison lives in one place. Gated by `CANOPY_AB_SHOW_SQL_ACTIVE` (default off) *and* `CANOPY_LANGFUSE_ENABLED` — an experiment that can assign variants but can't measure them, or vice versa, is not a running experiment.
+
+**Why this reverses O5's own non-goal:** O5 explicitly deferred PostHog/GrowthBook to file 07's timeline. This entry only builds file 07's *assignment mechanism* early, not the experiment itself — no experiment is pre-registered or running; `CANOPY_AB_SHOW_SQL_ACTIVE` stays off until file 06 has a real baseline. The code existing dormant, ahead of need, is the same pattern O5 already established for tracing.
+
+**Why PostHog over a hand-rolled `gr.BrowserState` assignment (the first version built):** The first implementation stored the resolved variant directly in browser state, generated once and persisted. Docker verification surfaced a live persistence bug — the stored value did not survive as expected across queries in the same session — and root-causing it further was abandoned once a materially better design was available: PostHog's `get_feature_flag(key, distinct_id)` is a pure, deterministic function of the flag key and distinct_id, evaluated fresh from the server on every call. There is no client-side "assignment" to persist or lose; only a stable, opaque `distinct_id` needs to survive across queries, which is a much smaller and lower-stakes piece of state to get right.
+
+**Why a challenge round preceded the swap:** Switching mid-build risked replacing one unverified assumption with another. Challenge surfaced that the SDK's actual server-side behavior needed verifying before writing integration code (same discipline as pinning the Langfuse version by testing, not assuming) — resolved by installing `posthog` locally and inspecting `Posthog.get_feature_flag`'s real signature and the client's `disabled=True` no-op mode before any code was written against it.
+
+**Why exposure logs to Langfuse rather than as a second PostHog event:** The trace already holds this run's timing, SQL, and acceptance scores. A second, separate PostHog-side event for the same query would mean the divergence analysis (file 06's whole point) has to join across two systems instead of reading one trace.
+
+**Consequences:**
+- New dependency: `posthog==7.44.2`.
+- `_run_query_handler`'s output tuple grew by one more element (`ab_distinct_id`, via a renamed `gr.BrowserState` — `canopy_ab_distinct_id`) holding ONLY the opaque per-browser ID, never the resolved variant, so a corrupted or stale stored value can't propagate a wrong variant — `assign_variant` re-derives it from PostHog every time.
+- `assign_variant` and `log_exposure` both fail safe to `None`/no-op on any PostHog error (bad key, network failure, missing flag) — assignment failing must never fail a query. Confirmed live: a 0%-rollout release condition (a real setup mistake made while wiring this up) returned `False` for every distinct_id rather than raising; fixing the rollout percentage in PostHog immediately produced a correct, stable 50/50 split with no code change needed.
+- The `get_feature_flag` method used here is deprecated in the installed SDK version in favor of `evaluate_flags`/`flags.get_flag` (a batched multi-flag API) — noted for a future migration, not blocking since the method still functions correctly.
+
+**Verified:** 20 distinct test IDs against the real PostHog project split 10/10 control/treatment with zero unresolved results, and repeat calls with the same ID returned the same variant every time. The pure render function (`_render_response`) was confirmed directly to inline SQL only when `show_sql_inline=True`. Full end-to-end verification through a live LLM call was blocked by an unrelated pre-existing Azure credential issue in the sandbox (same 401 seen during O5's verification) — not a defect in this feature, since the failure occurs before the query loop ever reaches the render step this experiment touches.
+
+> **Audit verdict — ✅ Sound**
+>
+> The mid-build reversal was the right call, and reversing was cheaper than debugging further: the hand-rolled version's persistence bug turned out to be exactly the class of problem a purpose-built tool already solves correctly, and continuing to debug it would have meant re-deriving PostHog's design (deterministic hash-based assignment, no client state) from first principles. The one real setup mistake during manual PostHog configuration (0% rollout) was caught by testing against the real service rather than assuming the UI steps were followed correctly — the same "verify, don't assume" discipline this document keeps returning to.
+
+---
+
+### O7 — `docker_run.sh` silently drops a `.env`'s last line if unterminated
+
+> **Files:** `scripts/docker_run.sh`
+
+**Decision:** `docker_run.sh` reads `.env` twice — once via `source` (which correctly handles a missing trailing newline) and once via a manual `while IFS= read -r line` loop that builds the `-e KEY` flag list for `docker run`. Plain `while read` silently drops the final line of a file with no trailing `\n` after it, because `read` returns non-zero exactly when it hits EOF without a newline — even though it still populates `$line` correctly on that call. Fixed with the standard `while IFS= read -r line || [[ -n "$line" ]]` idiom, which processes that last line before the loop actually exits.
+
+**Why this was caught:** A `MODEL_BACKEND=nvidia-kimi-k3` line appended via `echo >> .env` during the M2 backend-switch work had no trailing newline. The container silently started with no `MODEL_BACKEND` set at all — no error, just Canopy falling back to `os.environ.get("MODEL_BACKEND", "gpt-5.1-codex-mini")`'s default, which happened to still be a working Azure connection right up until Azure access was revoked, making the bug invisible until the exact moment it mattered.
+
+**Consequences:** Any `.env` edited with a tool that doesn't guarantee a trailing newline (a bare `echo >>` on some shells, some editors' "no final newline" setting) will silently lose its last variable from every `docker_run.sh` launch until this fix. No corresponding bug existed in the `source` half of the script — only the manual parsing loop.
+
+> **Audit verdict — ✅ Sound**
+>
+> A one-line fix for a bug that produces no error message at all — the container starts, runs, and silently uses a fallback value instead of the intended one. Caught by comparing the sourced shell variable's value against what the loop actually captured, not by inspecting the script's logic in isolation.
 
 ---
 

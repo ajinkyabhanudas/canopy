@@ -116,6 +116,120 @@ def test_trace_query_never_sends_raw_rows(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# show-SQL-by-default A/B experiment: assign_variant, log_exposure
+# ---------------------------------------------------------------------------
+
+
+def test_is_show_sql_experiment_active_requires_flag_and_tracing(monkeypatch):
+    from canopy.config import is_show_sql_experiment_active
+
+    monkeypatch.delenv("CANOPY_AB_SHOW_SQL_ACTIVE", raising=False)
+    monkeypatch.delenv("CANOPY_LANGFUSE_ENABLED", raising=False)
+    assert is_show_sql_experiment_active() is False
+
+
+def test_is_show_sql_experiment_active_false_when_flag_set_but_tracing_off(monkeypatch):
+    from canopy.config import is_show_sql_experiment_active
+
+    monkeypatch.setenv("CANOPY_AB_SHOW_SQL_ACTIVE", "true")
+    monkeypatch.delenv("CANOPY_LANGFUSE_ENABLED", raising=False)
+    assert is_show_sql_experiment_active() is False
+
+
+def test_is_show_sql_experiment_active_false_without_posthog_key(monkeypatch):
+    """Flag + tracing on but no PostHog key: an experiment with no way to
+    assign variants is not a running experiment."""
+    from canopy.config import is_show_sql_experiment_active
+
+    monkeypatch.setenv("CANOPY_AB_SHOW_SQL_ACTIVE", "true")
+    monkeypatch.setenv("CANOPY_LANGFUSE_ENABLED", "true")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
+    monkeypatch.delenv("CANOPY_POSTHOG_API_KEY", raising=False)
+    assert is_show_sql_experiment_active() is False
+
+
+def test_is_show_sql_experiment_active_true_when_all_set(monkeypatch):
+    from canopy.config import is_show_sql_experiment_active
+
+    monkeypatch.setenv("CANOPY_AB_SHOW_SQL_ACTIVE", "true")
+    monkeypatch.setenv("CANOPY_LANGFUSE_ENABLED", "true")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
+    monkeypatch.setenv("CANOPY_POSTHOG_API_KEY", "phc-test")
+    assert is_show_sql_experiment_active() is True
+
+
+def test_assign_variant_is_noop_when_disabled(monkeypatch):
+    """Disabled is the default — assign_variant must never touch the
+    network, returning None rather than guessing a variant."""
+    monkeypatch.setattr(obs, "is_show_sql_experiment_active", lambda: False)
+    assert obs.assign_variant("some-distinct-id") is None
+
+
+def test_assign_variant_calls_posthog_get_feature_flag(monkeypatch):
+    """PostHog owns the actual assignment — this only confirms the call
+    shape (flag key, distinct_id) reaches the client correctly."""
+    calls = []
+    fake_client = type(
+        "FakeClient",
+        (),
+        {"get_feature_flag": lambda self, key, did: calls.append((key, did)) or "treatment"},
+    )()
+    monkeypatch.setattr(obs, "_get_posthog_client", lambda: fake_client)
+    result = obs.assign_variant("browser-abc")
+    assert result == "treatment"
+    assert calls == [(obs._AB_FLAG_KEY, "browser-abc")]
+
+
+def test_assign_variant_returns_none_on_posthog_failure(monkeypatch):
+    """A network error or misconfigured flag must degrade to None — never
+    raise, since assignment failing must not fail a query."""
+
+    def _boom(self, key, did):
+        raise RuntimeError("simulated PostHog outage")
+
+    fake_client = type("FakeClient", (), {"get_feature_flag": _boom})()
+    monkeypatch.setattr(obs, "_get_posthog_client", lambda: fake_client)
+    assert obs.assign_variant("browser-abc") is None
+
+
+def test_log_exposure_is_noop_when_disabled(monkeypatch):
+    monkeypatch.setattr(obs, "is_langfuse_enabled", lambda: False)
+    # Must not raise even with tracing off — no client exists to call.
+    obs.log_exposure("fake-trace-id", variant="treatment")
+
+
+def test_log_exposure_noop_on_none_trace_id(monkeypatch):
+    """A cache hit or any run where trace_query() returned None must not
+    attempt to log an orphaned exposure with nothing to attach it to."""
+    calls = []
+    fake_client = type("FakeClient", (), {"score": lambda self, **kw: calls.append(kw)})()
+    monkeypatch.setattr(obs, "_get_client", lambda: fake_client)
+    obs.log_exposure(None, variant="control")
+    assert calls == []
+
+
+def test_log_exposure_calls_score_with_variant_when_enabled(monkeypatch):
+    calls = []
+    fake_client = type("FakeClient", (), {"score": lambda self, **kw: calls.append(kw)})()
+    monkeypatch.setattr(obs, "_get_client", lambda: fake_client)
+    obs.log_exposure("trace-123", variant="treatment")
+    assert len(calls) == 1
+    assert calls[0]["trace_id"] == "trace-123"
+    assert calls[0]["value"] == "treatment"
+
+
+def test_log_exposure_swallows_client_exception(monkeypatch):
+    def _boom(**kw):
+        raise RuntimeError("simulated Langfuse failure")
+
+    fake_client = type("FakeClient", (), {"score": lambda self, **kw: _boom()})()
+    monkeypatch.setattr(obs, "_get_client", lambda: fake_client)
+    obs.log_exposure("trace-123", variant="control")  # must not raise
+
+
+# ---------------------------------------------------------------------------
 # Success paths — a working (fake) client actually receives the right calls.
 # Everything above this line proves the disabled/failure paths; these prove
 # the enabled path wires through to the client correctly.
@@ -260,3 +374,51 @@ def test_get_client_returns_cached_instance_on_second_call(monkeypatch):
     sentinel = object()
     monkeypatch.setattr(obs, "_client", sentinel)
     assert obs._get_client() is sentinel
+
+
+def test_get_posthog_client_constructs_and_caches(monkeypatch):
+    """Exercises the real construction path (not a mocked _get_posthog_client)
+    — confirms Posthog() is built once with the project key/host and cached,
+    not reconstructed on every call."""
+    monkeypatch.setenv("CANOPY_AB_SHOW_SQL_ACTIVE", "true")
+    monkeypatch.setenv("CANOPY_LANGFUSE_ENABLED", "true")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
+    monkeypatch.setenv("CANOPY_POSTHOG_API_KEY", "phc-test")
+    monkeypatch.setattr(obs, "_posthog_client", None)
+    monkeypatch.setattr(obs, "_posthog_client_init_failed", False)
+
+    construct_calls = []
+
+    class _FakePosthog:
+        def __init__(self, **kw):
+            construct_calls.append(kw)
+
+    monkeypatch.setattr("posthog.Posthog", _FakePosthog)
+
+    client1 = obs._get_posthog_client()
+    client2 = obs._get_posthog_client()
+    assert client1 is client2  # cached, not rebuilt
+    assert len(construct_calls) == 1
+    assert construct_calls[0]["project_api_key"] == "phc-test"
+
+
+def test_posthog_client_init_failure_disables_assignment_without_raising(monkeypatch):
+    """A bad key or unreachable host must degrade to no-assignment, never crash."""
+    monkeypatch.setenv("CANOPY_AB_SHOW_SQL_ACTIVE", "true")
+    monkeypatch.setenv("CANOPY_LANGFUSE_ENABLED", "true")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
+    monkeypatch.setenv("CANOPY_POSTHOG_API_KEY", "phc-test")
+    monkeypatch.setattr(obs, "_posthog_client", None)
+    monkeypatch.setattr(obs, "_posthog_client_init_failed", False)
+
+    def _boom(**kw):
+        raise RuntimeError("simulated unreachable host")
+
+    monkeypatch.setattr("posthog.Posthog", _boom)
+    result = obs.assign_variant("browser-abc")
+    assert result is None
+    # Second call must not retry construction — _posthog_client_init_failed short-circuits.
+    result2 = obs.assign_variant("browser-def")
+    assert result2 is None

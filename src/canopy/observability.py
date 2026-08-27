@@ -18,13 +18,21 @@ times, and are never blended into one number here — see the challenge-loop
 decision in the online-eval PR:
   - no_rephrase_within_5min: computed by a delayed background check
   - thumbs_explicit: attached whenever/if a user clicks a thumbs control
+
+Also hosts the show-SQL-by-default A/B experiment's variant assignment
+(assign_variant, via PostHog feature flags) and exposure logging
+(log_exposure, attached to the Langfuse trace) — see
+config.is_show_sql_experiment_active and ~/Desktop/AB-Tests/ab-test-plan.md.
+Gated by a separate switch from tracing itself: tracing being on does not
+mean an experiment is running.
 """
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
-from canopy.config import is_langfuse_enabled
+from canopy.config import get_posthog_host, is_langfuse_enabled, is_show_sql_experiment_active
 
 _log = logging.getLogger("canopy.observability")
 
@@ -154,3 +162,99 @@ def flush() -> None:
             client.flush()
         except Exception as exc:  # noqa: BLE001
             _log.warning("Langfuse flush failed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# A/B experiment: show-SQL-by-default, via PostHog feature flags. See
+# config.is_show_sql_experiment_active and ~/Desktop/AB-Tests/ab-test-plan.md
+# for the full design. Kept in this module rather than loop.py: the variant
+# is a UI/browser concept (which arm a given browser is in), not something
+# the query loop itself needs to know — run_query()'s signature stays
+# untouched by this experiment entirely.
+#
+# Uses PostHog rather than a hand-rolled assignment mechanism: an earlier
+# version stored the assignment in a gr.BrowserState value, which hit a real
+# persistence bug during Docker verification. PostHog's get_feature_flag()
+# is deterministic — a hash of (flag key, distinct_id) — so the same
+# distinct_id always gets the same variant with nothing to persist
+# client-side at all. A stable distinct_id per browser (an opaque random ID,
+# not the assignment itself) still needs to come from somewhere; app.py owns
+# that via gr.BrowserState, same as session_history.
+# ---------------------------------------------------------------------------
+
+_AB_FLAG_KEY = "canopy-show-sql-by-default"
+
+_posthog_client: Any = None
+_posthog_client_init_failed = False
+
+
+def _get_posthog_client() -> Any | None:
+    """Return the shared PostHog client, or None if disabled/unavailable.
+
+    Same lazy-construction, fail-safe-on-error pattern as _get_client() for
+    Langfuse: importing this module must never touch the network, and a bad
+    key or unreachable host must degrade to "no assignment" rather than
+    crashing the query path.
+    """
+    global _posthog_client, _posthog_client_init_failed
+    if not is_show_sql_experiment_active():
+        return None
+    if _posthog_client_init_failed:
+        return None
+    if _posthog_client is None:
+        try:
+            from posthog import Posthog
+
+            api_key = os.environ.get("CANOPY_POSTHOG_API_KEY", "")
+            _posthog_client = Posthog(project_api_key=api_key, host=get_posthog_host())
+        except Exception as exc:  # noqa: BLE001 - the experiment must never break queries
+            _log.warning("PostHog client init failed, assignment disabled: %s", exc)
+            _posthog_client_init_failed = True
+            return None
+    return _posthog_client
+
+
+def assign_variant(distinct_id: str) -> str | None:
+    """Return this browser's variant for the show-SQL-by-default flag.
+
+    distinct_id is a stable, opaque per-browser identifier (app.py generates
+    and persists one via gr.BrowserState — an identity anchor, not the
+    assignment itself). The SAME distinct_id always gets the SAME variant
+    back from PostHog; nothing here needs to remember a prior result.
+
+    Returns None if the experiment is inactive or PostHog is unreachable —
+    callers must treat None as "no variant, render as control" rather than
+    an error. Never raises: assignment failing must not fail a query.
+    """
+    client = _get_posthog_client()
+    if client is None:
+        return None
+    try:
+        return client.get_feature_flag(_AB_FLAG_KEY, distinct_id)
+    except Exception as exc:  # noqa: BLE001 - the experiment must never break queries
+        _log.warning("PostHog get_feature_flag failed: %s", exc)
+        return None
+
+
+def log_exposure(trace_id: str | None, *, variant: str) -> None:
+    """Tag a Langfuse trace with which A/B variant the user that generated it was in.
+
+    A no-op when tracing is disabled or trace_id is None (cache hits and any
+    run where trace_query() itself returned nothing to attach to) — an
+    exposure with no trace to attach it to is not measurable and would only
+    create an orphaned record. Deliberately logged to Langfuse (which already
+    holds this run's other metrics) rather than as a second PostHog event —
+    one place to look for "did this trace convert," not two.
+    """
+    client = _get_client()
+    if client is None or not trace_id:
+        return
+    try:
+        client.score(
+            trace_id=trace_id,
+            name="ab_show_sql_variant",
+            value=variant,
+            data_type="CATEGORICAL",
+        )
+    except Exception as exc:  # noqa: BLE001 - tracing must never break queries
+        _log.warning("Langfuse log_exposure failed: %s", exc)
