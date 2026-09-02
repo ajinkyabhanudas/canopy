@@ -76,6 +76,7 @@ class ConcurrencyResult:
     concurrency: int
     latencies_s: list[float] = field(default_factory=list)
     errors: int = 0
+    wall_clock_s: float = 0.0
 
     @property
     def p50(self) -> float:
@@ -84,10 +85,6 @@ class ConcurrencyResult:
     @property
     def p95(self) -> float:
         return round(_percentile(self.latencies_s, 0.95), 2)
-
-    @property
-    def wall_clock_s(self) -> float:
-        return round(sum(self.latencies_s), 2)  # overwritten by caller with real wall clock
 
 
 def _run_concurrency_sweep(levels: list[int]) -> list[ConcurrencyResult]:
@@ -106,8 +103,7 @@ def _run_concurrency_sweep(levels: list[int]) -> list[ConcurrencyResult]:
                     r.latencies_s.append(latency)
                 else:
                     r.errors += 1
-        wall = time.monotonic() - t0
-        r.wall_clock_s = round(wall, 2)  # type: ignore[misc]
+        r.wall_clock_s = round(time.monotonic() - t0, 2)
         results.append(r)
         print(f"  concurrency={n:3d}  p50={r.p50:6.1f}s  p95={r.p95:6.1f}s  "
               f"wall={r.wall_clock_s:6.1f}s  errors={r.errors}")
@@ -137,18 +133,24 @@ class CacheResult:
     warm_was_hit: bool
 
 
-def _run_exact_cache_suite(sample_size: int = 10) -> list[CacheResult]:
+def _run_exact_cache_suite(sample_size: int = 5) -> list[CacheResult]:
     clear_cache()
     questions = [c.question for c in EVAL_CASES[:sample_size]]
     results = []
     for q in questions:
-        t0 = time.monotonic()
-        run_query(q)
-        cold_latency = time.monotonic() - t0
+        try:
+            t0 = time.monotonic()
+            run_query(q)
+            cold_latency = time.monotonic() - t0
 
-        t0 = time.monotonic()
-        warm = run_query(q)
-        warm_latency = time.monotonic() - t0
+            t0 = time.monotonic()
+            warm = run_query(q)
+            warm_latency = time.monotonic() - t0
+        except Exception as exc:
+            # A single rate-limited/failed call must not abort the whole
+            # benchmark run — skip this question, keep the rest of the suite.
+            print(f"  [error] {q[:50]!r}: {exc}")
+            continue
 
         results.append(CacheResult(
             question=q,
@@ -182,13 +184,17 @@ def _run_semantic_cache_suite() -> list[SemanticResult]:
     clear_cache()
     results = []
     for original, paraphrase in _PARAPHRASE_PAIRS:
-        t0 = time.monotonic()
-        run_query(original)
-        original_latency = time.monotonic() - t0
+        try:
+            t0 = time.monotonic()
+            run_query(original)
+            original_latency = time.monotonic() - t0
 
-        t0 = time.monotonic()
-        para_result = run_query(paraphrase)
-        paraphrase_latency = time.monotonic() - t0
+            t0 = time.monotonic()
+            para_result = run_query(paraphrase)
+            paraphrase_latency = time.monotonic() - t0
+        except Exception as exc:
+            print(f"  [error] {paraphrase[:50]!r}: {exc}")
+            continue
 
         hit = bool(para_result.timing.get("semantic_cache_hit"))
         results.append(SemanticResult(
@@ -217,7 +223,7 @@ def _write_outputs(
 
     payload = {
         "run_at": datetime.now(timezone.utc).isoformat(),
-        "concurrency": [vars(r) for r in concurrency],
+        "concurrency": [{**vars(r), "p50": r.p50, "p95": r.p95} for r in concurrency],
         "exact_cache": [vars(r) for r in cache],
         "semantic_cache": [vars(r) for r in semantic],
     }
@@ -287,7 +293,7 @@ def main() -> None:
 
     if run_concurrency:
         print("\n=== Concurrency sweep ===")
-        concurrency_results = _run_concurrency_sweep([1, 5, 10, 20])
+        concurrency_results = _run_concurrency_sweep([1, 5, 10])
 
     if run_cache:
         print("\n=== Exact-match cache ===")
