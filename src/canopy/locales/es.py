@@ -90,6 +90,10 @@ STRINGS: dict[str, str] = {
         "No se pudo conectar a la base de datos. Por favor, intente de nuevo en un momento.\n\n"
         "Si el problema persiste, verifique que la conexión a la base de datos esté activa."
     ),
+    "error_db_busy": (
+        "El sistema está procesando muchas consultas en este momento. "
+        "Por favor, intente de nuevo en un momento."
+    ),
     "error_generic_response": (
         "Ocurrió un error durante la búsqueda. "
         "Por favor, intente de nuevo o reformule su pregunta."

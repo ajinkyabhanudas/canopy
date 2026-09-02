@@ -13,7 +13,12 @@ import gradio as gr
 import psycopg2
 import psycopg2.errors
 
-from canopy.config import get_ui_lang, is_langfuse_enabled, is_show_sql_experiment_active
+from canopy.config import (
+    get_query_concurrency_limit,
+    get_ui_lang,
+    is_langfuse_enabled,
+    is_show_sql_experiment_active,
+)
 from canopy.history import clear_history
 from canopy.i18n import set_locale, t
 from canopy.observability import (
@@ -22,7 +27,7 @@ from canopy.observability import (
     score_no_rephrase,
     score_thumbs,
 )
-from canopy.query.executor import QueryResult, SQLGuardError
+from canopy.query.executor import DatabaseBusyError, QueryResult, SQLGuardError
 from canopy.query.fuzzy_match import FUZZY_COLUMNS
 from canopy.query.loop import (
     Interpretation,
@@ -40,13 +45,15 @@ set_locale(get_ui_lang())
 _PLACEHOLDER = t("placeholder")
 _IDLE_PROMPT = t("idle_prompt")
 
-# Max simultaneous run_query() calls. Was 1 (serializing the whole app to one
-# query at a time, globally — not per-user), which would visibly queue during
-# the Week 8 multi-user handover session. 3 covers Jajean + reviewers
-# comfortably and stays inside DECISIONS.md's O2 section's own "1-5 concurrent
-# connections: no action needed" threshold — no connection pooling added,
-# since O2 already covers when that becomes necessary (revisit above 20).
-_QUERY_CONCURRENCY_LIMIT = 3
+# Max simultaneous run_query() calls. Was a hardcoded 1 (serializing the whole
+# app to one query at a time, globally — not per-user), then raised to a
+# hardcoded 3 for the Week 8 multi-user handover session, staying inside
+# DECISIONS.md O2's "1-5 concurrent connections: no action needed" band.
+# Now reads from CANOPY_QUERY_CONCURRENCY_LIMIT (default still 3) — O2's
+# pooling implementation (db/connection.py's ThreadedConnectionPool) removes
+# the reason this had to stay hardcoded, so it's raise-able per deployment
+# without a code change once the pool is proven under load.
+_QUERY_CONCURRENCY_LIMIT = get_query_concurrency_limit()
 
 CSS = """
 /* Status bar — typographic only, no box */
@@ -1009,6 +1016,15 @@ def _run_query_handler(
                 t("error_db_connection"),
                 session_history,
                 status="⚠ Database unreachable",
+                last_trace=last_trace,
+                ab_distinct_id=ab_distinct_id,
+            )
+        elif isinstance(exc, DatabaseBusyError):
+            _log.warning("connection pool exhausted for question: %r", question[:60])
+            yield _empty_result(
+                t("error_db_busy"),
+                session_history,
+                status="⚠ System busy",
                 last_trace=last_trace,
                 ab_distinct_id=ab_distinct_id,
             )

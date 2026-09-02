@@ -242,6 +242,15 @@ answer is being served.
 **Long-term fix candidates:** Per-query TTL based on detected time-relative language;
 cache invalidation webhook on data upload; shorter TTL for high-churn query patterns.
 
+**Note (2026-09-02):** this limitation is specific to the exact-match cache (tier 1,
+`cache.py`). The newer semantic SQL-plan cache (tier 2, `semantic_cache.py`,
+DECISIONS.md D4) does not share this failure mode by design — it never serves
+cached rows, only re-executes cached SQL live, and its Gate 1 explicitly refuses
+to cache a SQL statement at all when the question uses relative-time language
+("today", "this week", ...) and the model resolved it into a literal date. The
+tier-1 limitation above is unchanged and still applies whenever tier 1 serves
+the hit.
+
 ---
 
 ## Internal Engineering Guarantees (as of 2026-07-13)

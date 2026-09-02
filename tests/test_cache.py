@@ -492,3 +492,27 @@ def test_cache_file_uses_data_dir(tmp_path, monkeypatch):
     # Clear module-level function reference so it re-calls get_data_dir
     result = cache_mod._cache_file()
     assert result == tmp_path / "cache.json"
+
+
+# ---------------------------------------------------------------------------
+# _redis_client — real construction path (not stubbed, unlike test_cache_redis.py)
+# ---------------------------------------------------------------------------
+
+
+def test_redis_client_constructs_real_client_and_caches_singleton(monkeypatch):
+    """Exercises the real _redis_client() construction path. redis.Redis.from_url()
+    only parses the URL and builds a lazy client object — it does not connect —
+    so this needs no live Redis server."""
+    import redis as redis_pkg
+
+    import canopy.cache as cache_mod
+
+    monkeypatch.setenv("CANOPY_REDIS_URL", "redis://localhost:6379/0")
+    cache_mod._reset_redis_client()
+    try:
+        client = cache_mod._redis_client()
+        assert isinstance(client, redis_pkg.Redis)
+        # Second call must return the cached singleton, not construct a new client.
+        assert cache_mod._redis_client() is client
+    finally:
+        cache_mod._reset_redis_client()

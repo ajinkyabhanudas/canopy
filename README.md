@@ -131,6 +131,11 @@ corresponding `AZURE_<NAME>_API_KEY` to `.env`. No code changes needed.
 | `PG_PASSWORD` | Yes | Database password |
 | `CANOPY_DATA_DIR` | No | History + cache file location — Docker only, do not set locally |
 | `CANOPY_CACHE_TTL_HOURS` | No | Cache TTL in hours (default: `24`) |
+| `CANOPY_DB_POOL_SIZE` | No | Max pooled DB connections (default: `10`) — see DECISIONS.md's O2 |
+| `CANOPY_QUERY_CONCURRENCY_LIMIT` | No | Gradio per-handler concurrent query slots (default: `3`) |
+| `CANOPY_REDIS_URL` | No | Redis URL for the exact-match cache (default: unset, falls back to the file cache) — see DECISIONS.md's D2 |
+| `CANOPY_SEMANTIC_CACHE_ENABLED` | No | Enable the semantic SQL-plan cache (default: off, requires `CANOPY_REDIS_URL`) — see DECISIONS.md's D4 |
+| `CANOPY_SEMANTIC_CACHE_THRESHOLD` | No | Cosine-similarity threshold for a semantic cache candidate (default: `0.93`) |
 | `CANOPY_UI_LANG` | No | UI label language: `en` (default) or `es` (Spanish). Questions must be in English or Spanish — other languages are rejected before reaching the model. This env var only controls UI labels (buttons, tabs, error messages). |
 | `CANOPY_SENSITIVE_COLUMNS` | No | Comma-separated column names stripped from model context and the UI table (default: `latitude,longitude,hashed_password`) |
 | `CANOPY_LANGFUSE_ENABLED` | No | Enable Langfuse tracing (default: off). Dormant instrumentation ahead of production traffic — see DECISIONS.md's O5. Never set in a test environment. |
@@ -156,6 +161,22 @@ Open **http://localhost:7860** in a browser.
 ```bash
 docker stop $(docker ps -q --filter "ancestor=canopy:dev")
 ```
+
+### Alternative: Docker Compose (adds Redis)
+
+`make run` above is still the default, single-container path — Redis caching
+is entirely opt-in, so it's unaffected either way. To run canopy with the
+Redis-backed exact-match cache (and, if `CANOPY_SEMANTIC_CACHE_ENABLED` is
+also set, the semantic SQL-plan cache):
+
+```bash
+make compose-up    # docker compose up --build — app + redis
+make compose-down  # stop the stack
+```
+
+Postgres is not part of the compose stack — it's Jocotoco's existing,
+externally-managed database; canopy connects to it over the network via the
+same `PG_*` variables either way.
 
 For restart, credential rotation, schema-change, and incident procedures
 beyond first-time setup, see [DEPLOYMENT.md](DEPLOYMENT.md).
@@ -381,4 +402,9 @@ date, see `DECISIONS.md` (O4) and run `git log --before=<date> --grep="model\|sc
 | Structured interpretation output (data source, gaps, research questions) | Done |
 | Missing-year gap filling in year-range queries | Done |
 | Multi-row faithfulness verification | Done |
+| DB connection pooling (`ThreadedConnectionPool`) | Done |
+| Redis-backed exact-match cache (opt-in, file-cache fallback) | Done |
+| Semantic SQL-plan cache (7 deterministic safety gates) | Done |
+| Docker Compose stack (app + Redis) | Done |
+| Scaling benchmark (`make scaling-benchmark`) | Done |
 | IUCN API integration | Deferred (needs API key) |

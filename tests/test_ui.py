@@ -629,6 +629,21 @@ def test_handler_loop_exhausted_message(monkeypatch):
     assert "complex" in status.lower()
 
 
+def test_handler_database_busy_message(monkeypatch):
+    """DatabaseBusyError (pool exhausted) → friendly "system busy" message,
+    distinct from the generic DB-connection-lost message."""
+    from canopy.query.executor import DatabaseBusyError
+
+    def _busy(q, status_cb=None, **_kw):
+        raise DatabaseBusyError("Connection pool exhausted")
+
+    monkeypatch.setattr(ui_mod, "run_query", _busy)
+    _, _, response, _, _, _, status, _, *__ = _run("any question")
+    assert "busy" in response.lower() or "try again" in response.lower()
+    assert "⚠" in status
+    assert "busy" in status.lower()
+
+
 # ---------------------------------------------------------------------------
 # Cache hit UX
 # ---------------------------------------------------------------------------

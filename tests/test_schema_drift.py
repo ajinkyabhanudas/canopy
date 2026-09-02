@@ -61,7 +61,7 @@ _DOCUMENTED_STATUSES = frozenset({"approved", "pending"})
 @pytest.mark.skipif(not _db_configured, reason="PG_* variables not set")
 def test_documented_tables_exist():
     """Every table named in schema.py must exist in the live DB."""
-    from canopy.db.connection import get_connection
+    from canopy.db.connection import get_connection, release_connection
 
     conn = get_connection()
     try:
@@ -72,7 +72,7 @@ def test_documented_tables_exist():
             )
             live_tables = frozenset(row[0] for row in cur.fetchall())
     finally:
-        conn.close()
+        release_connection(conn)
 
     missing = _EXPECTED_TABLES - live_tables
     assert not missing, (
@@ -84,7 +84,7 @@ def test_documented_tables_exist():
 @pytest.mark.skipif(not _db_configured, reason="PG_* variables not set")
 def test_documented_columns_exist():
     """Key columns named in schema.py must exist in the live DB."""
-    from canopy.db.connection import get_connection
+    from canopy.db.connection import get_connection, release_connection
 
     conn = get_connection()
     try:
@@ -95,7 +95,7 @@ def test_documented_columns_exist():
             )
             live_columns = frozenset((row[0], row[1]) for row in cur.fetchall())
     finally:
-        conn.close()
+        release_connection(conn)
 
     missing = _EXPECTED_COLUMNS - live_columns
     assert not missing, (
@@ -112,7 +112,7 @@ def test_validation_status_values_match_schema():
     New statuses (e.g. 'rejected') require updating SCHEMA_CONTEXT and the
     S4 default-filter guardrail — the model will ignore undocumented values.
     """
-    from canopy.db.connection import get_connection
+    from canopy.db.connection import get_connection, release_connection
 
     conn = get_connection()
     try:
@@ -122,7 +122,7 @@ def test_validation_status_values_match_schema():
             )
             live_statuses = frozenset(row[0] for row in cur.fetchall())
     finally:
-        conn.close()
+        release_connection(conn)
 
     undocumented = live_statuses - _DOCUMENTED_STATUSES
     assert not undocumented, (

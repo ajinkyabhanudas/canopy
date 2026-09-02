@@ -1,0 +1,45 @@
+# Scaling-upgrade stack: canopy + Redis (exact-match cache + semantic
+# SQL-plan cache). Postgres is NOT included here — Jocotoco's real database
+# is external/unmanaged; canopy connects to it over the network via PG_*.
+#
+# Usage:
+#   docker compose up --build
+# Requires a populated .env (see .env.example) — same file docker_run.sh uses.
+#
+# Plain `redis` image, not Redis Stack: semantic_cache.py computes candidate
+# similarity in-process over the small set of cached SQL plans a connection
+# accumulates, rather than using RediSearch's vector index — simpler to
+# operate (one fewer module dependency) and fast enough at this scale.
+
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - canopy-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  app:
+    build: .
+    ports:
+      - "7860:7860"
+    env_file:
+      - .env
+    environment:
+      CANOPY_DATA_DIR: /data
+      CANOPY_REDIS_URL: redis://redis:6379/0
+    volumes:
+      - canopy-data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  canopy-data:
+  canopy-redis-data:

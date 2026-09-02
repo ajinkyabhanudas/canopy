@@ -18,8 +18,13 @@ from canopy.query.executor import QueryResult, SQLGuardError, execute_query
 
 
 @pytest.fixture
-def mock_conn():
-    """A mock psycopg2 connection with a pre-configured cursor."""
+def mock_conn(monkeypatch):
+    """A mock psycopg2 connection with a pre-configured cursor.
+
+    release_connection() is stubbed to a no-op since this mock was never
+    actually issued by a real pool — tests that care about release behavior
+    (test_connection_released_on_*) override this stub explicitly.
+    """
     conn = MagicMock()
     cursor = MagicMock()
     conn.cursor.return_value = cursor
@@ -29,6 +34,7 @@ def mock_conn():
         ("Grallaria gigantea", "Reserva Narupa"),
         ("Tinamus major", "Reserva Antisana"),
     ]
+    monkeypatch.setattr("canopy.query.executor.release_connection", lambda c: None)
     return conn
 
 
@@ -163,21 +169,40 @@ def test_result_is_immutable(monkeypatch, mock_conn):
 # ---------------------------------------------------------------------------
 
 
-def test_connection_closed_on_success(monkeypatch, mock_conn):
+def test_connection_released_on_success(monkeypatch, mock_conn):
+    """Connections are returned to the pool (release_connection), not closed directly."""
+    released = []
     monkeypatch.setattr("canopy.query.executor.get_connection", lambda: mock_conn)
+    monkeypatch.setattr("canopy.query.executor.release_connection", released.append)
     execute_query("SELECT 1")
-    mock_conn.close.assert_called_once()
+    assert released == [mock_conn]
 
 
-def test_connection_closed_on_db_error(monkeypatch, mock_conn):
-    """try/finally must close the connection even when execute() raises."""
+def test_connection_released_on_db_error(monkeypatch, mock_conn):
+    """try/finally must release the connection even when execute() raises."""
+    released = []
     mock_conn.cursor.return_value.execute.side_effect = Exception("db error")
     monkeypatch.setattr("canopy.query.executor.get_connection", lambda: mock_conn)
+    monkeypatch.setattr("canopy.query.executor.release_connection", released.append)
 
     with pytest.raises(Exception, match="db error"):
         execute_query("SELECT 1")
 
-    mock_conn.close.assert_called_once()
+    assert released == [mock_conn]
+
+
+def test_pool_exhausted_raises_database_busy_error(monkeypatch):
+    """PoolExhaustedError from get_connection() surfaces as DatabaseBusyError —
+    a distinct, UI-friendly condition from a bad query (SQLGuardError)."""
+    from canopy.db import PoolExhaustedError
+    from canopy.query.executor import DatabaseBusyError
+
+    def _raise():
+        raise PoolExhaustedError("pool exhausted")
+
+    monkeypatch.setattr("canopy.query.executor.get_connection", _raise)
+    with pytest.raises(DatabaseBusyError):
+        execute_query("SELECT 1")
 
 
 def test_none_description_raises_guard_error(monkeypatch, mock_conn):

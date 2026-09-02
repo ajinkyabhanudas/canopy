@@ -262,3 +262,68 @@ def is_show_sql_experiment_active() -> bool:
 def get_posthog_host() -> str:
     """Return the PostHog ingestion host (default: PostHog Cloud US)."""
     return os.environ.get("CANOPY_POSTHOG_HOST", "https://us.i.posthog.com")
+
+
+# ---------------------------------------------------------------------------
+# DB connection pool sizing — see DECISIONS.md O2 for the load-threshold table
+# this implements (>20 concurrent queries was the documented "add a pool" trigger).
+# ---------------------------------------------------------------------------
+
+def get_db_pool_size() -> int:
+    """Return the max size of the psycopg2 connection pool (default: 10)."""
+    return int(os.environ.get("CANOPY_DB_POOL_SIZE", "10"))
+
+
+# ---------------------------------------------------------------------------
+# Gradio query concurrency limit — see ui/app.py's _QUERY_CONCURRENCY_LIMIT.
+# ---------------------------------------------------------------------------
+
+def get_query_concurrency_limit() -> int:
+    """Return the Gradio per-handler concurrency slot count (default: 3)."""
+    return int(os.environ.get("CANOPY_QUERY_CONCURRENCY_LIMIT", "3"))
+
+
+# ---------------------------------------------------------------------------
+# Redis-backed cache — dormant (falls back to the file cache) unless
+# CANOPY_REDIS_URL is set, mirroring is_langfuse_enabled()'s fail-safe shape:
+# an incomplete config degrades to the existing behavior rather than raising.
+# ---------------------------------------------------------------------------
+
+def is_redis_cache_enabled() -> bool:
+    """Return whether the Redis-backed cache backend should be used.
+
+    Off by default. Requires CANOPY_REDIS_URL — an unset URL falls back to
+    the file-based cache rather than raising, so an incomplete .env degrades
+    to today's behavior instead of crashing run_query().
+    """
+    return bool(os.environ.get("CANOPY_REDIS_URL", "").strip())
+
+
+def get_redis_url() -> str:
+    """Return the Redis connection URL (empty string if unset)."""
+    return os.environ.get("CANOPY_REDIS_URL", "").strip()
+
+
+# ---------------------------------------------------------------------------
+# Semantic SQL-plan cache — dormant by default. See DECISIONS.md for the
+# gate chain (temporal, entity, guardrail, connection-isolation, schema-
+# version, messaging, fail-open) this feature flag guards.
+# ---------------------------------------------------------------------------
+
+def is_semantic_cache_enabled() -> bool:
+    """Return whether the semantic SQL-plan cache is active.
+
+    Off by default. Requires both the flag and Redis (the semantic cache has
+    no file-based fallback — it needs vector search) — an incomplete config
+    fails safe into "off" rather than raising.
+    """
+    if os.environ.get("CANOPY_SEMANTIC_CACHE_ENABLED", "").lower().strip() not in (
+        "1", "true", "yes",
+    ):
+        return False
+    return is_redis_cache_enabled()
+
+
+def get_semantic_cache_threshold() -> float:
+    """Return the cosine-similarity threshold for a semantic cache candidate."""
+    return float(os.environ.get("CANOPY_SEMANTIC_CACHE_THRESHOLD", "0.93"))

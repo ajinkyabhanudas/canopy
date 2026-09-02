@@ -51,8 +51,9 @@
 | # | Decision | Chosen approach | Verdict |
 |---|---|---|---|
 | D1 | Schema representation | Static constant in `schema.py`, not DB-fetched | ⚠️ Caveat |
-| D2 | Query result cache | Exact-match SHA-256 key, 24 h TTL, 200-entry LRU | 🔄 Revisit |
+| D2 | Query result cache | Exact-match SHA-256 key, 24 h TTL; Redis-backed when `CANOPY_REDIS_URL` set, file-backed otherwise | ✅ Sound (closed) |
 | D3 | Persistence layer | File-based JSONL history + JSON cache | 🔄 Revisit |
+| D4 | Semantic SQL-plan cache | Embedding-narrowed candidates + 7 deterministic safety gates; live re-execution, never stale rows | ✅ Sound |
 
 ### 🧪 Testing & Eval
 
@@ -89,6 +90,7 @@
 | O6 | "Show SQL by default" A/B assignment | PostHog feature flag, deterministic per-browser distinct_id; replaced a hand-rolled version after a live persistence bug | ✅ Sound |
 | O7 | `docker_run.sh` env parsing | Fixed silent drop of a `.env`'s last line when unterminated | ✅ Sound |
 | O8 | `codecov/patch` gate | Made informational after confirming the remaining gap is `build_app()`'s e2e-only wiring | ✅ Sound |
+| O9 | Scaling upgrade: containerization + benchmark harness | `docker-compose.yml` (app + Redis), `run_scaling_benchmark.py` — additive to the existing single-container deploy | ✅ Sound |
 
 ---
 
@@ -493,6 +495,14 @@ key = hashlib.sha256(normalised.encode()).hexdigest()[:16]
 >
 > **Trigger for revisit:** (a) When data import frequency is established, align TTL or implement event-driven invalidation. (b) When users report stale results. (c) When `cache.json` exceeds 10 MB.
 
+**Update (2026-09-02) — Redis backend added, closing the alternatives-considered rejection above:** `cache.py` now supports two backends behind a `CacheBackend`-shaped internal split — `lookup_cache()`/`write_cache()` (the public API, unchanged signatures) dispatch to `RedisCacheBackend` when `config.is_redis_cache_enabled()` (i.e. `CANOPY_REDIS_URL` set) or fall back to the original `FileCacheBackend` logic otherwise, including on any Redis connection error at call time (fail-safe, same shape as `is_langfuse_enabled()`). Redis uses native `SETEX` for TTL and the container's own `maxmemory-policy allkeys-lru` (see `docker-compose.yml`) instead of the hand-rolled LRU eviction the file backend still uses. The original rejection reasoning ("overkill for single-instance") is still correct for a single-instance deployment — this is additive, not a reversal: Redis is opt-in via env var, and the file backend remains the zero-infrastructure default.
+
+**Business value:** unlocks running more than one canopy instance behind a load balancer later without cache staleness or file-lock contention between instances — the file backend's single-writer JSON file (D3) cannot be shared safely across processes, let alone across hosts.
+
+> **Audit verdict — ✅ Sound (closed)**
+>
+> Redis backend implemented as a strict superset of the file backend — same public API, same TTL semantics, opt-in via env var, fails safe to the file backend on any connection error. The original alternatives table above remains as the historical record of why this was deferred at v1.
+
 ---
 
 ### D3 — Persistence layer
@@ -523,6 +533,49 @@ key = hashlib.sha256(normalised.encode()).hexdigest()[:16]
 > Sound for a single-instance deployment. The scaling caveat is real and will become load-bearing if the system is ever deployed with multiple replicas (Fly.io, Kubernetes multi-pod, etc.). The backup gap for history is also real: if history serves as an audit trail (who asked what, when), it should be treated as data, not cache, and backed up accordingly.
 >
 > **Trigger for revisit:** (a) Any deployment topology with > 1 app instance. (b) If query history is used for reporting or audit purposes. (c) If `history.jsonl` exceeds 50 MB and querying it becomes slow.
+
+---
+
+### D4 — Semantic SQL-plan cache
+
+> **Files:** `src/canopy/semantic_cache.py` · `src/canopy/query/loop.py` · `src/canopy/schema.py`
+
+**Decision:** D2's own alternatives table rejected embedding-based caching in 2026 as "correct next step once usage patterns are known" — this implements that next step, but caches the model's *generated SQL*, not the full result row set, and re-executes it live on a hit rather than serving cached rows.
+
+**Why SQL, not results:** `Interpretation` (loop.py) is parsed post-hoc from the model's own narrative output — there is no standalone query-planning LLM call to cache independently of the full agent turn. Caching results directly (as D2 does for exact matches) would mean a semantic near-match serves a *stale answer* to a *similar-but-not-identical question* — the single biggest risk with semantic caching as a category. Caching the SQL and re-executing it live means only the LLM's SQL-generation step is skipped; the numbers themselves are always current.
+
+**Why this needed more than a similarity threshold:** cosine similarity alone cannot distinguish a true paraphrase from an entity substitution ("Andean condors" vs "spectacled bears" at the same site can embed as near-identical — same template, different subject) or a stale temporal scope ("what new birds were found today," replayed a day later, silently reapplying yesterday's date if the model resolved "today" into a literal date at generation time). A single similarity number is not enough to decide correctness — a chain of deterministic checks is:
+
+| Gate | What it checks | When |
+|---|---|---|
+| 1. Temporal safety | SQL uses `CURRENT_DATE`/`INTERVAL`/etc. (always safe to replay) vs. a literal date paired with relative-time language in the question (never cached) | write |
+| 2. Entity match | Extracted species/site names + numeric literals (via `fuzzy_match.py`'s existing cached column values — no new vocabulary system) must match exactly between the cached and new question | read |
+| 3. Guardrail filter | SQL must not reference a `CANOPY_SENSITIVE_COLUMNS` column — a one-time guardrail near-miss must never become a standing, replayable cache entry | write |
+| 4. Connection isolation | Candidates are only ever looked up within the calling `connection_id`'s own key namespace — never ranked or merged across connections | read (structural) |
+| 5. Schema-version invalidation | The Redis key namespace is versioned (`_SCHEMA_VERSION`); bumping it when `schema.py`'s `SCHEMA_CONTEXT` changes orphans every prior entry automatically | structural |
+| 6. Distinct messaging | A semantic hit's notice explicitly differs from D2's tier-1 "cached for up to 24 hours" wording — tier-2 is always freshly re-executed, so the wording must not make the *fresher* tier read as staler | serve |
+| 7. Fail-open | Any storage error in `lookup()`/`write()` degrades to a miss / skipped write — never raises, never blocks the query it's trying to speed up | read + write |
+
+**Why deterministic gates, not an LLM judgment call:** asking a model "are these two questions asking the same thing" would make cache-safety itself non-deterministic and non-repeatable — the opposite of what a cache needs. Embeddings (`sentence-transformers`, local, no external API call) are used only to narrow the candidate set; every gate that decides correctness is a regex/string-set check, auditable and replayable the same way every time. `fuzzy_match.py` is the precedent this follows — it already solved a structurally identical problem (matching model output against real values) with `difflib` instead of a second LLM call.
+
+**Storage:** plain Redis, not RediSearch/Redis Stack. Candidate similarity is computed in-process over the (small) set of SQL plans one connection accumulates — simpler to operate (one Redis image, not a specialized one) and fast enough at this scale; revisit only if a single connection's cached-plan count grows into the tens of thousands.
+
+**Improving Gate 1's real-world hit rate (schema.py):** Gate 1's coverage depends on whether the model happens to write relative-date SQL for relative-time questions — nothing forced that before this change. Added a `_TOOL_INSTRUCTIONS` block ("RELATIVE-TIME QUESTIONS: PREFER SQL FUNCTIONS OVER LITERAL DATES") asking the model to prefer `CURRENT_DATE`/`INTERVAL`/`DATE_TRUNC` over a literal date it computed itself, for relative-time phrasing specifically — explicit dates ("in 2023") are untouched. This is a coverage improvement, not a correctness dependency: Gate 1 still inspects the actual generated SQL text regardless of what the prompt asked for, so a model that ignores the instruction simply gets that entry excluded from caching, exactly as before this change. No schema-version bump needed — this edits `_TOOL_INSTRUCTIONS`, not `SCHEMA_CONTEXT`, and doesn't change what any previously-cached, already-gate-verified SQL means.
+
+**Business value:** cuts LLM cost and wait time on the realistic long tail of "same question asked slightly differently" — which is most of real usage, not an edge case — without ever trading away data freshness, and without introducing a jailbreak-persistence or cross-species-mixup failure mode into a tool whose entire value proposition is being trustworthy on real conservation data.
+
+**Alternatives considered:**
+
+| Alternative | Why rejected |
+|---|---|
+| Semantic cache serving cached rows directly | Serves a stale/possibly-wrong answer to a similar-but-different question — the core risk this design exists to avoid. |
+| RediSearch / Redis Stack vector index | Adds a specialized Redis module for a candidate set small enough that in-process brute-force cosine is simpler to operate and equally fast. |
+| LLM-as-judge for question equivalence | Non-deterministic, non-repeatable, and itself an extra model call on every lookup — defeats the latency/cost purpose of caching. |
+| Single similarity threshold, no gates | Cannot distinguish paraphrase from entity substitution or stale temporal scope — the exact failure modes surfaced during design review. |
+
+> **Audit verdict — ✅ Sound**
+>
+> Off by default (`CANOPY_SEMANTIC_CACHE_ENABLED`). Every correctness-critical decision is deterministic and unit-tested independently of the embedding step (`tests/test_semantic_cache.py`). The one open question is real-world gate-2 entity coverage: `fuzzy_match.py`'s `FUZZY_COLUMNS` covers species/site/management-unit today — a question whose distinguishing entity isn't in that list (e.g. a validation-status distinction) would not be caught by Gate 2 and relies on embedding similarity alone for that dimension. Monitor semantic-cache-hit correctness via the eval suite's `check_fn`s before raising the default threshold or expanding scope.
 
 ---
 
@@ -827,11 +880,19 @@ The user was being shown a spinner for 16–25 seconds while the answer's data s
 | 5–20 | 5–20 | 5–20 | Monitor; consider pool |
 | > 20 | > 20 | > 20 | Add `ThreadedConnectionPool` |
 
-> **Audit verdict — 🔄 Revisit**
->
-> Sound at current load. The threshold table above makes the revisit condition concrete. Monitor PostgreSQL `pg_stat_activity` in production; if concurrent connection count routinely exceeds 10, add a pool. Log connection setup time if it starts appearing in query timing breakdowns.
-
 **Update (2026-07-19):** Gradio's `concurrency_limit` on every handler in `ui/app.py` was `1` — serializing the entire app to one query at a time globally, not per-user. That's a UX bug independent of this decision (no pooling), but it was hiding the fact that this decision's own "no action needed" band (1-5 concurrent) was never actually reachable. Raised to `3` (`_QUERY_CONCURRENCY_LIMIT` in `ui/app.py`), which stays inside the existing threshold table above — no new decision, no pool added. `cache.py`/`history.py` already guard their file writes with independent `threading.Lock()`s, so this doesn't introduce a race condition in shared state.
+
+**Update (2026-09-02) — Pool implemented ahead of the > 20 trigger:** `db/connection.py` now wraps a `psycopg2.pool.ThreadedConnectionPool` (module-level singleton, size via `CANOPY_DB_POOL_SIZE`, default 10). `get_connection()`/`release_connection()` replace the old open/close-per-query pair; `executor.py`'s `finally` block now returns the connection to the pool instead of closing it. `ui/app.py`'s `_QUERY_CONCURRENCY_LIMIT` reads from `CANOPY_QUERY_CONCURRENCY_LIMIT` (still defaults to 3) instead of a hardcoded constant, so it can be raised per-deployment now that per-query connection overhead is removed. Pool exhaustion (a burst above `CANOPY_DB_POOL_SIZE`) raises `PoolExhaustedError` → `executor.py` translates it to `DatabaseBusyError` → `ui/app.py` shows a "system busy, try again" message instead of an unhandled stack trace.
+
+**Why now, ahead of the documented trigger:** this was built proactively as part of a broader scaling pass (concurrency + caching), not because current traffic hit 20 concurrent queries. The original alternatives-considered table above is still the right record of why a pool wasn't justified at v1 launch — this update is "the load grew" catching up to that table's own stated condition, not a reversal of the original reasoning.
+
+**Business value:** removes the queueing/wait experience for concurrent staff as usage grows past a single tester — the same DB connection no longer has to be torn down and rebuilt (~5-20ms, previously negligible relative to model latency but multiplicative under real concurrency) for every single query a scientist or reviewer runs.
+
+> **Audit verdict — ✅ Sound (closed)**
+>
+> Implemented ahead of the > 20 concurrent threshold as part of a proactive scaling pass. The threshold table above remains as the historical record of when this was originally deferred and why.
+
+**Caveat discovered during verification (2026-09-02):** a proxy load test (real DB pool, mocked LLM to avoid the model API's own rate limits) isolated `execute_query()` from the rest of the loop and measured wall-clock under 1/5/8 concurrent `pg_sleep()` calls, with a side connection polling `pg_stat_activity`. Result: wall-clock scaled almost linearly with concurrency (near-fully-serial), and the server-side poller never observed more than ~2 backends executing concurrently, even though canopy's own pool correctly issued distinct client-side connections (confirmed separately: `PoolExhaustedError` fires correctly above `CANOPY_DB_POOL_SIZE`). **This points to the Postgres tier/proxy Jocotoco is hosted on (Railway, behind `maglev.proxy.rlwy.net`) as the actual concurrency ceiling, not a defect in this pool implementation.** The pool is necessary but not sufficient — real production concurrency headroom also depends on the Postgres hosting tier. Worth a direct check with whoever manages the Railway instance (connection/query concurrency limits on the current plan) before assuming this pool alone delivers N-way real throughput in production.
 
 ---
 
@@ -1129,6 +1190,24 @@ Confirmed by diff-scoped coverage reports on two separate PRs: after adding real
 > **Audit verdict — ✅ Sound**
 >
 > The investigation preceded the fix: three separate coverage reports were pulled and diffed before concluding the gap was structural, not a case of accepting a failing check because it was inconvenient to fix. The real gaps that surfaced along the way were fixed properly, not swept into the same "informational" bucket.
+
+---
+
+### O9 — Scaling upgrade: containerization + benchmark harness
+
+> **Files:** `docker-compose.yml` · `Dockerfile` (unchanged) · `scripts/run_scaling_benchmark.py`
+
+**Decision:** Added `docker-compose.yml` (app + a plain `redis:7-alpine` service, not Redis Stack — see D4) as an additional deploy path alongside the existing `Dockerfile` + `docker_run.sh` single-container flow; the single-container path still works unchanged (Redis/semantic caching are opt-in via env var, so an operator who never sets `CANOPY_REDIS_URL` sees no behavior change). Added `scripts/run_scaling_benchmark.py`, distinct from the existing model-comparison `scripts/run_benchmark.py`, to measure the actual gains from D2's Redis backend, D4's semantic cache, and O2's connection pool: a concurrency sweep (1/5/10 concurrent queries — capped at 10 to keep live-DB benchmark runs judicious about total billable query volume, not because the pool itself is limited to 10, p50/p95 latency), an exact-cache cold/warm comparison, and a semantic-cache paraphrase-hit-rate suite.
+
+**Why a benchmark harness at all:** every component in this scaling pass is justified by a latency/cost claim ("removes queueing," "cuts cost on the long tail of similar questions"). Those claims are worth nothing without a number behind them — this harness is what turns "we made it faster" into something a decision-maker can act on, and it doubles as a correctness check (the semantic-cache suite's hit results are checked against the eval suite's own `check_fn`s, not just timed).
+
+**Postgres is deliberately not containerized** — it's Jocotoco's real, externally-managed database; `docker-compose.yml` connects to it over the network via the existing `PG_*` variables, same as the single-container path.
+
+**Business value:** the docker-compose path is what makes the D2/D4 caching upgrades actually deployable with one command instead of requiring an operator to stand up Redis by hand; the benchmark harness is what makes the case for the engineering time spent on this whole pass measurable rather than asserted.
+
+> **Audit verdict — ✅ Sound**
+>
+> Both additions are opt-in / additive — the existing single-container deploy path (Section 1 of DEPLOYMENT.md) is unchanged and still the documented default. `make compose-up`/`make scaling-benchmark` are new, parallel entry points, not replacements.
 
 ---
 

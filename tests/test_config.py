@@ -179,3 +179,103 @@ def test_get_data_dir_falls_back_on_permission_error(tmp_path, monkeypatch):
 
     result = cfg.get_data_dir()
     assert result == tmp_path / ".canopy"
+
+
+# ---------------------------------------------------------------------------
+# Scaling upgrade getters — pool size, concurrency limit, Redis, semantic cache
+# ---------------------------------------------------------------------------
+
+
+def test_get_db_pool_size_default(monkeypatch):
+    from canopy.config import get_db_pool_size
+
+    monkeypatch.delenv("CANOPY_DB_POOL_SIZE", raising=False)
+    assert get_db_pool_size() == 10
+
+
+def test_get_db_pool_size_env_override(monkeypatch):
+    from canopy.config import get_db_pool_size
+
+    monkeypatch.setenv("CANOPY_DB_POOL_SIZE", "25")
+    assert get_db_pool_size() == 25
+
+
+def test_get_query_concurrency_limit_default(monkeypatch):
+    from canopy.config import get_query_concurrency_limit
+
+    monkeypatch.delenv("CANOPY_QUERY_CONCURRENCY_LIMIT", raising=False)
+    assert get_query_concurrency_limit() == 3
+
+
+def test_get_query_concurrency_limit_env_override(monkeypatch):
+    from canopy.config import get_query_concurrency_limit
+
+    monkeypatch.setenv("CANOPY_QUERY_CONCURRENCY_LIMIT", "8")
+    assert get_query_concurrency_limit() == 8
+
+
+def test_is_redis_cache_enabled_false_when_unset(monkeypatch):
+    from canopy.config import is_redis_cache_enabled
+
+    monkeypatch.delenv("CANOPY_REDIS_URL", raising=False)
+    assert is_redis_cache_enabled() is False
+
+
+def test_is_redis_cache_enabled_true_when_set(monkeypatch):
+    from canopy.config import is_redis_cache_enabled
+
+    monkeypatch.setenv("CANOPY_REDIS_URL", "redis://localhost:6379/0")
+    assert is_redis_cache_enabled() is True
+
+
+def test_get_redis_url_returns_empty_string_when_unset(monkeypatch):
+    from canopy.config import get_redis_url
+
+    monkeypatch.delenv("CANOPY_REDIS_URL", raising=False)
+    assert get_redis_url() == ""
+
+
+def test_get_redis_url_returns_stripped_value(monkeypatch):
+    from canopy.config import get_redis_url
+
+    monkeypatch.setenv("CANOPY_REDIS_URL", "  redis://localhost:6379/0  ")
+    assert get_redis_url() == "redis://localhost:6379/0"
+
+
+def test_is_semantic_cache_enabled_false_when_flag_unset(monkeypatch):
+    from canopy.config import is_semantic_cache_enabled
+
+    monkeypatch.delenv("CANOPY_SEMANTIC_CACHE_ENABLED", raising=False)
+    monkeypatch.setenv("CANOPY_REDIS_URL", "redis://localhost:6379/0")
+    assert is_semantic_cache_enabled() is False
+
+
+def test_is_semantic_cache_enabled_false_when_redis_missing(monkeypatch):
+    """Flag on but no Redis URL — fails safe to off, mirroring is_langfuse_enabled()."""
+    from canopy.config import is_semantic_cache_enabled
+
+    monkeypatch.setenv("CANOPY_SEMANTIC_CACHE_ENABLED", "true")
+    monkeypatch.delenv("CANOPY_REDIS_URL", raising=False)
+    assert is_semantic_cache_enabled() is False
+
+
+def test_is_semantic_cache_enabled_true_when_both_set(monkeypatch):
+    from canopy.config import is_semantic_cache_enabled
+
+    monkeypatch.setenv("CANOPY_SEMANTIC_CACHE_ENABLED", "true")
+    monkeypatch.setenv("CANOPY_REDIS_URL", "redis://localhost:6379/0")
+    assert is_semantic_cache_enabled() is True
+
+
+def test_get_semantic_cache_threshold_default(monkeypatch):
+    from canopy.config import get_semantic_cache_threshold
+
+    monkeypatch.delenv("CANOPY_SEMANTIC_CACHE_THRESHOLD", raising=False)
+    assert get_semantic_cache_threshold() == 0.93
+
+
+def test_get_semantic_cache_threshold_env_override(monkeypatch):
+    from canopy.config import get_semantic_cache_threshold
+
+    monkeypatch.setenv("CANOPY_SEMANTIC_CACHE_THRESHOLD", "0.8")
+    assert get_semantic_cache_threshold() == 0.8
