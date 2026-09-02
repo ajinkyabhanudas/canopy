@@ -1,5 +1,5 @@
 """Database connection layer."""
 
-from .connection import get_connection
+from .connection import PoolExhaustedError, get_connection, release_connection, reset_pool
 
-__all__ = ["get_connection"]
+__all__ = ["PoolExhaustedError", "get_connection", "release_connection", "reset_pool"]

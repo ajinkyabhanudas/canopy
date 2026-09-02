@@ -94,6 +94,9 @@ STRINGS: dict[str, str] = {
         "Couldn't reach the database. Please try again in a moment.\n\n"
         "If the problem persists, check that the database connection is active."
     ),
+    "error_db_busy": (
+        "The system is handling a lot of queries right now. Please try again in a moment."
+    ),
     "error_generic_response": (
         "Something went wrong while searching. "
         "Please try again, or rephrase your question."

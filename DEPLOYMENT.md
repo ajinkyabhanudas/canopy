@@ -38,10 +38,10 @@ anything. Deployment is manual, on whatever host runs the container.
    - DB connectivity (run inside the container or locally with the same
      `.env`):
      ```python
-     from canopy.db import get_connection
+     from canopy.db import get_connection, release_connection
      conn = get_connection()
      conn.cursor().execute("SELECT 1")
-     conn.close()
+     release_connection(conn)  # returns it to the pool — do not call conn.close() directly
      ```
 6. Stop: `docker stop $(docker ps -q --filter "ancestor=canopy:dev")` — the
    container has no `--name`, so it must be found by ancestor image.
@@ -50,6 +50,12 @@ anything. Deployment is manual, on whatever host runs the container.
 persistent deployment: `pip install -e ".[dev]"`, `cp .env.example .env`,
 `make ui`. Do **not** set `CANOPY_DATA_DIR` locally — it defaults to
 `~/.canopy`; it's a Docker/cloud-only var (see Section 2).
+
+**Alternative: Docker Compose**, adding a Redis-backed exact-match cache
+(and, if `CANOPY_SEMANTIC_CACHE_ENABLED` is also set, the semantic SQL-plan
+cache) — `make compose-up` / `make compose-down`. See README.md's "Alternative:
+Docker Compose" section. Both caches are opt-in via env var, so the plain
+`make run` path above is unaffected either way.
 
 ### Env vars not in `.env.example`
 
@@ -82,7 +88,11 @@ automatically. No manual backup step needed for a routine restart.
 - The app is single-instance only against a given `/data` volume — running
   two containers against the same volume causes write races on
   `history.jsonl`/`cache.json`. Don't scale horizontally without changing
-  the persistence layer first (see DECISIONS.md's D3 section).
+  the persistence layer first (see DECISIONS.md's D3 section). Setting
+  `CANOPY_REDIS_URL` (DECISIONS.md's D2 update) removes this constraint for
+  the query cache specifically — multiple instances can safely share one
+  Redis-backed cache — but `history.jsonl` is still file-based and still
+  single-instance only.
 - No documented graceful-shutdown handling — `docker stop` sends SIGTERM
   then SIGKILL after Docker's default grace period; in-flight queries are
   not drained.

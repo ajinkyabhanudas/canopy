@@ -1,4 +1,4 @@
-.PHONY: help test lint check build run smoke ui eval eval-gt eval-es eval-adv benchmark clean playwright-install e2e screenshots
+.PHONY: help test lint check build run smoke ui eval eval-gt eval-es eval-adv benchmark scaling-benchmark clean playwright-install e2e screenshots compose-up compose-down
 
 # Default target
 help:
@@ -25,6 +25,11 @@ help:
 	@echo ""
 	@echo "  Benchmark (needs live DB + all API keys in .env)"
 	@echo "  make benchmark         Run all models from models.yaml, print comparison table"
+	@echo "  make scaling-benchmark Concurrency + exact-cache + semantic-cache gains"
+	@echo ""
+	@echo "  Docker Compose (app + Redis — exact-match + semantic cache)"
+	@echo "  make compose-up        Build and start app + redis"
+	@echo "  make compose-down      Stop the compose stack"
 	@echo ""
 	@echo "  E2E browser tests (needs Playwright browsers installed once)"
 	@echo "  make playwright-install  Install Chromium for E2E tests (run once)"
@@ -68,6 +73,14 @@ screenshots: build
 	docker stop canopy-screenshots
 	@echo "Done. Screenshots saved to docs/screenshots/"
 
+# ── Docker Compose ───────────────────────────────────────────────────────────
+
+compose-up:
+	docker compose up --build
+
+compose-down:
+	docker compose down
+
 # ── Eval ─────────────────────────────────────────────────────────────────────
 
 eval:
@@ -75,6 +88,9 @@ eval:
 
 benchmark:
 	python scripts/run_benchmark.py
+
+scaling-benchmark:
+	python scripts/run_scaling_benchmark.py
 
 eval-gt:
 	python scripts/run_eval.py --ground-truth

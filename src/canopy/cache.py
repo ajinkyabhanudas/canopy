@@ -1,4 +1,12 @@
-"""Query result cache — exact-match, TTL-based, LRU-evicted, JSON-backed."""
+"""Query result cache — exact-match, TTL-based, backed by Redis or a JSON file.
+
+Redis is used when CANOPY_REDIS_URL is set (see config.is_redis_cache_enabled());
+otherwise, and on any Redis connection failure, falls back to the original
+file-based backend (LRU-evicted, JSON-backed) — same fail-safe shape as
+config.is_langfuse_enabled(). The file backend's implementation is unchanged
+so existing tests that monkeypatch _cache_file()/_read_cache() keep working
+against it directly.
+"""
 
 from __future__ import annotations
 
@@ -14,8 +22,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from canopy._json import Encoder
+from canopy.config import get_redis_url, is_redis_cache_enabled
 
 if TYPE_CHECKING:
+    import redis
+
     from canopy.query.loop import LoopResult
 
 _log = logging.getLogger("canopy.cache")
@@ -106,22 +117,10 @@ def _deserialize_fuzzy_matches(raw: list | None) -> tuple:
     )
 
 
-def lookup_cache(question: str, connection_id: str = "", model: str = "") -> LoopResult | None:
-    """Return a cached LoopResult for question, or None on miss/expiry."""
+def _entry_to_result(entry: dict) -> LoopResult:
+    """Shared deserialization: cache entry dict -> LoopResult. Used by both backends."""
     from canopy.query.loop import LoopResult
 
-    key = _make_key(question, connection_id, model)
-    data = _read_cache()
-    entry = data.get(key)
-    if entry is None:
-        return None
-
-    expires_at = datetime.fromisoformat(entry["expires_at"])
-    if datetime.now(timezone.utc) >= expires_at:
-        _log.debug("cache expired for key %s", key)
-        return None
-
-    _log.debug("cache hit for key %s", key)
     return LoopResult(
         question=entry["question"],
         sql=entry["sql"],
@@ -135,9 +134,55 @@ def lookup_cache(question: str, connection_id: str = "", model: str = "") -> Loo
     )
 
 
-def write_cache(result: LoopResult, connection_id: str = "", model: str = "") -> None:
-    """Write a LoopResult to the cache, evicting oldest/expired entries beyond _MAX_ENTRIES."""
-    key = _make_key(result.question, connection_id, model)
+def _build_entry(result: LoopResult, now: datetime) -> dict:
+    """Shared serialization: LoopResult -> cache entry dict. Used by both backends."""
+    return {
+        "question": result.question,
+        "created_at": now.isoformat(),
+        "expires_at": (now + timedelta(hours=_ttl_hours())).isoformat(),
+        "sql": result.sql,
+        "columns": result.columns,
+        "rows": [list(row) for row in result.rows],
+        "row_count": result.row_count,
+        "model_text": result.model_text,
+        "interpretation": (
+            {
+                "data_source": result.interpretation.data_source,
+                "gaps": list(result.interpretation.gaps),
+                "research_questions": list(result.interpretation.research_questions),
+            }
+            if result.interpretation is not None
+            else None
+        ),
+        "fuzzy_matches": [
+            {
+                "literal": m.literal,
+                "candidates": list(m.candidates),
+                "label_key": m.label_key,
+            }
+            for m in result.fuzzy_matches
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# File backend — original implementation, unchanged behavior
+# ---------------------------------------------------------------------------
+
+
+def _lookup_cache_file(key: str) -> dict | None:
+    data = _read_cache()
+    entry = data.get(key)
+    if entry is None:
+        return None
+    expires_at = datetime.fromisoformat(entry["expires_at"])
+    if datetime.now(timezone.utc) >= expires_at:
+        _log.debug("cache expired for key %s", key)
+        return None
+    return entry
+
+
+def _write_cache_file(key: str, entry: dict) -> None:
     with _write_lock:
         data = _read_cache()
 
@@ -153,38 +198,104 @@ def write_cache(result: LoopResult, connection_id: str = "", model: str = "") ->
             for old_key in sorted_keys[: len(data) - _MAX_ENTRIES + 1]:
                 del data[old_key]
 
-        data[key] = {
-            "question": result.question,
-            "created_at": now.isoformat(),
-            "expires_at": (now + timedelta(hours=_ttl_hours())).isoformat(),
-            "sql": result.sql,
-            "columns": result.columns,
-            "rows": [list(row) for row in result.rows],
-            "row_count": result.row_count,
-            "model_text": result.model_text,
-            "interpretation": (
-                {
-                    "data_source": result.interpretation.data_source,
-                    "gaps": list(result.interpretation.gaps),
-                    "research_questions": list(result.interpretation.research_questions),
-                }
-                if result.interpretation is not None
-                else None
-            ),
-            "fuzzy_matches": [
-                {
-                    "literal": m.literal,
-                    "candidates": list(m.candidates),
-                    "label_key": m.label_key,
-                }
-                for m in result.fuzzy_matches
-            ],
-        }
+        data[key] = entry
         _write_cache_dict(data)
 
 
+# ---------------------------------------------------------------------------
+# Redis backend — used when config.is_redis_cache_enabled() is True. Falls
+# back to the file backend on any connection error at call time, per
+# config.is_langfuse_enabled()'s fail-safe shape: an unreachable Redis
+# degrades to today's behavior rather than crashing run_query().
+# ---------------------------------------------------------------------------
+
+_REDIS_KEY_PREFIX = "canopy:cache:"
+_redis_client_singleton = None
+
+
+def _redis_client() -> "redis.Redis":
+    """Return a lazily-constructed, module-level redis client."""
+    global _redis_client_singleton
+    if _redis_client_singleton is None:
+        import redis  # lazy import — only needed when Redis caching is enabled
+
+        _redis_client_singleton = redis.Redis.from_url(get_redis_url(), socket_timeout=2)
+    return _redis_client_singleton
+
+
+def _reset_redis_client() -> None:
+    """Discard the cached client. Used by tests to force a fresh client per test."""
+    global _redis_client_singleton
+    _redis_client_singleton = None
+
+
+def _lookup_cache_redis(key: str) -> dict | None:
+    try:
+        raw = _redis_client().get(_REDIS_KEY_PREFIX + key)
+    except Exception:
+        _log.warning(
+            "Redis unreachable on cache lookup — falling back to file cache", exc_info=True
+        )
+        return _lookup_cache_file(key)
+    if raw is None:
+        return None
+    return json.loads(raw)
+
+
+def _write_cache_redis(key: str, entry: dict, ttl_seconds: int) -> None:
+    try:
+        _redis_client().set(
+            _REDIS_KEY_PREFIX + key, json.dumps(entry, cls=Encoder), ex=ttl_seconds
+        )
+    except Exception:
+        _log.warning("Redis unreachable on cache write — falling back to file cache", exc_info=True)
+        _write_cache_file(key, entry)
+
+
+# ---------------------------------------------------------------------------
+# Public API — dispatches to the active backend
+# ---------------------------------------------------------------------------
+
+
+def lookup_cache(question: str, connection_id: str = "", model: str = "") -> LoopResult | None:
+    """Return a cached LoopResult for question, or None on miss/expiry."""
+    key = _make_key(question, connection_id, model)
+    entry = (
+        _lookup_cache_redis(key) if is_redis_cache_enabled() else _lookup_cache_file(key)
+    )
+    if entry is None:
+        return None
+    _log.debug("cache hit for key %s", key)
+    return _entry_to_result(entry)
+
+
+def write_cache(result: LoopResult, connection_id: str = "", model: str = "") -> None:
+    """Write a LoopResult to the cache.
+
+    File backend: evicts oldest/expired entries beyond _MAX_ENTRIES (LRU).
+    Redis backend: relies on native key TTL + the container's own
+    maxmemory-policy allkeys-lru — no hand-rolled eviction bookkeeping needed.
+    """
+    key = _make_key(result.question, connection_id, model)
+    now = datetime.now(timezone.utc)
+    entry = _build_entry(result, now)
+    if is_redis_cache_enabled():
+        _write_cache_redis(key, entry, ttl_seconds=_ttl_hours() * 3600)
+    else:
+        _write_cache_file(key, entry)
+
+
 def clear_cache() -> None:
-    """Delete the cache file. No-op if it does not exist."""
+    """Clear the active cache backend. No-op if there is nothing to clear."""
+    if is_redis_cache_enabled():
+        try:
+            client = _redis_client()
+            keys = list(client.scan_iter(match=_REDIS_KEY_PREFIX + "*"))
+            if keys:
+                client.delete(*keys)
+        except Exception:
+            _log.warning("Redis unreachable on cache clear", exc_info=True)
+        return
     path = _cache_file()
     if path.exists():
         path.unlink()

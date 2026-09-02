@@ -137,6 +137,25 @@ Add further WHERE clauses, GROUP BY, or aggregate functions as needed.
 Use EXTRACT(YEAR FROM d.recorded_at) to filter or group by year.
 Use DATE_TRUNC for finer time grouping.
 
+=== RELATIVE-TIME QUESTIONS: PREFER SQL FUNCTIONS OVER LITERAL DATES ===
+For questions using relative-time language ("today", "yesterday", "this
+week", "this month", "recent", "the last N days"), write the date bound as
+a SQL expression that PostgreSQL evaluates at query time — CURRENT_DATE,
+CURRENT_DATE - INTERVAL '7 days', DATE_TRUNC('week', CURRENT_DATE), etc. —
+rather than computing today's date yourself and writing it as a literal
+string (e.g. '2026-09-02'). Both return the same answer right now, but a
+literal date freezes the query to today only, while the SQL expression
+still resolves correctly if asked again on a different day. Example:
+
+  -- Prefer this:
+  WHERE d.recorded_at::date = CURRENT_DATE
+  -- Not this:
+  WHERE d.recorded_at::date = '2026-09-02'
+
+This is a stylistic preference for relative-time questions specifically —
+it does not apply to questions with an explicit date or year ("in 2023",
+"on March 5th"), where a literal value is correct and expected.
+
 === YEAR-RANGE QUERIES: ALWAYS FILL GAP YEARS, NEVER OMIT THEM ===
 A query spanning multiple years ("from 2019 to 2023", "each year since 2020")
 must return one row per requested year, including years with zero approved

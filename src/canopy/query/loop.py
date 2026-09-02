@@ -16,8 +16,9 @@ from langdetect import detect as _lang_detect
 from llama_index.core.agent.workflow import FunctionAgent
 from llama_index.core.tools import FunctionTool
 
+from canopy import semantic_cache
 from canopy.cache import lookup_cache, write_cache
-from canopy.config import get_active_connection
+from canopy.config import get_active_connection, is_semantic_cache_enabled
 from canopy.history import append_history
 from canopy.i18n import t
 from canopy.models import get_llm
@@ -510,6 +511,43 @@ def run_query(
             trace_id_cb(trace_id)
         return cached
 
+    if is_semantic_cache_enabled():
+        hit = semantic_cache.lookup(question, connection_id=conn.id)
+        if hit is not None:
+            try:
+                live_result = _strip_sensitive_columns(execute_query(hit.sql))
+            except Exception as exc:
+                _log.warning(
+                    "semantic cache hit failed to re-execute — falling back to full agent: %s",
+                    exc,
+                )
+            else:
+                if status_cb:
+                    status_cb("CACHE_HIT")
+                _log.info(
+                    "semantic cache hit: backend=%s model=%s question=%r",
+                    conn.id, active_model, question[:60],
+                )
+                semantic_result = LoopResult(
+                    question=question,
+                    sql=hit.sql,
+                    columns=live_result.columns,
+                    rows=live_result.rows,
+                    row_count=live_result.row_count,
+                    model_text=semantic_cache.build_semantic_hit_notice(),
+                    timing={"semantic_cache_hit": True, "matched_question": hit.question},
+                )
+                trace_id = trace_query(
+                    question=question,
+                    sql=semantic_result.sql,
+                    row_count=semantic_result.row_count,
+                    timing=semantic_result.timing,
+                    cache_hit=True,
+                )
+                if trace_id and trace_id_cb:
+                    trace_id_cb(trace_id)
+                return semantic_result
+
     t_total = time.perf_counter()
 
     state: dict = {
@@ -564,6 +602,8 @@ def run_query(
         write_cache(result, connection_id=conn.id, model=active_model)
     except Exception as exc:
         _log.warning("cache write failed: %s", exc)
+    if is_semantic_cache_enabled() and result.sql:
+        semantic_cache.write(question, result.sql, connection_id=conn.id)
     try:
         append_history(result)
     except Exception as exc:

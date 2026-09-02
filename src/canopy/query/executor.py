@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from canopy.db import get_connection
+from canopy.db import PoolExhaustedError, get_connection, release_connection
 
 # Matches -- line comments and /* block comments */ so we can strip them
 # before checking the first meaningful SQL token.
@@ -22,6 +22,14 @@ class SQLGuardError(ValueError):
         super().__init__(message)
         self.sql = sql
         self.operation = _first_token(sql).upper() or "UNKNOWN"
+
+
+class DatabaseBusyError(RuntimeError):
+    """Raised when the DB connection pool is exhausted.
+
+    Distinct from SQLGuardError (a bad query) — this is a capacity condition
+    callers should surface as "try again shortly", not a query-authoring error.
+    """
 
 
 @dataclass(frozen=True)
@@ -64,7 +72,11 @@ def execute_query(sql: str) -> QueryResult:
     if _first_token(stripped) not in ("select", "with"):
         raise SQLGuardError("Only SELECT queries are permitted", sql=stripped)
 
-    conn = get_connection()
+    try:
+        conn = get_connection()
+    except PoolExhaustedError as exc:
+        raise DatabaseBusyError(str(exc)) from exc
+
     cursor = conn.cursor()
     try:
         cursor.execute(sql)
@@ -75,4 +87,4 @@ def execute_query(sql: str) -> QueryResult:
         return QueryResult(columns=columns, rows=rows, row_count=len(rows))
     finally:
         cursor.close()
-        conn.close()
+        release_connection(conn)
