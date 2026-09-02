@@ -148,3 +148,17 @@ def test_redis_unreachable_on_write_falls_back_to_file(tmp_path, monkeypatch):
     assert cache_path.exists()
     data = json.loads(cache_path.read_text())
     assert len(data) == 1
+
+
+def test_redis_unreachable_on_clear_falls_back_without_raising(monkeypatch):
+    """clear_cache() must not raise if Redis is unreachable at clear time —
+    same fail-safe shape as lookup/write."""
+    import canopy.cache as cache_mod
+
+    class _BrokenClient:
+        def scan_iter(self, *a, **k):
+            raise ConnectionError("redis down")
+
+    monkeypatch.setattr(cache_mod, "_redis_client", lambda: _BrokenClient())
+
+    cache_mod.clear_cache()  # must not raise

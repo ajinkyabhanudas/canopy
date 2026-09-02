@@ -63,6 +63,40 @@ def test_semantic_hit_skips_agent_call(monkeypatch):
     assert "current" in result.model_text.lower()
 
 
+def test_semantic_hit_fires_status_and_trace_id_callbacks(monkeypatch):
+    """A semantic hit must fire status_cb("CACHE_HIT") and trace_id_cb, same as
+    an exact-match hit — these are the two branches only exercised when a caller
+    actually passes callbacks, which the other semantic-hit test doesn't."""
+    monkeypatch.setattr("canopy.query.loop.is_semantic_cache_enabled", lambda: True)
+    monkeypatch.setattr(
+        "canopy.query.loop.semantic_cache.lookup",
+        lambda q, connection_id: SemanticHit(sql="SELECT 1", question="similar question"),
+    )
+    monkeypatch.setattr("canopy.query.loop.trace_query", lambda **_kw: "trace-semantic-hit")
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value.description = [("n",)]
+    mock_conn.cursor.return_value.fetchall.return_value = [(1,)]
+    monkeypatch.setattr("canopy.query.executor.get_connection", lambda: mock_conn)
+    monkeypatch.setattr("canopy.query.executor.release_connection", lambda c: None)
+
+    statuses = []
+    trace_ids = []
+
+    def _should_not_be_called(*a, **kw):
+        raise AssertionError("_run_agent should not be called on a semantic cache hit")
+
+    with patch("canopy.query.loop._run_agent", new=_should_not_be_called):
+        result = run_query(
+            "how many detections",
+            status_cb=statuses.append,
+            trace_id_cb=trace_ids.append,
+        )
+
+    assert result.sql == "SELECT 1"
+    assert statuses == ["CACHE_HIT"]
+    assert trace_ids == ["trace-semantic-hit"]
+
+
 def test_semantic_disabled_by_default_falls_through_to_agent(monkeypatch):
     """With the flag off (the default), run_query() must behave exactly as before —
     the semantic cache is never consulted."""
