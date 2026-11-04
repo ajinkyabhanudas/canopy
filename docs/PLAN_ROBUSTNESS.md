@@ -196,6 +196,16 @@ correction note for the full finding.
 - [x] Full suite passes with no regressions (724 passed, up from 722 after Phase 4; +2 net
       from this phase's new tests), `ruff check` clean, `pyright` clean on every changed file.
 
+> **Correction:** "full suite" above meant `pytest tests/ --ignore=tests/e2e/` — the regular
+> run checked at the time. It missed `tests/e2e/conftest.py`'s `e2e-overflow` mock, which
+> still fabricated the exact pre-fix `RuntimeError` shape this phase made obsolete, because
+> e2e needs Playwright and runs as a separate CI job. CI's `e2e` check went red after this
+> phase's PR merged as a result. Fixed in a follow-up commit (stub now raises
+> `IterationLimitError`); see `DECISIONS.md`'s A1 correction note for the full account. The
+> standard this sets, now in `docs/CODE_STANDARDS.md` rule 12: a fix that changes an
+> exception's type or message needs every fixture that fabricates that exception checked,
+> including ones outside the default test run.
+
 ## Phase 4: Automatic model fallback on a classified-transient failure — done
 
 Added out of sequence, in response to a specific question about whether `undercover`'s
