@@ -197,6 +197,9 @@ Open **http://localhost:7860**.
 
 ## Developer commands
 
+Read [`docs/CODE_STANDARDS.md`](docs/CODE_STANDARDS.md) before changing anything — canopy's
+conventions, each traced to the `DECISIONS.md` section it comes from.
+
 All common tasks are available via `make`. Run `make` (no target) to see the full list.
 
 | Command | What it does |
@@ -204,6 +207,7 @@ All common tasks are available via `make`. Run `make` (no target) to see the ful
 | `make check` | Lint + unit tests — run before every commit |
 | `make lint` | `ruff check src/ tests/ scripts/` |
 | `make test` | `pytest tests/ -q` |
+| `make audit` | Dependency vulnerability scan (`pip-audit`, informational — see DECISIONS.md's O10) |
 | `make ui` | Start the app locally (needs `.env`) |
 | `make build` | Build Docker image (`canopy:dev`) |
 | `make run` | Build and run in Docker (needs `.env`) |

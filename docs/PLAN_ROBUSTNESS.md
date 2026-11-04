@@ -246,6 +246,85 @@ section.
       classified correctly against the live SDK behavior. Do this before relying on it during
       an actual incident.
 
+## Phase 5: Code-standards review against undercover's documented standards — done
+
+`undercover` has a real standards document (`docs/CODE_STANDARDS.md`, 39 numbered rules) that
+every change is checked against; canopy had none — its conventions existed only as practice,
+scattered across individual `DECISIONS.md` entries. This phase wrote canopy's own
+`docs/CODE_STANDARDS.md`, grounded in what canopy actually does (each rule traces to a
+`DECISIONS.md` section) plus a few rules adapted from `undercover`'s where they transplant
+usefully, and did a real review pass against it — not a theoretical one — fixing what was
+safely fixable and documenting the rest.
+
+### What was reviewed
+
+- A static sweep for common red flags: `TODO`/`FIXME`, bare `except`, stray `print()`,
+  `os.getenv` outside `config.py`, long functions, module-level mutable state.
+- `O1`'s "all env access lives in config.py" rule, checked against actual grep results rather
+  than assumed held.
+- Whether `DECISIONS.md`'s summary "Decision map" table still matched the body text of the
+  entries it summarizes.
+- A live `pip-audit` run against the resolved dependency set (something `ruff`/`pytest` alone
+  never surface), and a `pip install` test of the suggested fix to confirm whether it was
+  actually applicable before deciding how to treat the finding.
+
+### What was found and fixed
+
+- **O1 violated in 4 files** (`query/fuzzy_match.py`, `query/loop.py`, `observability.py`,
+  `cache.py`) reading `os.environ` directly. Fixed: 4 new `config.py` getters, all call sites
+  updated.
+- **A real security-relevant inconsistency**: `semantic_cache.py`'s write-time sensitive-column
+  guardrail gate had its own hardcoded column set, deaf to `CANOPY_SENSITIVE_COLUMNS` —
+  `query/loop.py`'s strip already honored the override, so the two consumers could disagree
+  about what's sensitive. Fixed: both now read one function, `config.get_sensitive_columns()`,
+  called live rather than cached at import (which also removed a test workaround that had to
+  manually re-read and monkeypatch around the old import-time binding).
+- **A stale "Decision map"**: `O2`'s row still said "no pooling" after the body text recorded
+  pooling as implemented and closed; `A3`'s row still described the replaced v1 `ModelClient`
+  ABC as current. Corrected both; added missing `T4`/`T5`/`M3`/`O10` rows.
+- **No dependency scanning in CI.** Added `pip-audit`, informational only — a live run found a
+  real, currently-unfixable transitive `pillow` CVE (confirmed via a `pip install` test showing
+  `gradio`'s pin blocks the fix), so blocking CI on it immediately would just fail every PR for
+  an issue this review couldn't safely resolve. Same posture O8 already established for
+  codecov.
+- **A false claim caught before publishing it**: an early draft of `DECISIONS.md`'s T4 entry
+  (Phase 1) claimed `run_eval.py` treats judge-backed cases as informational. Checked against
+  the runner's actual code and found false — corrected in place rather than left standing.
+
+### What was found and explicitly NOT fixed (and why)
+
+- **Long functions** (`ui/app.py`'s `build_app()`, ≈250 lines) — not refactored. No way to
+  verify a UI-wiring split doesn't regress behavior without a live browser/UI check, which
+  this environment doesn't have. Recorded as a candidate for a review that can actually run
+  the app afterward.
+- **Secret-scanning in CI** — not added. A `detect-secrets`/`gitleaks` baseline needs a
+  one-time full-history scan and manual triage; recorded as an open gap, not quietly skipped.
+- **The `pillow` CVE itself** — not fixed. `gradio` pins `pillow<13.0`; forcing an upgrade
+  untested would be worse than the informational scan.
+- **`tests/eval/queries.py`'s "Target: ≥85% pass rate (≥42/61)"** — arithmetically inconsistent
+  on its own terms, predating this review. Flagged in the docstring and `LIMITATIONS.md` rather
+  than silently replaced with a guessed number.
+
+### Success criteria
+
+- [x] `docs/CODE_STANDARDS.md` exists, every rule traces to a `DECISIONS.md` section, and it
+      explicitly states what it does *not* adopt from `undercover` and why (money/idempotency/
+      durability rules; a hard function-length limit).
+- [x] Every `os.getenv`/`os.environ` call in `src/` lives in `config.py` — verified by a
+      repo-wide grep after the fix, not just at the 4 sites originally found.
+- [x] `semantic_cache.py` and `query/loop.py` read sensitive columns from the same function.
+- [x] `DECISIONS.md`'s Decision map matches its own body text for every row touched by this
+      review (and the two pre-existing drifted rows found along the way).
+- [x] CI has a dependency-vulnerability-scanning step; it is documented why it's informational
+      rather than blocking, with a named revisit trigger.
+- [x] `README.md` points to `docs/CODE_STANDARDS.md`; `Makefile`/CI stay in sync (`make audit`
+      mirrors the new CI step, matching the project's existing `make lint`/CI-step convention).
+- [x] Full suite passes with no regressions (730 passed throughout this phase — no count
+      change, since this phase's fixes were refactors and doc corrections, not new tests),
+      `ruff check` clean.
+- [x] Every finding this phase could not safely fix is named in `LIMITATIONS.md`'s new
+      "Operational & Security Tooling Gaps" table, not silently dropped.
+
 ## Sequencing, risks and review points
 
 - Phases 1-3 are independent of each other and of Phase 4 — none depends on another's output.
