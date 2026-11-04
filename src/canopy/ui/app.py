@@ -31,6 +31,7 @@ from canopy.query.executor import DatabaseBusyError, QueryResult, SQLGuardError
 from canopy.query.fuzzy_match import FUZZY_COLUMNS
 from canopy.query.loop import (
     Interpretation,
+    IterationLimitError,
     LoopResult,
     UnsupportedLanguageError,
     is_unsupported_language,
@@ -1028,7 +1029,7 @@ def _run_query_handler(
                 last_trace=last_trace,
                 ab_distinct_id=ab_distinct_id,
             )
-        elif isinstance(exc, RuntimeError) and "maximum iterations" in str(exc):
+        elif isinstance(exc, IterationLimitError):
             _log.warning("loop exhausted for question: %r", question[:60])
             yield _empty_result(
                 t("error_iterations"),

@@ -688,3 +688,70 @@ def test_fallback_succeeds_without_retry_returns_primary_connection():
         )
     assert text == "first-try answer"
     assert answered_by.id == "primary"
+
+
+# ---------------------------------------------------------------------------
+# _run_agent — MAX_ITERATIONS translated to IterationLimitError
+# ---------------------------------------------------------------------------
+
+
+class _RaisingHandler(_FakeHandler):
+    """A _FakeHandler whose await raises instead of returning a result.
+
+    __await__ must be overridden at the class level, not the instance level
+    — `await obj` resolves special methods via type(obj), so assigning
+    `instance.__await__ = ...` has no effect on the await protocol.
+    """
+
+    def __init__(self, error: Exception, events: list | None = None):
+        super().__init__("unused", events)
+        self._error = error
+
+    def __await__(self):
+        error = self._error
+
+        async def _get():
+            raise error
+
+        return _get().__await__()
+
+
+def test_run_agent_translates_max_iterations_workflow_error():
+    """The real llama_index FunctionAgent raises WorkflowRuntimeError (not a
+    RuntimeError) with message "Max iterations of N reached!...", confirmed
+    directly against the installed library. _run_agent must translate that
+    specific, confirmed case into IterationLimitError so app.py can show the
+    user-actionable "question too complex" message instead of the generic
+    error path."""
+    from workflows.errors import WorkflowRuntimeError
+
+    from canopy.query.loop import IterationLimitError
+
+    state = _make_state()
+    error = WorkflowRuntimeError(
+        "Max iterations of 5 reached! Either something went wrong, or you can "
+        "increase the max iterations..."
+    )
+    mock_agent = MagicMock()
+    mock_agent.run.return_value = _RaisingHandler(error)
+    with patch("canopy.query.loop.FunctionAgent", return_value=mock_agent), \
+         patch("canopy.query.loop.get_llm", return_value=MagicMock()):
+        with pytest.raises(IterationLimitError, match="Max iterations of 5"):
+            _run(_run_agent("q", None, state, "c", "m"))
+
+
+def test_run_agent_does_not_translate_unrelated_workflow_error():
+    """A WorkflowRuntimeError for an unrelated internal failure must NOT be
+    mistaken for the iteration-limit case — it should propagate as-is so
+    app.py's generic handler logs it loudly instead of showing a misleading
+    "question too complex" message."""
+    from workflows.errors import WorkflowRuntimeError
+
+    state = _make_state()
+    error = WorkflowRuntimeError("Step some_step does not exist")
+    mock_agent = MagicMock()
+    mock_agent.run.return_value = _RaisingHandler(error)
+    with patch("canopy.query.loop.FunctionAgent", return_value=mock_agent), \
+         patch("canopy.query.loop.get_llm", return_value=MagicMock()):
+        with pytest.raises(WorkflowRuntimeError, match="does not exist"):
+            _run(_run_agent("q", None, state, "c", "m"))

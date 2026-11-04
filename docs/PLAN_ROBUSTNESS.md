@@ -153,33 +153,45 @@ design is already adequate.
       measurement (e.g. a log-scraping script, kept in `scripts/` if it doesn't already
       exist as a byproduct of eval runs).
 
-## Phase 3: Typed iteration-limit error
+## Phase 3: Typed iteration-limit error — done
 
-Replaces `app.py`'s `isinstance(exc, RuntimeError) and "maximum iterations" in str(exc)`
-check, which is brittle against upstream LlamaIndex wording changes.
+Replaced `app.py`'s `isinstance(exc, RuntimeError) and "maximum iterations" in str(exc)`
+check. This turned out not to be mere brittleness-against-future-change as originally
+scoped — it was already broken against the *current* library. See `DECISIONS.md`'s A1
+correction note for the full finding.
 
 ### Build
 
-- Confirm exactly where the iteration-limit `RuntimeError` is raised (`FunctionAgent` itself,
-  or somewhere in `handler.stream_events()` consumption in `_run_agent`) before changing
-  anything — catching at the wrong boundary risks silently swallowing an unrelated
-  `RuntimeError`.
-- Add a canopy-owned `IterationLimitError` (same module as `SQLGuardError`/
-  `DatabaseBusyError`, or `query/loop.py` itself if it's loop-specific), raised from the
-  confirmed boundary in `_run_agent` or `run_query`.
-- Update `app.py`'s exception handling (around line 1031) to match on `IterationLimitError`
-  instead of the string check.
+- Confirmed the exact raise site: `llama_index.core.agent.workflow.base_agent
+  .parse_agent_output` raises `workflows.errors.WorkflowRuntimeError` — not a `RuntimeError`
+  — with message `"Max iterations of N reached!..."`. Neither the type nor the wording
+  matched what `app.py` was checking for; the real failure was falling through to the
+  generic error path, unnoticed because the existing test mocked the wrong exception shape.
+- Added `IterationLimitError(RuntimeError)` in `query/loop.py`.
+- `_run_agent` catches `WorkflowRuntimeError` narrowly (only when the message starts with
+  the confirmed `"Max iterations of"` prefix) and translates just that case — any other
+  `WorkflowRuntimeError` (a generic type covering many unrelated internal workflow failures)
+  propagates unchanged, so it still reaches `app.py`'s generic handler with full logging.
+- `app.py` now matches on `IterationLimitError`; `workflows.errors.WorkflowRuntimeError` is
+  imported directly (not via `llama_index.core.workflow.errors`'s re-export — pyright flags
+  that path as a private-import usage and names the direct path as the fix), and
+  `llama-index-workflows` was added as an explicit `pyproject.toml` dependency since the
+  code now imports it directly rather than only transitively through llama-index-core.
 
 ### Success criteria
 
-- [ ] A test forces the iteration limit (stub tool that never produces a final answer) and
-      asserts `run_query` raises `IterationLimitError`, not a bare `RuntimeError`.
-- [ ] `app.py` no longer contains a string match against exception text for this case.
-- [ ] Existing iteration-limit UI behavior (the human-readable message shown today) is
-      unchanged — this is a refactor of the catch, not a UX change, and the existing
-      E2E/component coverage for this path still passes unmodified.
-- [ ] A comment or `DECISIONS.md` note records which LlamaIndex call site actually raises the
-      limit error, so a future LlamaIndex upgrade that changes it is traceable.
+- [x] A test forces the real exception shape (`workflows.errors.WorkflowRuntimeError` with
+      the confirmed message) and asserts `_run_agent` raises `IterationLimitError`.
+- [x] A second test proves an unrelated `WorkflowRuntimeError` (e.g. "Step X does not exist")
+      is NOT translated — it propagates as-is, so it isn't misclassified as "question too
+      complex."
+- [x] `app.py` no longer contains a string match against exception text for this case.
+- [x] The previously-passing-but-wrong `test_handler_loop_exhausted_message` now raises
+      `IterationLimitError` (what `run_query()` actually raises) instead of a hand-invented
+      `RuntimeError` message; it still asserts the same user-facing behavior.
+- [x] `DECISIONS.md`'s A1 section has a correction note recording the finding and the fix.
+- [x] Full suite passes with no regressions (724 passed, up from 722 after Phase 4; +2 net
+      from this phase's new tests), `ruff check` clean, `pyright` clean on every changed file.
 
 ## Phase 4: Automatic model fallback on a classified-transient failure — done
 

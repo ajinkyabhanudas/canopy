@@ -15,6 +15,7 @@ from langdetect import DetectorFactory, LangDetectException
 from langdetect import detect as _lang_detect
 from llama_index.core.agent.workflow import FunctionAgent
 from llama_index.core.tools import FunctionTool
+from workflows.errors import WorkflowRuntimeError
 
 from canopy import semantic_cache
 from canopy.cache import lookup_cache, write_cache
@@ -47,6 +48,27 @@ _ROW_DISPLAY_LIMIT = 200
 
 # langdetect is unreliable on very short strings; skip detection below this length
 _MIN_LANG_DETECT_LEN = 30
+
+# The exact prefix FunctionAgent's own step (llama_index.core.agent.workflow
+# .base_agent.parse_agent_output) uses when MAX_ITERATIONS is hit — confirmed
+# directly against the installed library's source, not assumed. Matched
+# case-sensitively and narrowly (a fixed prefix, not a general substring)
+# so an unrelated WorkflowRuntimeError (the same exception type covers many
+# internal workflow failures — step errors, context errors, validation
+# errors) is never misclassified as "question too complex".
+_MAX_ITERATIONS_PREFIX = "Max iterations of"
+
+
+class IterationLimitError(RuntimeError):
+    """The agent did not produce a final answer within MAX_ITERATIONS steps.
+
+    Raised instead of letting the library's own WorkflowRuntimeError (a
+    generic type covering many unrelated internal workflow failures) reach
+    callers — app.py needs to distinguish "this question needed too many
+    steps" (show error_iterations, a user-actionable message) from any other
+    internal failure (log loud, show the generic error). A RuntimeError
+    subclass, matching run_query()'s existing documented contract.
+    """
 
 
 class UnsupportedLanguageError(ValueError):
@@ -405,34 +427,47 @@ async def _run_agent(
     handler = agent.run(question)
 
     sql_attempts = 0
-    async for ev in handler.stream_events():
-        ev_name = type(ev).__name__
-        if ev_name == "ToolCall":
-            sql_attempts += 1
-            # First attempt: status_understanding (already fired) covers this
-            # lead-in, and status_searching_db fires a beat later from
-            # execute_sql itself — a third message here would be redundant.
-            # Retries are the real gap this closes: previously the UI sat on
-            # a stale "Found 0 — writing your answer…" for the entire silent
-            # LLM turn between one execute_sql call and the next.
-            #
-            # Confirmed live (2026-08-13): LlamaIndex writes ToolCall to the
-            # stream before invoking the tool, so in true execution order
-            # this message precedes status_searching_db — but this async
-            # generator and execute_sql's synchronous status_cb call share
-            # one event loop, so on a retry both can land in the same tick
-            # with either arriving first. Not worth forcing a strict order
-            # for a sub-second difference the user can't perceive either way.
-            if status_cb and sql_attempts > 1:
-                status_cb(t("status_writing_sql_retry", n=sql_attempts))
-        elif (
-            status_cb
-            and ev_name == "AgentOutput"
-            and not getattr(ev, "tool_calls", None)
-        ):
-            status_cb(t("status_composing_answer"))
+    try:
+        async for ev in handler.stream_events():
+            ev_name = type(ev).__name__
+            if ev_name == "ToolCall":
+                sql_attempts += 1
+                # First attempt: status_understanding (already fired) covers this
+                # lead-in, and status_searching_db fires a beat later from
+                # execute_sql itself — a third message here would be redundant.
+                # Retries are the real gap this closes: previously the UI sat on
+                # a stale "Found 0 — writing your answer…" for the entire silent
+                # LLM turn between one execute_sql call and the next.
+                #
+                # Confirmed live (2026-08-13): LlamaIndex writes ToolCall to the
+                # stream before invoking the tool, so in true execution order
+                # this message precedes status_searching_db — but this async
+                # generator and execute_sql's synchronous status_cb call share
+                # one event loop, so on a retry both can land in the same tick
+                # with either arriving first. Not worth forcing a strict order
+                # for a sub-second difference the user can't perceive either way.
+                if status_cb and sql_attempts > 1:
+                    status_cb(t("status_writing_sql_retry", n=sql_attempts))
+            elif (
+                status_cb
+                and ev_name == "AgentOutput"
+                and not getattr(ev, "tool_calls", None)
+            ):
+                status_cb(t("status_composing_answer"))
 
-    response = await handler
+        response = await handler
+    except WorkflowRuntimeError as error:
+        # Confirmed directly against the installed llama-index-core: the
+        # library raises this generic type (not a RuntimeError) for many
+        # distinct internal failures, including MAX_ITERATIONS — identified
+        # only by this message prefix (base_agent.py's parse_agent_output).
+        # Only that specific, confirmed case is translated; anything else
+        # propagates as the original WorkflowRuntimeError so it still reaches
+        # app.py's generic handler with full logging, not a misleading
+        # "question too complex" message.
+        if str(error).startswith(_MAX_ITERATIONS_PREFIX):
+            raise IterationLimitError(str(error)) from error
+        raise
     state["llm_times"].append(time.perf_counter() - t_llm)
     state["iterations"] = sql_attempts
 
@@ -529,7 +564,8 @@ def run_query(
         result, and the model's final plain-language response.
 
     Raises:
-        RuntimeError: If the model exceeds MAX_ITERATIONS.
+        IterationLimitError: If the model exceeds MAX_ITERATIONS (a RuntimeError
+            subclass).
         SQLGuardError: If the model generates a non-SELECT SQL statement.
         UnsupportedLanguageError: If question is not in English or Spanish.
     """

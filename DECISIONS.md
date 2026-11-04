@@ -297,7 +297,7 @@ There is no explicit rejection status in the current dataset. Detections not app
 | Claude Opus 4.8 | ~$0.15 | ~$0.75 |
 
 **Consequences:**
-- A malformed or genuinely unanswerable question raises `RuntimeError` after 5 attempts.
+- A malformed or genuinely unanswerable question raises `IterationLimitError` (a `RuntimeError` subclass — see the correction below) after 5 attempts.
 - The UI shows a human-readable error; the exception is logged.
 - The limit is not configurable without a code change.
 
@@ -306,6 +306,8 @@ There is no explicit rejection status in the current dataset. Detections not app
 > **Challenge:** The number 5 has no empirical basis. It was chosen without measurement.
 >
 > **Resolved (Step 4):** `loop.py` now emits `loop_iterations=N question=...` at INFO level and includes `iterations` in the `timing` dict on every `LoopResult`. The measurement mechanism is in place. **Revisit trigger:** after 30+ real-world queries, inspect the distribution — if P99 ≤ 3, lower `MAX_ITERATIONS` to 4; if any query hits 5 and raises `RuntimeError`, raise it to 6.
+>
+> **Correction (robustness review, Phase 3):** this decision's own "raises a `RuntimeError`" claim was never actually true. `FunctionAgent` (via `llama_index.core.agent.workflow.base_agent.parse_agent_output`) raises `workflows.errors.WorkflowRuntimeError` at the limit — not a `RuntimeError` at all, and with the message `"Max iterations of N reached!..."`, not the `"...maximum iterations..."` text `app.py`'s catch block checked for. Confirmed directly against the installed library (both the source and a live `await`). The practical effect: every real iteration-limit failure fell through to the generic error path (`error_generic_response`, logged as an unexpected failure) instead of the intended, user-actionable `error_iterations` message — silently, since `tests/test_handler_loop_exhausted_message` mocked `run_query` to raise the same incorrect shape the check expected, so the test passed while validating nothing real. Fixed: `query/loop.py` now defines `IterationLimitError(RuntimeError)` and catches `WorkflowRuntimeError` narrowly — only when its message starts with the confirmed `"Max iterations of"` prefix — translating just that case; any other `WorkflowRuntimeError` (the type covers many unrelated internal workflow failures) propagates unchanged so it still reaches the generic handler with full logging. `app.py` now matches on `IterationLimitError` instead of string-sniffing exception text, and the test now raises what `run_query()` actually raises.
 
 ---
 

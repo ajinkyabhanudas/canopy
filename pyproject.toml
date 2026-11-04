@@ -18,6 +18,13 @@ dependencies = [
     "pyyaml>=6.0",
     "llama-index-core>=0.14",
     "llama-index-llms-openai>=0.4",
+    # Transitive via llama-index-core (provides the `workflows` package) —
+    # declared explicitly because query/loop.py imports workflows.errors
+    # directly, to classify FunctionAgent's MAX_ITERATIONS failure (see
+    # DECISIONS.md's A1/Phase-3 note). pyright's reportPrivateImportUsage
+    # flags importing the same symbol via llama_index.core.workflow.errors's
+    # re-export, so this is the import path it itself recommends.
+    "llama-index-workflows>=2.26",
     # Pinned to the v2 client API (trace()/span()/score()) that observability.py
     # targets. v3+ moved to an OTel-based client with a different surface —
     # revisit when Langfuse tracing is actually turned on for real traffic,
