@@ -89,6 +89,15 @@ STRINGS: dict[str, str] = {
         "Intente dividirla en preguntas más simples — por ejemplo, pregunte sobre "
         "un sitio o una especie a la vez."
     ),
+    # Ver la nota en en.py: texto fijo, nunca generado por el modelo.
+    "error_guardrail_blocked": (
+        "No puedo responder esto — requeriría juzgar la prioridad de conservación, "
+        "las tendencias poblacionales o el estado de conservación, algo que esta "
+        "herramienta no está diseñada para hacer, sin importar cómo se formule la pregunta.\n\n"
+        "Puedo mostrarle los datos de detección sin procesar para los sitios o especies "
+        "en cuestión — ¿le sería útil? Este tipo de juicio requiere revisión del "
+        "equipo científico."
+    ),
     "error_db_connection": (
         "No se pudo conectar a la base de datos. Por favor, intente de nuevo en un momento.\n\n"
         "Si el problema persiste, verifique que la conexión a la base de datos esté activa."

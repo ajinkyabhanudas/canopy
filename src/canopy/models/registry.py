@@ -31,7 +31,7 @@ def get_llm(
     Phase 2b: openai-responses → AzureResponsesLLM (FunctionCallingLLM subclass).
 
     connection_id bypasses MODEL_BACKEND entirely, same pattern as
-    run_query()'s connection_override — used by canopy.eval.judge to build
+    run_query()'s connection_override — used by canopy.judge to build
     an LLM for a connection other than the one currently under test,
     without mutating MODEL_BACKEND.
     """

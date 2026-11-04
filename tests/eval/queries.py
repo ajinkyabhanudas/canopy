@@ -4,7 +4,7 @@ Ground-truth evaluation queries for the canopy NL-to-SQL system.
 Each EvalCase is a (question, check_fn, description) triple where check_fn
 receives a LoopResult and returns True if the response is acceptable.
 Category 21 and 22 cases additionally carry a judge_check (see
-canopy.eval.judge) returning a categorical verdict (JudgeVerdict for
+canopy.judge) returning a categorical verdict (JudgeVerdict for
 guardrails, FaithfulnessVerdict for numeric claims; both share the Verdict
 Protocol's verdict/rationale shape) — check_fn derives its bool from that
 verdict, but the runner can report the full verdict + rationale, not just
@@ -74,7 +74,7 @@ check at all. Q62–Q65 ask the same semantic questions as Q21/Q22/Q23/Q49
 (total count, site count, pre-2000 empty result, multi-row breakdown) in
 distinct phrasing — test_all_questions_are_unique requires distinct text,
 and the judge doesn't need identical wording to exercise the same failure
-mode — then run the faithfulness judge (canopy.eval.judge.judge_faithfulness)
+mode — then run the faithfulness judge (canopy.judge.judge_faithfulness)
 on the result as an *additional* check alongside the existing deterministic
 ones on the original questions, not a replacement: the cheap deterministic
 checks stay as the fast, free first pass; the judge only needs to be
@@ -88,7 +88,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from canopy.eval.judge import FaithfulnessVerdict, JudgeVerdict, Verdict
+from canopy.judge import FaithfulnessVerdict, JudgeVerdict, Verdict
 from canopy.query.loop import LoopResult
 
 
@@ -836,9 +836,9 @@ def _q49_multirow_breakdown_all_values_faithful(r: LoopResult) -> bool:
 # Keyword checks can't reliably tell a clean decline from a partial hedge
 # (declines in words but still leaks the fact/recommendation being asked
 # for) — that distinction needs semantic judgment, not a term list. Each
-# case below uses the LLM judge (canopy.eval.judge) instead of _text_has().
+# case below uses the LLM judge (canopy.judge) instead of _text_has().
 #
-# The judge avoids self-judgment where possible (see canopy.eval.judge's
+# The judge avoids self-judgment where possible (see canopy.judge's
 # get_judge_llm) — it needs to know which connection actually produced
 # r.model_text, which run_query() records in r.timing["connection_id"].
 
@@ -865,7 +865,7 @@ def _make_guardrail_judge_fns(
 
     @functools.lru_cache(maxsize=32)
     def _judge_cached(model_text: str, under_test: str | None) -> JudgeVerdict:
-        from canopy.eval.judge import judge_guardrail_response
+        from canopy.judge import judge_guardrail_response
 
         verdict, _info = judge_guardrail_response(
             question, model_text, under_test_connection_id=under_test
@@ -1383,7 +1383,7 @@ EVAL_CASES += [
 # Category 22 — Numeric faithfulness, judge-checked (Q62–Q65)
 # ---------------------------------------------------------------------------
 # Re-runs Q21/Q22/Q23/Q49's exact questions through the faithfulness judge
-# (canopy.eval.judge.judge_faithfulness) as an ADDITIONAL check alongside
+# (canopy.judge.judge_faithfulness) as an ADDITIONAL check alongside
 # the existing deterministic ones — closes the gap DECISIONS.md's T2
 # section named but left open (verbatim matching can't tell "approximately
 # 35,000" from a hallucination when the value is 35,741, nor verify every
@@ -1406,7 +1406,7 @@ def _make_faithfulness_judge_fns(
     def _judge_cached(
         model_text: str, columns: tuple, rows: tuple, under_test: str | None
     ) -> FaithfulnessVerdict:
-        from canopy.eval.judge import judge_faithfulness
+        from canopy.judge import judge_faithfulness
 
         verdict, _info = judge_faithfulness(
             question, columns, rows, model_text, under_test_connection_id=under_test

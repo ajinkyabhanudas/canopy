@@ -116,7 +116,7 @@ def _report_judge_repeats(case, result, repeat: int) -> None:
     once; what varies across repeats here is only the judge's own
     consistency. Disagreement across repeats is itself a signal worth
     printing, not hiding — the judge is not perfectly deterministic either
-    (see canopy.eval.judge's module docstring).
+    (see canopy.judge's module docstring).
     """
     if case.judge_check is None or repeat <= 1:
         return

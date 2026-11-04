@@ -91,6 +91,20 @@ STRINGS: dict[str, str] = {
         "Try breaking it into smaller questions — for example, ask about one site or "
         "one species at a time."
     ),
+    # Fixed, code-authored decline — substituted for the model's own text when
+    # the runtime guardrail judge finds it answered (or hedged around) a
+    # question about conservation priority, population trend, or conservation
+    # status. Never model-generated text: a model that just leaked a judgment
+    # call it should have declined is not the model to trust with phrasing
+    # the correction (see DECISIONS.md's T6 section).
+    "error_guardrail_blocked": (
+        "I can't answer this — it would require judging conservation priority, "
+        "population trends, or conservation status, which this tool is not designed "
+        "to do regardless of how the question is framed.\n\n"
+        "I can show you the raw detection data for the sites or species in "
+        "question — would that help instead? Judgment calls like this need "
+        "review by the science team."
+    ),
     "error_db_connection": (
         "Couldn't reach the database. Please try again in a moment.\n\n"
         "If the problem persists, check that the database connection is active."
