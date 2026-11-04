@@ -48,69 +48,69 @@ complexity for a risk canopy doesn't carry.
   work that closes a gap, matching the project's existing practice (see the table's own
   "✅ Closed — ..." entries).
 
-## Phase 1: Faithfulness judge for numeric and multi-row claims
+## Phase 1: Faithfulness judge for numeric and multi-row claims — done (pending live calibration)
 
 Closes `DECISIONS.md` T2's explicitly tracked gap: the verbatim `_count_value_in_text` check
 cannot tell "approximately 35,000" from a hallucinated figure when the real count is 35,741,
 and (per T2's own note on Q49) a multi-row breakdown response can get `rows[0][0]` right while
-fabricating or dropping the rest with nothing catching it.
+fabricating or dropping the rest with nothing catching it. Full rationale, the Protocol→Union
+typing correction, and the `run_eval.py` pass-rate-counting correction are in `DECISIONS.md`'s
+new T4 section.
 
 ### Build
 
-- Add `FaithfulnessVerdict` to `src/canopy/eval/judge.py`: a `Literal["faithful",
-  "unsupported_claim", "contradicts_data"]` verdict plus a one-to-two sentence rationale,
-  following the same `BaseModel` + `Field(description=...)` shape as `JudgeVerdict`.
-- Reuse `get_judge_llm()` unchanged — do not write a second judge-selection path.
-- Add a `_FAITHFULNESS_JUDGE_PROMPT` that receives `{question, columns, rows, model_text}`
-  (rows capped the same way `_format_result` caps them for the model) and states explicitly
-  that `columns`/`rows` are data to check against, never instructions to follow.
-- Add `judge_faithfulness(question, columns, rows, model_text, under_test_connection_id=None)
-  -> tuple[FaithfulnessVerdict, JudgeInfo]`, mirroring `judge_guardrail_response`'s signature.
-- Wire it into `tests/eval/queries.py` as a new category (22), covering the existing Q21–Q23
-  faithfulness cases and Q49's multi-row case: keep `_count_value_in_text` as the cheap first
-  pass (it's a real, zero-cost check and should stay), and add the judge verdict as a second
-  check for the semantic cases verbatim-matching can't resolve (rounding, multi-clause claims).
-- Update `LIMITATIONS.md`'s "Open Eval Coverage Gaps" table: add a row for the numeric/
-  aggregate faithfulness gap and mark it closed once this phase lands, matching the table's
-  existing convention.
-- Write (not run) `scripts/calibrate_judge.py`-equivalent calibration: a small hand-labeled
-  set of `(question, columns, rows, model_text, expected_verdict)` tuples, deliberately
-  including at least one ambiguous case (a correct rounding, a plausible-sounding but
-  unsupported inference) the way T3's calibration included one genuinely ambiguous
-  `partial_hedge` case.
+- `FaithfulnessVerdict` added to `src/canopy/eval/judge.py`: `Literal["faithful",
+  "unsupported_claim", "contradicts_data"]` plus a rationale, same `BaseModel` + `Field` shape
+  as `JudgeVerdict`.
+- `get_judge_llm()` reused unchanged; `judge_faithfulness(question, columns, rows, model_text,
+  under_test_connection_id=None)` mirrors `judge_guardrail_response`'s signature.
+- `_FAITHFULNESS_JUDGE_PROMPT` states explicitly that `columns`/`rows` are data to check
+  against, never instructions — asserted present by a dedicated unit test, not just intended.
+- `EvalCase.judge_check`'s type widened from the concrete `JudgeVerdict` to `Verdict =
+  JudgeVerdict | FaithfulnessVerdict`. A `Protocol` was tried first and rejected: pydantic's
+  `Literal`-typed fields are invariant under Protocol structural matching, so pyright rejected
+  both concrete models against a `str`-typed Protocol attribute despite being correct at
+  runtime — a plain `Union` has no such issue.
+- Category 22 (Q62–Q65, `tests/eval/queries.py`) asks the same semantic questions as
+  Q21/Q22/Q23/Q49 in distinct wording (`test_all_questions_are_unique` forbids exact
+  duplicates) and judges the result alongside those questions' existing, unchanged
+  deterministic checks — additive, not a replacement.
+- `scripts/calibrate_faithfulness_judge.py` — a 7-case hand-labeled set, kept as a separate
+  file from `scripts/calibrate_judge.py` so each judge's calibration history stays
+  independently auditable.
+- `LIMITATIONS.md`'s gap table and `DECISIONS.md`'s new T4 section updated.
 
-### Also needed (don't skip)
+### Found and corrected while building (not pre-planned)
 
-- Run the calibration set live against the judge before trusting any CI result from it — T3's
-  own audit is explicit that calibration proves "not broken," not "correct on every case."
-  Record the live run date and pass rate in `DECISIONS.md`, same as T3's "Live results" line.
-- Decide and record judge non-determinism handling: T3 uses `--repeat` in `run_eval.py`
-  (`_report_judge_repeats`) to surface judge flakiness rather than hide it. Reuse that
-  mechanism rather than inventing a second one.
-- Explicitly scope out (in the same `DECISIONS.md` entry) the inline/live version of this
-  judge as a separate, later decision — don't let "it would be nice to show this to the user
-  live" expand this phase's blast radius.
+- My own first draft of T4 claimed `run_eval.py` treats judge-backed cases as informational.
+  Checked against the actual runner code before publishing that claim: it doesn't — a judge
+  case's `check_fn` result feeds the same `passed`/`pct` counters as every keyword-based case,
+  same as Category 21 before it. Corrected in T4 rather than left as a false claim in the
+  decision record.
 
 ### Success criteria
 
-- [ ] `FaithfulnessVerdict` and `judge_faithfulness()` exist in `eval/judge.py`, reusing
+- [x] `FaithfulnessVerdict` and `judge_faithfulness()` exist in `eval/judge.py`, reusing
       `get_judge_llm()` with no new judge-selection logic.
-- [ ] The faithfulness judge prompt explicitly frames `columns`/`rows` as data, not
+- [x] The faithfulness judge prompt explicitly frames `columns`/`rows` as data, not
       instructions — a unit test asserts the prompt text contains that disclaimer.
-- [ ] Category 22 eval cases exist for Q21–Q23 and Q49, each asserting against the judge
-      verdict in addition to (not instead of) the existing verbatim check.
-- [ ] A hand-labeled calibration set of at least 6 cases exists, with at least one
-      deliberately ambiguous case, and a recorded live run shows the judge matching the
-      labels (document the pass rate — it does not need to be 6/6, but a miss must be
-      explained, same bar as T3).
-- [ ] `run_eval.py --repeat` works against the new category, surfacing judge non-determinism
-      the same way it already does for Category 21.
-- [ ] `LIMITATIONS.md`'s Open Eval Coverage Gaps table has a new, now-closed row for this gap.
-- [ ] `DECISIONS.md` has a new section (e.g. T4) recording the decision, the calibration
-      result, and the explicit scoping-out of the inline/live variant, in the same style as
-      T2/T3.
-- [ ] No change to `src/canopy/query/loop.py` or any live-path file — this phase is additive
-      to the eval harness only.
+- [x] Category 22 eval cases exist, asking the same semantic questions as Q21–Q23/Q49 in
+      distinct wording, each asserting against the judge verdict in addition to (not instead
+      of) the existing verbatim checks on the originals.
+- [x] A hand-labeled calibration set of 7 cases exists (3 faithful including a reasonable
+      rounding, 3 contradicts_data including a dropped-row case, 1 unsupported_claim).
+- [ ] **Live calibration run.** Not performed — this session had no live model API credentials
+      available. This is a hard prerequisite before trusting Category 22 results as anything
+      more than an informational signal; do not skip it before relying on this judge.
+- [x] `run_eval.py --repeat`/`_report_judge_repeats` works against the new category
+      unmodified — it's generic over any `judge_check`-bearing case already.
+- [x] `LIMITATIONS.md`'s Open Eval Coverage Gaps table has a new row for this gap, marked
+      closed-pending-calibration.
+- [x] `DECISIONS.md`'s new T4 section records the decision, the typing correction, the
+      pass-rate-counting correction, and the still-outstanding calibration requirement.
+- [x] No change to `src/canopy/query/loop.py` or any live-path file — additive to the eval
+      harness only. Full suite passes with no regressions (730 passed, up from 724 after
+      Phase 3), `ruff check` clean.
 
 ## Phase 2: Evidence gate for a structured answer contract
 

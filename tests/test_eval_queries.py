@@ -65,11 +65,12 @@ def _make_result(
 # ---------------------------------------------------------------------------
 
 
-def test_eval_cases_has_exactly_61_entries():
+def test_eval_cases_has_exactly_65_entries():
     """49 original ground-truth cases + 12 Category 21 guardrail cross-matrix
     cases (judge-checked, added to close the framing x topic coverage gap
-    found via Q27/Q47 — see DECISIONS.md's T3 section)."""
-    assert len(EVAL_CASES) == 61
+    found via Q27/Q47 — see DECISIONS.md's T3 section) + 4 Category 22
+    numeric-faithfulness judge cases (see DECISIONS.md's T4 section)."""
+    assert len(EVAL_CASES) == 65
 
 
 def test_all_questions_are_nonempty_strings():

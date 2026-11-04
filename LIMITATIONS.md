@@ -273,6 +273,7 @@ The following properties are actively enforced — not aspirational.
 
 | Gap | Priority | Status |
 |---|---|---|
+| Verbatim numeric-faithfulness checks (`_count_value_in_text`) can't tell a reasonable rounding ("about 35,000") from a hallucination, and `_all_row_values_in_text`-style single checks miss a multi-row breakdown getting one row right while fabricating/dropping another — gap named but left open in `DECISIONS.md`'s T2 section | High | ✅ Closed (pending live calibration) — `DECISIONS.md`'s T4 section: a second LLM judge (`FaithfulnessVerdict`), additive to the existing deterministic checks. Written and unit-tested; **live calibration not yet run** — see T4's audit verdict. Do not treat Category 22 results as reliable until that run is recorded. |
 | No eval case checks that `validation_status = 'approved'` filter appears in SQL | High | ✅ Closed — Q31 added 2026-06-30 |
 | A09 secondary-layer language compliance fails on both Azure models | Medium | ✅ Documented — primary gate protects UI; secondary-layer gap acknowledged in DECISIONS.md's M1 section |
 | Q27 guardrail soft-bypass (conservation priority framing) | Medium | Open — model-compliance issue, both models affected: codex-mini fails 2/4 recorded runs, gpt-5.1-2 fails 1/4; no code fix available |

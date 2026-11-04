@@ -698,6 +698,39 @@ A related, unplanned finding from the first live run of Category 21: eval case Q
 
 ---
 
+### T4 — Numeric-faithfulness judge (closing T2's tracked gap)
+
+> **Files:** `src/canopy/eval/judge.py` (`FaithfulnessVerdict`, `judge_faithfulness`) · `tests/eval/queries.py` Category 22 (Q62–Q65) · `tests/test_judge_calibration.py` · `scripts/calibrate_faithfulness_judge.py`
+
+**Decision:** T2 named a gap and explicitly left it open: `_count_value_in_text`'s verbatim check cannot tell "approximately 35,000" from a hallucination when the real value is 35,741, and (per its own note on Q49) a multi-row breakdown response can get `rows[0][0]` right while fabricating or dropping the rest with nothing catching it. A second judge, `FaithfulnessVerdict` (`faithful` / `unsupported_claim` / `contradicts_data`, plus a rationale — the same 3-way-categorical reasoning T3 used for `JudgeVerdict`, not a binary faithful/unfaithful that would collapse "the data doesn't support this" and "the data actively contradicts this" into one bucket), closes it. Built the same way as the guardrail judge: `structured_predict()` via `get_judge_llm()`, reusing its self-judgment avoidance rather than adding a second selection path.
+
+**Why a separate verdict type instead of extending `JudgeVerdict`:** the two judges answer structurally different questions (did the response uphold a behavioral guardrail vs. is a factual claim supported by a query result) with different category sets. Forcing both into one `Literal` would mean either judge could return a category meaningless for its own question. `EvalCase.judge_check`'s type was changed from the concrete `JudgeVerdict` to `Verdict = JudgeVerdict | FaithfulnessVerdict` (`canopy/eval/judge.py`) to accept either — a `Protocol` with `verdict: str`/`rationale: str` was tried first and rejected: pydantic's `Literal`-typed fields are invariant under Protocol structural matching, so pyright rejected both concrete models against a `str`-typed Protocol attribute despite being correct at runtime. A plain `Union` has no such issue.
+
+**Additive, not a replacement:** Category 22 (Q62–Q65) asks the same semantic questions as Q21/Q22/Q23/Q49 (total count, site count, pre-2000 empty result, multi-row breakdown) in distinct wording (`test_all_questions_are_unique` requires distinct text across `EVAL_CASES`, and the judge doesn't need identical wording to exercise the same failure mode) and judges the result alongside the original questions' existing deterministic checks, which are unchanged. The deterministic checks stay the fast, free first pass for the common case (exact figure cited verbatim); the judge is only asked to earn its keep on the cases they structurally can't resolve.
+
+**Prompt safety:** the judge is shown live query result rows as data — a species or site name could in principle be adversarially crafted to look like an instruction, the same class of risk `backend/judge.py`'s `DATA_ONLY` disclaimer addresses in `undercover`. `_FAITHFULNESS_JUDGE_PROMPT` states explicitly that columns/rows are data to check the response against, never instructions to follow; `test_judge_faithfulness_prompt_frames_rows_as_data_not_instructions` asserts the disclaimer text is actually present in the template, not just intended.
+
+**Consequences:**
+- `EVAL_CASES` grows from 61 to 65; `test_eval_cases_has_exactly_65_entries` updated accordingly.
+- `scripts/calibrate_faithfulness_judge.py` — a 7-case hand-labeled set (3 faithful including a reasonable-rounding case, 3 contradicts_data including a dropped-row multi-row case, 1 unsupported_claim) — exists as a parallel file to `scripts/calibrate_judge.py`, kept separate so each judge's calibration history stays independently auditable rather than interleaved in one script's output.
+- **Not yet run.** This was written and unit-tested (plumbing only, no live calls) in an environment without API credentials available to this session. Run it before trusting Category 22 as more than an informational signal, the same bar T3 held before trusting its own judge — do not skip this on the assumption that passing unit tests imply the real judge classifies real cases correctly; they only prove the code around the live call is wired correctly.
+- **Correction caught while writing this entry:** `run_eval.py` does not treat judge-backed cases as informational — `case.judge_check` is reported alongside the pass/fail line, but `ok` (from `case.check_fn`, which Category 22 derives as `verdict == "faithful"`) still contributes to `passed`/`failed_labels` and the headline `pct` exactly like every keyword-based case, the same as Category 21 before it. Category 22 is therefore live-countable toward the suite's pass rate the moment it's run, not quarantined — meaning an uncalibrated judge giving a wrong verdict looks identical to a real regression in the report. `run_eval.py` itself is a manual script (requires live DB + API keys; not part of CI), so neither Category 21 nor 22 gates automated CI either way — but *within* a manual run's own numbers, this judge needs its calibration run (see below) before its failures should be read as real.
+- This judge call is an additional live API call per Category 22 case (times `--repeat`, if used) — confirm the configured judge model and note its cost before running the full suite, same practice as every other judge-call-cost note in this document.
+
+**Alternatives considered:**
+
+| Alternative | Why rejected |
+|---|---|
+| A rounding tolerance on the existing regex check (e.g. accept within 5% of the real value) | Handles numeric rounding but not multi-clause claims ("more detections at Site A than Site B") or genuinely unsupported inferences — the judge generalizes to both; a regex tolerance only patches one sub-case T2 identified. |
+| Extend `JudgeVerdict`'s `Literal` to include faithfulness categories | Conflates two different judgments into one schema; either judge could then return a verdict meaningless for its own question (e.g. a guardrail case returning `contradicts_data`). |
+| Replace `_count_value_in_text`/`_all_row_values_in_text` outright | They're free, deterministic, and correct for the common case (exact figure cited). Removing them would make every faithfulness check a live, non-deterministic API call for no benefit on the cases they already handle correctly. |
+
+> **Audit verdict — pending live calibration**
+>
+> Plumbing is unit-tested (schema validation, self-judgment avoidance reuse, verdict pass-through, the data-disclaimer's presence in the prompt template) with no live calls, following T3's own test-first-then-calibrate sequence. The live calibration run T3 required before trusting its judge (6/6 against a hand-labeled set including one deliberately ambiguous case) has a parallel 7-case set written here but **has not been executed** — this session had no live model credentials available. Record the live run's agreement rate and date here, in T3's own style, before relying on Category 22 for anything beyond an informational eval signal.
+
+---
+
 ## 🎨 Interface & UX
 
 ---
