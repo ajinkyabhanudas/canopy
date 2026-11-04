@@ -181,11 +181,61 @@ check, which is brittle against upstream LlamaIndex wording changes.
 - [ ] A comment or `DECISIONS.md` note records which LlamaIndex call site actually raises the
       limit error, so a future LlamaIndex upgrade that changes it is traceable.
 
+## Phase 4: Automatic model fallback on a classified-transient failure — done
+
+Added out of sequence, in response to a specific question about whether `undercover`'s
+LangChain-based `ModelFallbackMiddleware` was worth adopting. It's not the framework that's
+valuable here — it's the capability, and canopy already has the substrate (`models.yaml`'s
+connection registry, three already-debugged `FunctionCallingLLM` subclasses) to get it without
+a framework swap. Full rationale and alternatives considered in `DECISIONS.md`'s new M3
+section.
+
+### Build
+
+- `ResponsesAPIError` (typed, carries `retryable: bool`) replaces bare `RuntimeError` in
+  `azure_responses_llm.py`'s three `_post()` failure paths.
+- `models/failures.py`'s `is_retryable_model_error()` classifies both that and the `openai`
+  SDK's typed exceptions (used by the `openai-compat`/`openai-standard` connections).
+- `config.other_active_connections()` — extracted from `eval/judge.py`'s existing
+  judge-selection logic so both call sites share one implementation.
+- `query/loop.py`'s `_run_agent_with_fallback()` wraps `_run_agent`: on a retryable failure,
+  one retry against one other active connection; non-retryable or no-alternate cases
+  propagate the original error unchanged.
+- Fixed a real latent bug surfaced while wiring this up: `_run_agent()` took a `conn_id`
+  parameter but never passed it to `get_llm()`, so `connection_override` never actually
+  changed which model answered (see M3 for detail; `LIMITATIONS.md`'s benchmark-switching row
+  corrected accordingly).
+- `status_retrying_fallback` (en/es) tells the user live when a fallback is happening;
+  `timing["model"]`/`timing["connection_id"]`/`timing["fallback_used"]` report which
+  connection actually answered.
+
+### Success criteria
+
+- [x] `ResponsesAPIError` carries a correct `retryable` flag for 5xx (true), other HTTP
+      errors (false), network errors (true), and timeouts (true); content-filter responses
+      are unaffected (still a synthetic refusal, never an exception).
+- [x] `is_retryable_model_error()` covers `ResponsesAPIError` and the `openai` SDK's
+      connection/timeout/rate-limit/internal-server/5xx-status exceptions, and returns False
+      for anything else (e.g. a `ValueError` from a malformed decision).
+- [x] `_run_agent_with_fallback()` is unit-tested: retryable error → second connection
+      answers and is reported as the answerer; non-retryable error → no second attempt,
+      original error propagates; only one active connection → original error propagates;
+      an `active: false` connection is never selected as a fallback target.
+- [x] Full test suite passes with no regressions (722 passed, 4 skipped, 5 deselected — up
+      from the pre-change 706 passed).
+- [x] `ruff check` and `pyright` clean on every changed file.
+- [x] `DECISIONS.md` M3 and `LIMITATIONS.md`'s gap table updated.
+- [ ] Live validation: a real (not mocked) provider failure on the primary connection still
+      produces a completed answer via the backup connection. Not yet performed — the mocked
+      unit tests prove the logic; they don't prove the real `openai`/Azure error types are
+      classified correctly against the live SDK behavior. Do this before relying on it during
+      an actual incident.
+
 ## Sequencing, risks and review points
 
-- Phases are independent and can land in any order — none depends on another's output.
-  Suggested order is 3 (smallest, lowest-risk), then 1 (clear agreed gap, eval-only), then 2
-  (needs the most evidence-gathering and may conclude "no work needed").
+- Phases 1-3 are independent of each other and of Phase 4 — none depends on another's output.
+  Suggested order for 1-3 is 3 (smallest, lowest-risk), then 1 (clear agreed gap, eval-only),
+  then 2 (needs the most evidence-gathering and may conclude "no work needed").
 - Phase 1's biggest risk is judge non-determinism producing flaky CI — mitigated by keeping
   it informational (not a hard pass/fail gate) until the calibration run establishes
   confidence, same posture T3 took before trusting its judge in the main suite.

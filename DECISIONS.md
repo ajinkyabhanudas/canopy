@@ -1019,6 +1019,42 @@ The eval case A09 submits a French question (`"Combien d'espèces ont été dét
 
 ---
 
+### M3 — Automatic model fallback on a classified-transient failure
+
+> **Files:** `src/canopy/models/failures.py` · `src/canopy/models/azure_responses_llm.py` (`ResponsesAPIError`) · `src/canopy/config.py` (`other_active_connections`) · `src/canopy/query/loop.py` (`_run_agent_with_fallback`)
+
+**Decision:** `run_query()` now retries once, automatically, against another `active: true` `models.yaml` connection when the primary connection's model call fails with a classified-transient error (a 5xx, a network error, a timeout, an `openai` SDK connection/rate-limit/internal-server error). A non-retryable error (bad SQL, a content-filter decline, a malformed question, a 4xx) propagates immediately — retrying those on a different connection would just repeat the same failure for no benefit. Exactly one fallback attempt against one alternate connection; this is not a cascading retry-until-it-works loop.
+
+**Why:** M2 above is the motivating incident — when Azure access was revoked mid-session, every query broke until a human manually edited `models.yaml` and redeployed. There was no code path that noticed the failure and tried a different configured connection. This closes that gap for the specific failure class it actually affects (transient/outage errors), without pretending canopy can self-heal a genuine account-provisioning problem (M2's actual root cause needed a human to rotate a key regardless).
+
+**Classification, not a blanket try/except:** `is_retryable_model_error()` only retries errors that look like outage symptoms. `AzureResponsesLLM` previously raised a bare `RuntimeError` with no structure for its three failure paths (HTTP error, network error, timeout); it now raises `ResponsesAPIError(message, retryable=...)`, carrying the classification at the point the real HTTP status is known (5xx → retryable, other HTTP errors → not — the content-filter 400 case never reaches this path at all, since `_post()` already turns it into a synthetic refusal response). The `openai`-SDK-backed connections (`openai-compat`, `openai-standard`) are classified against the SDK's own typed exceptions (`APIConnectionError`, `APITimeoutError`, `RateLimitError`, `InternalServerError`, and any other `APIStatusError` with a 5xx status).
+
+**A bug found and fixed along the way:** `_run_agent()` accepted a `conn_id` parameter but called `get_llm()` with no arguments, silently ignoring it — so `run_query(connection_override=...)` (the mechanism `scripts/run_benchmark.py` uses to switch connections per sweep run without env var mutation) never actually changed which model answered; it only affected the `conn` object used for labeling/timing. This had no behavioral effect in the single-connection case (where `connection_override` is unset and the ignored parameter happens to equal `MODEL_BACKEND`'s own resolution), which is why it went uncaught — `test_query_loop_agent.py`'s mocks patch `get_llm` with a blanket `return_value`, so a call-argument bug was invisible to them. Required fixing for fallback to be able to target a specific alternate connection at all; also means `scripts/run_benchmark.py`'s per-connection sweep is now correct for the first time, not just labeled correctly. Flagging here since the "Benchmark connection-switching...unreliable" row in `LIMITATIONS.md`'s gap table was previously marked closed on the strength of the labeling fix alone, without this.
+
+**Why reuse `other_active_connections()` for both this and the judge:** `eval/judge.py`'s `get_judge_llm()` already picks "any other active connection" to avoid self-judgment (T3). The fallback picker needs the identical selection — "any other active connection, excluding this one" — so the logic was extracted into `config.other_active_connections()` and both call sites now share it, rather than keeping two copies that could drift.
+
+**What this does not do:** it does not retry mid-conversation at model-call granularity the way `undercover`'s `ModelFallbackMiddleware` (a LangChain/LangGraph primitive) does inside a single graph node — LlamaIndex's `FunctionAgent` doesn't expose that boundary; `agent.run(question)` is a black box over however many internal tool-calling turns it takes. The fallback here is coarser: if the whole agent run fails with a retryable error, the whole question is retried once against a different connection and LLM, from scratch. For canopy's single-shot, stateless query loop (no partial state worth preserving), this is an equivalent outcome reached the only way the framework allows, not a weaker version of `undercover`'s approach.
+
+**Consequences:**
+- `timing["model"]` / `timing["connection_id"]` (surfaced in the UI footer and sent to `trace_query`) reflect whichever connection actually answered, not necessarily the one the query started with; `timing["fallback_used"]` and `timing["primary_connection_id"]` record when and from where a fallback happened.
+- The cache and semantic-cache write keys are unchanged — still keyed by the originally-requested connection/model, not the connection that actually answered. A cached answer produced via fallback is served back under the primary connection's key on a repeat question; this is intentional (the cache's contract is "an answer for this configured backend," and a transient outage is exactly the kind of thing that shouldn't poison the cache key space with a second identity for the same logical query).
+- No fallback is possible with only one `active: true` connection configured (the common case today, per `models.yaml`'s comments) — the original error propagates unchanged, same as before this change.
+- One extra model call's worth of latency and cost on the (expected to be rare) retryable-failure path only; the non-retryable, no-fallback-possible, and succeeds-first-try paths are all unchanged in cost.
+
+**Alternatives considered:**
+
+| Alternative | Why rejected |
+|---|---|
+| Adopt LangChain/LangGraph for `ModelFallbackMiddleware` specifically | The capability (retry on a configured alternate) doesn't require the framework — `models.yaml`'s existing connection registry and the three already-debugged `FunctionCallingLLM` subclasses (M1/M2/S7) are sufficient substrate. A framework swap would re-risk already-solved wire-format quirks for no additional capability. |
+| Retry against every `active` connection in sequence until one succeeds | Unbounded worst-case latency/cost on a correlated outage (e.g. all Azure connections down together); one bounded fallback attempt is the same shape M2's actual incident needed (a second, independently-hosted connection), not an arbitrary chain. |
+| Blanket `except Exception: retry` | Would retry non-retryable failures (bad SQL, content-filter declines) that fail identically on any connection — pure wasted latency and cost with no chance of a different outcome. |
+
+> **Audit verdict — pending live validation**
+>
+> Unit-tested against a mocked `_run_agent` (retryable error → fallback connection answers; non-retryable error → no fallback attempt; no alternate active connection → original error propagates; an `active: false` connection is never selected). Not yet exercised against a real provider outage — `models.yaml` currently has two active connections, so the fallback path is reachable, but a live validation (deliberately pointing the primary's endpoint somewhere unreachable and confirming a real query still completes via the backup) has not been run. Record that run here once performed, same as M2's and T3's own "live results" entries.
+
+---
+
 ### S6 — User data guardrail
 
 **Decision:** The `users` table is referenced in the schema context (so the model understands FK relationships) but protected by a hard constraint in `_GUARDRAILS`: the model is explicitly forbidden from querying or revealing usernames, roles, or `hashed_password`. Six adversarial eval cases (A11–A16) verify this boundary, including a direct SQL injection attempt with an admin authority claim.

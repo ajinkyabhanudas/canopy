@@ -40,7 +40,7 @@ from llama_index.core.llms.llm import LLM
 from llama_index.core.prompts import PromptTemplate
 from pydantic import BaseModel, Field
 
-from canopy.config import ModelConnection, get_active_connection, load_model_connections
+from canopy.config import get_active_connection, other_active_connections
 from canopy.models.registry import get_llm
 
 
@@ -120,10 +120,7 @@ def get_judge_llm(under_test_connection_id: str | None = None) -> tuple[LLM, Jud
     is inactive, no direct OpenAI key).
     """
     under_test = under_test_connection_id or get_active_connection().id
-    connections: list[ModelConnection] = [
-        c for c in load_model_connections() if c.active
-    ]
-    alternates = [c for c in connections if c.id != under_test]
+    alternates = other_active_connections(under_test)
 
     if alternates:
         judge_conn = alternates[0]

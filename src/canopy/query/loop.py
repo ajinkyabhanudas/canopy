@@ -18,10 +18,16 @@ from llama_index.core.tools import FunctionTool
 
 from canopy import semantic_cache
 from canopy.cache import lookup_cache, write_cache
-from canopy.config import get_active_connection, is_semantic_cache_enabled
+from canopy.config import (
+    ModelConnection,
+    get_active_connection,
+    is_semantic_cache_enabled,
+    other_active_connections,
+)
 from canopy.history import append_history
 from canopy.i18n import t
 from canopy.models import get_llm
+from canopy.models.failures import is_retryable_model_error
 from canopy.observability import trace_query
 from canopy.query.executor import QueryResult, execute_query
 from canopy.query.fuzzy_match import (
@@ -380,7 +386,7 @@ async def _run_agent(
     astream_chat docstring), so AgentStream.delta is always empty here —
     only event *boundaries* are available, not live token output.
     """
-    llm = get_llm()
+    llm = get_llm(connection_id=conn_id)
     system_prompt = build_system_prompt()
     sql_tool = _build_sql_tool(status_cb, state, result_cb)
 
@@ -437,6 +443,53 @@ async def _run_agent(
         question[:60],
     )
     return text
+
+
+async def _run_agent_with_fallback(
+    question: str,
+    status_cb: Callable[[str], None] | None,
+    state: dict,
+    conn: ModelConnection,
+    result_cb: Callable[[QueryResult, str], None] | None = None,
+) -> tuple[str, ModelConnection]:
+    """Run the agent against `conn`; on a classified-transient failure, retry
+    the whole question once against another configured connection.
+
+    Bounded to exactly one fallback attempt against one alternate connection
+    (not a cascade through every connection in models.yaml) — this is a
+    reliability measure for a provider outage (see DECISIONS.md's M2 section,
+    where losing Azure access required a manual models.yaml edit and
+    redeploy), not a general retry-until-it-works loop. A non-retryable
+    error (bad SQL, a content-filter decline, a malformed question) would
+    fail identically on any connection, so it propagates immediately without
+    burning a second model call.
+
+    Returns the model's final text and the connection that actually produced
+    it, so the caller can report which model answered rather than always
+    reporting the primary.
+    """
+    active_model = conn.models[0] if conn.models else conn.id
+    try:
+        text = await _run_agent(question, status_cb, state, conn.id, active_model, result_cb)
+        return text, conn
+    except Exception as error:
+        if not is_retryable_model_error(error):
+            raise
+        alternates = other_active_connections(conn.id)
+        if not alternates:
+            raise
+        fallback = alternates[0]
+        _log.warning(
+            "model call failed on connection=%s (%s); retrying once on connection=%s",
+            conn.id, type(error).__name__, fallback.id,
+        )
+        if status_cb:
+            status_cb(t("status_retrying_fallback"))
+        fallback_model = fallback.models[0] if fallback.models else fallback.id
+        text = await _run_agent(
+            question, status_cb, state, fallback.id, fallback_model, result_cb
+        )
+        return text, fallback
 
 
 def run_query(
@@ -560,13 +613,15 @@ def run_query(
     }
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
-        model_text = _pool.submit(
+        model_text, answered_by = _pool.submit(
             asyncio.run,
-            _run_agent(question, status_cb, state, conn.id, active_model, result_cb),
+            _run_agent_with_fallback(question, status_cb, state, conn, result_cb),
         ).result()
 
     last_query_result: QueryResult | None = state["last_query_result"]
     total_s = time.perf_counter() - t_total
+    answered_model = answered_by.models[0] if answered_by.models else answered_by.id
+    fallback_used = answered_by.id != conn.id
 
     timing = {
         "total_s": round(total_s, 2),
@@ -575,16 +630,22 @@ def run_query(
         "db_s": round(sum(state["db_times"]), 3),
         "db_calls": len(state["db_times"]),
         "iterations": state.get("iterations", len(state["llm_times"])),
-        "connection_id": conn.id,
-        "model": active_model,
+        # Reflects whichever connection actually answered, not necessarily the
+        # one `run_query` started with — see _run_agent_with_fallback.
+        "connection_id": answered_by.id,
+        "model": answered_model,
+        "fallback_used": fallback_used,
     }
+    if fallback_used:
+        timing["primary_connection_id"] = conn.id
     _log.info(
         "run_query complete — backend=%s model=%s rows=%d total=%.1fs"
-        " (llm %.1fs × %d, db %.3fs × %d)",
-        conn.id, active_model,
+        " (llm %.1fs × %d, db %.3fs × %d)%s",
+        answered_by.id, answered_model,
         last_query_result.row_count if last_query_result else 0,
         total_s, timing["llm_s"], timing["llm_calls"],
         timing["db_s"], timing["db_calls"],
+        f" [fallback from {conn.id}]" if fallback_used else "",
     )
 
     result = LoopResult(

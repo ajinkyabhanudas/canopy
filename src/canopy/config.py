@@ -141,6 +141,21 @@ def get_active_connection(
     )
 
 
+def other_active_connections(exclude_id: str) -> list[ModelConnection]:
+    """Every `active: true` connection in models.yaml except `exclude_id`.
+
+    Shared by anything that needs a connection other than the one under
+    test or in use: eval/judge.py's judge-model selection (avoid
+    self-judging) and query/loop.py's model-fallback wrapper (avoid
+    retrying against the same connection that just failed).
+    """
+    return [
+        conn
+        for conn in load_model_connections()
+        if conn.active and conn.id != exclude_id
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Database config
 # ---------------------------------------------------------------------------

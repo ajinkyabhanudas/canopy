@@ -36,6 +36,7 @@ STRINGS: dict[str, str] = {
     "status_understanding": "Understanding your question…",
     "status_refining":      "Refining the search…",
     "status_writing_sql_retry":  "Trying a different approach (attempt {n})…",
+    "status_retrying_fallback":  "The primary model is unavailable — retrying with a backup model…",
     # Shown for the whole 16-25s narrative phase, by which point the rows are
     # already rendered in the Full data table tab — the pointer tells the user
     # the data is there to read now instead of waiting on the prose.

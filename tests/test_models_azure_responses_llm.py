@@ -21,7 +21,11 @@ from llama_index.core.base.llms.types import (
 from llama_index.core.llms.llm import ToolSelection
 from llama_index.core.tools import FunctionTool
 
-from canopy.models.azure_responses_llm import _DEFAULT_CONTEXT_WINDOW, AzureResponsesLLM
+from canopy.models.azure_responses_llm import (
+    _DEFAULT_CONTEXT_WINDOW,
+    AzureResponsesLLM,
+    ResponsesAPIError,
+)
 
 
 def _run(coro):
@@ -423,8 +427,28 @@ def test_post_http_error_raises():
         hdrs=None, fp=io.BytesIO(b"server blew up"),
     )
     with patch("urllib.request.urlopen", side_effect=exc):
-        with pytest.raises(RuntimeError, match="Responses API error 500"):
+        with pytest.raises(RuntimeError, match="Responses API error 500") as excinfo:
             llm.chat([ChatMessage(role=MessageRole.USER, content="q")])
+    assert isinstance(excinfo.value, ResponsesAPIError)
+    assert excinfo.value.retryable is True  # 5xx — an outage symptom
+
+
+def test_post_http_error_4xx_not_retryable():
+    """A non-5xx, non-content-filter HTTP error (bad request, auth, not
+    found) would fail identically on another connection — not worth
+    retrying elsewhere."""
+    import io
+    import urllib.error
+
+    llm = _llm()
+    exc = urllib.error.HTTPError(
+        url=llm._url(), code=404, msg="Not Found",
+        hdrs=None, fp=io.BytesIO(b"no such deployment"),
+    )
+    with patch("urllib.request.urlopen", side_effect=exc):
+        with pytest.raises(ResponsesAPIError) as excinfo:
+            llm.chat([ChatMessage(role=MessageRole.USER, content="q")])
+    assert excinfo.value.retryable is False
 
 
 def test_post_content_filter_returns_refusal():
@@ -449,15 +473,17 @@ def test_post_url_error_raises():
 
     llm = _llm()
     with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("unreachable")):
-        with pytest.raises(RuntimeError, match="Responses API network error"):
+        with pytest.raises(RuntimeError, match="Responses API network error") as excinfo:
             llm.chat([ChatMessage(role=MessageRole.USER, content="q")])
+    assert excinfo.value.retryable is True
 
 
 def test_post_timeout_raises():
     llm = _llm()
     with patch("urllib.request.urlopen", side_effect=TimeoutError()):
-        with pytest.raises(RuntimeError, match="Responses API timed out"):
+        with pytest.raises(RuntimeError, match="Responses API timed out") as excinfo:
             llm.chat([ChatMessage(role=MessageRole.USER, content="q")])
+    assert excinfo.value.retryable is True
 
 
 # ---------------------------------------------------------------------------

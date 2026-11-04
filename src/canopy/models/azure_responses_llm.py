@@ -50,6 +50,23 @@ _log = logging.getLogger("canopy.models.azure_responses_llm")
 _DEFAULT_CONTEXT_WINDOW = 200_000  # gpt-5.1-codex-mini context window
 
 
+class ResponsesAPIError(RuntimeError):
+    """A Responses API call failed. `retryable` tells callers (e.g. the
+    model-fallback wrapper in query/loop.py) whether retrying against a
+    different connection could plausibly help.
+
+    A 5xx, a network error, or a timeout is an outage symptom — retryable.
+    A non-5xx HTTP error (bad request, auth, not found) is a configuration
+    or code defect that a different model will fail identically on — not
+    retryable. (A content_filter 400 never reaches here: _post() turns it
+    into a synthetic refusal response instead of raising.)
+    """
+
+    def __init__(self, message: str, *, retryable: bool) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+
+
 class AzureResponsesLLM(FunctionCallingLLM):
     """LlamaIndex FunctionCallingLLM adapter for the Azure OpenAI Responses API.
 
@@ -99,11 +116,18 @@ class AzureResponsesLLM(FunctionCallingLLM):
                     ]}]}
             except (json.JSONDecodeError, KeyError):
                 pass
-            raise RuntimeError(f"Responses API error {exc.code}: {err_body[:400]}") from exc
+            raise ResponsesAPIError(
+                f"Responses API error {exc.code}: {err_body[:400]}",
+                retryable=exc.code >= 500,
+            ) from exc
         except urllib.error.URLError as exc:
-            raise RuntimeError(f"Responses API network error: {exc.reason}") from exc
+            raise ResponsesAPIError(
+                f"Responses API network error: {exc.reason}", retryable=True
+            ) from exc
         except TimeoutError as exc:
-            raise RuntimeError(f"Responses API timed out after {self.timeout}s") from exc
+            raise ResponsesAPIError(
+                f"Responses API timed out after {self.timeout}s", retryable=True
+            ) from exc
 
     # ------------------------------------------------------------------
     # Message format helpers

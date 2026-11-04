@@ -78,7 +78,7 @@ def test_judge_falls_back_to_self_when_only_one_active_connection(monkeypatch):
         endpoint="https://example.test", api_style="openai-responses", active=True,
     )
     monkeypatch.setattr(
-        "canopy.eval.judge.load_model_connections", lambda: [only_connection]
+        "canopy.config.load_model_connections", lambda: [only_connection]
     )
     with patch("canopy.eval.judge.get_llm") as mock_get_llm:
         mock_get_llm.return_value = MagicMock()
