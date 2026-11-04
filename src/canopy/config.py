@@ -279,6 +279,11 @@ def get_posthog_host() -> str:
     return os.environ.get("CANOPY_POSTHOG_HOST", "https://us.i.posthog.com")
 
 
+def get_posthog_api_key() -> str:
+    """Return the PostHog project API key (empty string if unset)."""
+    return os.environ.get("CANOPY_POSTHOG_API_KEY", "")
+
+
 # ---------------------------------------------------------------------------
 # DB connection pool sizing — see DECISIONS.md O2 for the load-threshold table
 # this implements (>20 concurrent queries was the documented "add a pool" trigger).
@@ -342,3 +347,30 @@ def is_semantic_cache_enabled() -> bool:
 def get_semantic_cache_threshold() -> float:
     """Return the cosine-similarity threshold for a semantic cache candidate."""
     return float(os.environ.get("CANOPY_SEMANTIC_CACHE_THRESHOLD", "0.93"))
+
+
+# ---------------------------------------------------------------------------
+# Query result cache TTLs — see O1: every os.getenv call lives in this module.
+# ---------------------------------------------------------------------------
+
+def get_cache_ttl_hours() -> int:
+    """Return the exact-match query cache's TTL in hours (default: 24)."""
+    return int(os.environ.get("CANOPY_CACHE_TTL_HOURS", "24"))
+
+
+def get_fuzzy_cache_ttl_seconds() -> int:
+    """Return the fuzzy-match distinct-value cache's TTL in seconds.
+
+    Default 6h — column value lists (species, site names) change rarely.
+    """
+    return int(os.environ.get("CANOPY_FUZZY_CACHE_TTL_SECONDS", 6 * 60 * 60))
+
+
+# ---------------------------------------------------------------------------
+# Sensitive columns withheld from the AI layer and the UI — see S3.
+# ---------------------------------------------------------------------------
+
+def get_sensitive_columns() -> frozenset[str]:
+    """Return the column names stripped from model-facing and UI-facing results."""
+    raw = os.environ.get("CANOPY_SENSITIVE_COLUMNS", "latitude,longitude,hashed_password")
+    return frozenset(c.strip() for c in raw.split(",") if c.strip())

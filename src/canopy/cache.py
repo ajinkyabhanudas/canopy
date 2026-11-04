@@ -13,7 +13,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import re
 import threading
 import unicodedata
@@ -22,7 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from canopy._json import Encoder
-from canopy.config import get_redis_url, is_redis_cache_enabled
+from canopy.config import get_cache_ttl_hours, get_redis_url, is_redis_cache_enabled
 
 if TYPE_CHECKING:
     import redis
@@ -38,7 +37,6 @@ _ISO_RE = re.compile(
 )
 _WS_RE = re.compile(r"\s+")
 
-_DEFAULT_TTL_HOURS = 24
 _MAX_ENTRIES = 200
 _write_lock = threading.Lock()
 
@@ -49,7 +47,7 @@ def _cache_file() -> Path:
 
 
 def _ttl_hours() -> int:
-    return int(os.environ.get("CANOPY_CACHE_TTL_HOURS", _DEFAULT_TTL_HOURS))
+    return get_cache_ttl_hours()
 
 
 def _make_key(question: str, connection_id: str = "", model: str = "") -> str:

@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from canopy.config import get_sensitive_columns
 from canopy.i18n import t
 from canopy.query.executor import QueryResult
 from canopy.query.loop import (
@@ -29,7 +30,6 @@ from canopy.query.loop import (
     LoopResult,
     UnsupportedLanguageError,
     _format_result,
-    _load_sensitive_columns,
     _parse_interpretation,
     _strip_leading_content_filter_fragment,
     _strip_sensitive_columns,
@@ -275,7 +275,7 @@ def test_format_result_includes_columns_and_row_count():
 def test_sensitive_columns_env_override(monkeypatch):
     """CANOPY_SENSITIVE_COLUMNS env var overrides the default set."""
     monkeypatch.setenv("CANOPY_SENSITIVE_COLUMNS", "secret_col")
-    sensitive = _load_sensitive_columns()
+    sensitive = get_sensitive_columns()
     assert "secret_col" in sensitive
     assert "latitude" not in sensitive
     assert "longitude" not in sensitive
@@ -283,11 +283,13 @@ def test_sensitive_columns_env_override(monkeypatch):
 
 def test_sensitive_columns_env_override_end_to_end(monkeypatch):
     """When env var strips secret_col but not lat/lon, the stripped result
-    (and format_result on it) reflects this."""
-    import canopy.query.loop as loop_mod
+    (and format_result on it) reflects this.
 
+    No module-level monkeypatch needed — _strip_sensitive_columns reads
+    config.get_sensitive_columns() live on every call, so setting the env
+    var alone is enough (see query/loop.py's docstring note on why this
+    changed from an import-time-bound frozenset)."""
     monkeypatch.setenv("CANOPY_SENSITIVE_COLUMNS", "secret_col")
-    monkeypatch.setattr(loop_mod, "_SENSITIVE_COLUMNS", loop_mod._load_sensitive_columns())
 
     result = QueryResult(
         columns=("scientific_name", "latitude", "secret_col"),

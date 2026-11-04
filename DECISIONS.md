@@ -19,6 +19,7 @@
 | ⚠️ **Caveat** | Sound in principle; a specific condition or gap limits it |
 | 🔄 **Revisit** | Correct now; a named trigger should prompt review |
 | ❌ **Gap** | Known weakness without a current fix — technical debt |
+| 🔍 **Pending** | Evidence was deliberately gathered and is not yet sufficient to decide; not a gap in the system, a gap in what's been checked |
 
 ---
 
@@ -42,7 +43,7 @@
 |---|---|---|---|
 | A1 | Agentic loop safety | `MAX_ITERATIONS = 5` hard cap | 🔄 Revisit |
 | A2 | Tool surface | Single `execute_sql` tool only | ✅ Sound |
-| A3 | Model abstraction | Vendor-neutral `ModelClient` ABC | ✅ Sound |
+| A3 | Model abstraction | Vendor-neutral via LlamaIndex `FunctionCallingLLM` (a hand-rolled `ModelClient` ABC was the v1 approach, since replaced) | ✅ Sound |
 | A4 | Concurrency model | Worker thread + queue, not async | ✅ Sound |
 | A5 | Data immutability | `frozen=True` dataclasses throughout | ✅ Sound |
 
@@ -62,6 +63,8 @@
 | T1 | Adversarial eval design | Separate suite, 100% threshold, SQLGuardError = PASS | ✅ Sound |
 | T2 | Faithfulness testing | Verbatim DB value in model_text; vacuous pass when precondition unverifiable | ⚠️ Caveat |
 | T3 | Guardrail-bypass judge evaluation | Hand-rolled 3-way LLM judge on structured_predict(); framework comparison rejected Ragas/DeepEval/promptfoo/openai-evals | ✅ Sound |
+| T4 | Numeric-faithfulness judge | Second judge (`FaithfulnessVerdict`), additive to the verbatim checks; closes T2's tracked gap | ⚠️ Caveat (live calibration not yet run) |
+| T5 | Structured answer contract | Reviewed `undercover`-style Pydantic output for the answer body against available evidence | 🔍 Pending |
 
 ### 🎨 Interface & UX
 
@@ -77,13 +80,14 @@
 |---|---|---|---|
 | M1 | Primary model tier | Azure AI Foundry (gpt-5.1-codex-mini + gpt-5.1-2); Claude Sonnet inactive | ⚠️ Caveat |
 | M2 | Backup backend after Azure access loss | NVIDIA integrate API (`moonshotai/kimi-k3`), new `openai-standard` api_style | ✅ Sound |
+| M3 | Automatic model fallback | One bounded retry against another active connection on a classified-transient failure | 🔄 Revisit (live validation not yet run) |
 
 ### ⚙️ Operations
 
 | # | Decision | Chosen approach | Verdict |
 |---|---|---|---|
 | O1 | Configuration access | `config.py` owns all env vars; frozen dataclasses | ✅ Sound |
-| O2 | Database connections | Per-query connection, no pooling | 🔄 Revisit |
+| O2 | Database connections | `ThreadedConnectionPool`, implemented ahead of the documented >20-concurrent trigger (originally per-query, no pooling) | ✅ Sound (closed) |
 | O3 | Container security | Non-root user `canopy`; persistent `/data` volume | ✅ Sound |
 | O4 | Model/schema state verification | Git history + this document, no separate CHANGELOG | ✅ Sound |
 | O5 | Langfuse tracing | Built dormant ahead of production traffic; `CANOPY_LANGFUSE_ENABLED` default off | ✅ Sound |
@@ -91,6 +95,7 @@
 | O7 | `docker_run.sh` env parsing | Fixed silent drop of a `.env`'s last line when unterminated | ✅ Sound |
 | O8 | `codecov/patch` gate | Made informational after confirming the remaining gap is `build_app()`'s e2e-only wiring | ✅ Sound |
 | O9 | Scaling upgrade: containerization + benchmark harness | `docker-compose.yml` (app + Redis), `run_scaling_benchmark.py` — additive to the existing single-container deploy | ✅ Sound |
+| O10 | Dependency vulnerability scanning in CI | `pip-audit`, informational (`continue-on-error`) — a real transitive `pillow` CVE exists with no installable fix under gradio's current pin | ⚠️ Caveat |
 
 ---
 
@@ -157,7 +162,7 @@
 
 ### S3 — Coordinate privacy
 
-> **Files:** `src/canopy/query/loop.py` — `_SENSITIVE_COLUMNS`, `_strip_sensitive_columns()`, `_format_result()`
+> **Files:** `src/canopy/config.py` — `get_sensitive_columns()` · `src/canopy/query/loop.py` — `_strip_sensitive_columns()`, `_format_result()` · `src/canopy/semantic_cache.py` — `sql_touches_sensitive_column()`
 
 **Decision:** `latitude` and `longitude` are removed from query results before they are formatted into the model's context, even if the generated SQL explicitly requests them. **As of 2026-08-13 they are also removed from the user-facing Results tab** — see the "Scope widened" note in the audit verdict below for why this reversed the original narrower decision.
 
@@ -165,13 +170,20 @@
 
 **Implementation:**
 ```python
-_SENSITIVE_COLUMNS = frozenset({"latitude", "longitude", "hashed_password"})  # env-overridable
-# _strip_sensitive_columns() is applied once in execute_sql's closure, to the
+# config.py
+def get_sensitive_columns() -> frozenset[str]:  # env-overridable via CANOPY_SENSITIVE_COLUMNS
+    raw = os.environ.get("CANOPY_SENSITIVE_COLUMNS", "latitude,longitude,hashed_password")
+    return frozenset(c.strip() for c in raw.split(",") if c.strip())
+
+# query/loop.py
+# _strip_sensitive_columns() calls get_sensitive_columns() live (not cached
+# at import) and is applied once in execute_sql's closure, to the
 # QueryResult stored in state["last_query_result"] — which feeds BOTH the
 # model-facing text (_format_result) and LoopResult.rows/.columns (the UI's
 # "Full data table" tab). is_empty_result/find_candidates/effective_count run
 # on the RAW result first, since they need the unstripped column shape (e.g.
 # distinguishing a single-column COUNT(*) aggregate from a real 0-row result).
+# semantic_cache.py's sql_touches_sensitive_column() reads the same function.
 ```
 
 **Alternatives considered:**
@@ -184,7 +196,7 @@ _SENSITIVE_COLUMNS = frozenset({"latitude", "longitude", "hashed_password"})  # 
 
 **Consequences:**
 - The model can never reason over precise coordinates, even if it generates SQL that includes them.
-- `_SENSITIVE_COLUMNS` is now driven by the `CANOPY_SENSITIVE_COLUMNS` env var (comma-separated). The current defaults are `latitude,longitude,hashed_password`. Adding a new sensitive column is a config change — not a code deploy.
+- `get_sensitive_columns()` is driven by the `CANOPY_SENSITIVE_COLUMNS` env var (comma-separated). The current defaults are `latitude,longitude,hashed_password`. Adding a new sensitive column is a config change — not a code deploy — and now reaches every consumer (`query/loop.py`'s strip, `semantic_cache.py`'s guardrail gate) since both read the same function.
 
 > **Audit verdict — ✅ Sound** *(updated 2026-08-13)*
 >
@@ -198,6 +210,8 @@ _SENSITIVE_COLUMNS = frozenset({"latitude", "longitude", "hashed_password"})  # 
 > Fixed by extracting `_strip_sensitive_columns()` and applying it once to the stored result, so the model-facing text and the UI table are filtered from the same source. Regression test: `test_build_sql_tool_strips_sensitive_columns_from_stored_result_too`.
 >
 > **Consequence of the reversal:** a researcher who genuinely needs coordinates can no longer get them through Canopy's UI and must query the database directly. Accepted — that is a rare, deliberate operation, and routing it through direct DB access is the more appropriate path for it than a shared-link web tool.
+>
+> **Second gap of the same shape, found and fixed in the Phase 5 code-standards review (`docs/PLAN_ROBUSTNESS.md`):** `semantic_cache.py`'s write-time guardrail gate (`sql_touches_sensitive_column`, Gate 3 — blocks caching any SQL that touches a sensitive column, so a one-time near-miss can't become a standing, replayable cache entry) had its own hardcoded `_SENSITIVE_COLUMNS = frozenset({"latitude", "longitude", "hashed_password"})`, independent of `CANOPY_SENSITIVE_COLUMNS` entirely. An operator adding a column via the env var would have it correctly stripped from results (`query/loop.py` already honored the override) while this gate kept allowing SQL touching that column into the semantic cache — the same "two consumers, one drifted" pattern as the original 2026-08-13 UI gap. Fixed by reading `config.get_sensitive_columns()` live instead of a local copy; this was also the opportunity to notice `query/loop.py`'s own `_SENSITIVE_COLUMNS` violated O1 (computed via a local `os.environ.get` call, bound once at import time rather than living in `config.py`) — both now go through one function, `config.get_sensitive_columns()`, called live on every use rather than cached at import.
 
 ---
 
@@ -1313,6 +1327,35 @@ Confirmed by diff-scoped coverage reports on two separate PRs: after adding real
 > **Audit verdict — ✅ Sound**
 >
 > Both additions are opt-in / additive — the existing single-container deploy path (Section 1 of DEPLOYMENT.md) is unchanged and still the documented default. `make compose-up`/`make scaling-benchmark` are new, parallel entry points, not replacements.
+
+---
+
+### O10 — Dependency vulnerability scanning in CI
+
+> **Files:** `.github/workflows/ci.yml`
+
+**Decision:** Added a `pip-audit` step to the `check` job, informational (`|| true`, matching O8's `continue-on-error` precedent for codecov) rather than blocking.
+
+**Why informational, not blocking:** running `pip-audit` against the resolved dependency set during this review (Phase 5 of `docs/PLAN_ROBUSTNESS.md`) found 39 known CVEs in `pillow` 12.3.0 (transitive via `gradio` and `llama-index-core`), fixed only in `pillow` 13.0+. Confirmed directly — not assumed — that the fix isn't installable today: `gradio` 6.31.0 pins `pillow<13.0`, so `pip install "pillow>=13.0"` produces a `pip check` conflict, not a clean upgrade. Making the scan blocking on day one would fail CI on every PR for a pre-existing transitive issue this review didn't verify is safe to resolve (bumping gradio itself is untested here — no live UI/browser check was possible in this environment). The same reasoning O8 already applied to `codecov/patch` (a real signal, structurally not yet actionable, made informational rather than either ignored or force-blocked) applies here.
+
+**What this doesn't do:** it doesn't fix the `pillow` CVEs, and it doesn't add secret-scanning (`detect-secrets`/`gitleaks` or similar) — neither existed in CI before this entry, and this review only verified the dependency-scan gap, not generated and validated a secrets baseline (a `detect-secrets` baseline requires a one-time full-history scan and manual triage of findings, which is real, separate work this review didn't do and shouldn't claim to have done).
+
+**Consequences:**
+- Every PR's CI run now surfaces known dependency CVEs in the logs, even though none currently fail the build.
+- Revisit trigger: once `gradio` raises its `pillow` ceiling (or canopy upgrades `gradio` and separately verifies the UI still works), bump `pillow` and make this step blocking.
+- Secret-scanning in CI remains unaddressed — tracked as a named gap (see `LIMITATIONS.md`), not silently assumed covered by this entry.
+
+**Alternatives considered:**
+
+| Alternative | Why rejected |
+|---|---|
+| Block CI on any `pip-audit` finding immediately | Would fail every PR today on a pre-existing transitive issue with no safe, verified fix available in this review — all-stop with no path to green isn't the goal. |
+| Pin `pillow` directly to force a resolution attempt | Already tested: `pip install "pillow>=13.0"` conflicts with `gradio`'s own pin. Forcing it without testing the UI afterward would be an unverified change to a rendering-critical dependency. |
+| Do nothing (no scan at all) | Leaves a real class of vulnerability invisible. An informational signal is strictly better than silence, same logic as O8. |
+
+> **Audit verdict — ✅ Sound (informational by design, not yet closed)**
+>
+> The finding is real (confirmed via an actual `pip-audit` run, not assumed), the non-blocking choice is justified by a confirmed constraint (gradio's pin), and the gap this doesn't close (secret-scanning) is named rather than implied-covered. Revisit once the gradio/pillow constraint lifts.
 
 ---
 

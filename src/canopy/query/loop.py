@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import logging
-import os
 import re
 import time
 from collections.abc import Callable
@@ -22,6 +21,7 @@ from canopy.cache import lookup_cache, write_cache
 from canopy.config import (
     ModelConnection,
     get_active_connection,
+    get_sensitive_columns,
     is_semantic_cache_enabled,
     other_active_connections,
 )
@@ -113,14 +113,6 @@ def is_unsupported_language(question: str) -> bool:
 # literal text with no formatting at all).
 _BLOCK_RE = re.compile(r"^---$(.*?)(?:^---$|\Z)", re.MULTILINE | re.DOTALL)
 _BULLET_RE = re.compile(r"^\s*[•\-]\s*(.+)$")
-
-
-def _load_sensitive_columns() -> frozenset[str]:
-    raw = os.environ.get("CANOPY_SENSITIVE_COLUMNS", "latitude,longitude,hashed_password")
-    return frozenset(c.strip() for c in raw.split(",") if c.strip())
-
-
-_SENSITIVE_COLUMNS = _load_sensitive_columns()
 
 
 @dataclass(frozen=True)
@@ -279,8 +271,15 @@ def _strip_sensitive_columns(result: QueryResult) -> QueryResult:
     select latitude/longitude despite the prompt instruction, the raw
     table would have shown it even though the LLM's own text wouldn't
     mention it. Fixed so both consumers share one stripped result.
+
+    Reads config.get_sensitive_columns() live on every call rather than
+    once at import time (the module-level frozenset this replaced bound
+    CANOPY_SENSITIVE_COLUMNS at first import, so a test or a runtime env
+    change needed a manual re-read and monkeypatch to take effect — see
+    the now-simplified test_sensitive_columns_env_override_end_to_end).
     """
-    safe_idx = [i for i, c in enumerate(result.columns) if c not in _SENSITIVE_COLUMNS]
+    sensitive = get_sensitive_columns()
+    safe_idx = [i for i, c in enumerate(result.columns) if c not in sensitive]
     if len(safe_idx) == len(result.columns):
         return result
     safe_cols = tuple(result.columns[i] for i in safe_idx)

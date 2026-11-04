@@ -29,10 +29,14 @@ mean an experiment is running.
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
-from canopy.config import get_posthog_host, is_langfuse_enabled, is_show_sql_experiment_active
+from canopy.config import (
+    get_posthog_api_key,
+    get_posthog_host,
+    is_langfuse_enabled,
+    is_show_sql_experiment_active,
+)
 
 _log = logging.getLogger("canopy.observability")
 
@@ -205,7 +209,7 @@ def _get_posthog_client() -> Any | None:
         try:
             from posthog import Posthog
 
-            api_key = os.environ.get("CANOPY_POSTHOG_API_KEY", "")
+            api_key = get_posthog_api_key()
             _posthog_client = Posthog(project_api_key=api_key, host=get_posthog_host())
         except Exception as exc:  # noqa: BLE001 - the experiment must never break queries
             _log.warning("PostHog client init failed, assignment disabled: %s", exc)

@@ -41,7 +41,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from canopy.config import get_redis_url, get_semantic_cache_threshold
+from canopy.config import get_redis_url, get_semantic_cache_threshold, get_sensitive_columns
 
 if TYPE_CHECKING:
     import redis
@@ -60,8 +60,6 @@ _KEY_PREFIX = f"canopy:semantic:{_SCHEMA_VERSION}:"
 # compares against fuzzy_match.py's cached column values, which themselves
 # have a TTL) can linger.
 _ENTRY_TTL_SECONDS = 7 * 24 * 3600
-
-_SENSITIVE_COLUMNS = frozenset({"latitude", "longitude", "hashed_password"})
 
 _TEMPORAL_KEYWORDS_RE = re.compile(
     r"\b(today|yesterday|this\s+week|this\s+month|this\s+year|recent(?:ly)?|"
@@ -196,9 +194,21 @@ def entities_match(new_question: str, cached_entities: frozenset[str]) -> bool:
 def sql_touches_sensitive_column(sql: str) -> bool:
     """Return True if `sql` references a column CANOPY_SENSITIVE_COLUMNS-listed
     as sensitive. Never write such SQL into the semantic cache — a one-time
-    guardrail near-miss must not become a standing, replayable cache entry."""
+    guardrail near-miss must not become a standing, replayable cache entry.
+
+    Reads config.get_sensitive_columns() live rather than a hardcoded local
+    copy — this module previously had its own frozenset duplicating the
+    default, which silently ignored a CANOPY_SENSITIVE_COLUMNS override: an
+    operator adding a column via the env var would have it stripped from
+    results (query/loop.py's own strip already honored the override) while
+    this write-time guardrail gate kept allowing SQL touching that column
+    into the cache. Found during the robustness review in docs/
+    PLAN_ROBUSTNESS.md's Phase 5; see DECISIONS.md's S3 section.
+    """
     sql_cf = sql.casefold()
-    return any(re.search(rf"\b{re.escape(col)}\b", sql_cf) for col in _SENSITIVE_COLUMNS)
+    return any(
+        re.search(rf"\b{re.escape(col)}\b", sql_cf) for col in get_sensitive_columns()
+    )
 
 
 # ---------------------------------------------------------------------------
