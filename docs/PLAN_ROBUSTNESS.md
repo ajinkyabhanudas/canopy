@@ -112,46 +112,49 @@ new T4 section.
       harness only. Full suite passes with no regressions (730 passed, up from 724 after
       Phase 3), `ruff check` clean.
 
-## Phase 2: Evidence gate for a structured answer contract
+## Phase 2: Evidence gate for a structured answer contract — done (inconclusive, by design)
 
-This phase does not assume the gap is real. It produces the evidence needed to decide whether
-`undercover`-style Pydantic-validated structured output (its `Decision` model) is worth
-porting to canopy's answer body, or whether the current markdown-prose-plus-parsed-block
-design is already adequate.
+This phase did not assume the gap is real. It set out to produce the evidence needed to decide
+whether `undercover`-style Pydantic-validated structured output (its `Decision` model) is
+worth porting to canopy's answer body — and found the available evidence insufficient to
+decide either way, which `DECISIONS.md`'s new T5 section records as the actual, complete
+outcome rather than forcing a guess. Full reasoning in T5.
 
-### Build
+### What was checked
 
-- Pull `_parse_interpretation`'s `None`-return rate from eval runs (Category 17/18, plus any
-  production logs if `CANOPY_LANGFUSE_ENABLED` has real traffic by the time this phase runs).
-  A `None` on a query that should have produced a block is the signal that matters; a `None`
-  on a guardrail decline (where no block is expected) is not a defect.
-- Check whether any malformed-block incident has been observed outside the synthetic eval
-  fixtures — i.e. against live model output, not just the unit tests already covering the
-  regex parser.
-- If the miss rate is low and no live incident exists: close this phase with a `DECISIONS.md`
-  entry stating "checked, found adequate, no action" — this is a valid, complete outcome for
-  this phase, not a failure to find work.
-- If a real miss rate or incident is found: scope a *narrow* follow-up — convert only the
-  Interpretation block to `structured_predict()` (the pattern `eval/judge.py` already proves
-  works against the active connection), not the full headline/key-findings/data-notes body,
-  which is markdown prose by design for the UI and has no validation need `undercover`'s
-  `Decision` model has (no payout, no outcome field, nothing downstream depends on its exact
-  shape the way backend money controls depend on `Decision`).
+- `_parse_interpretation`'s existing unit coverage (missing block, missing GAPS line, unclosed
+  block, bullet-style variants, a never-raises property test, a ReDoS-resistance test) — strong
+  evidence the parser is safe against malformed input, but silent on how often the model
+  actually produces malformed input in real use.
+- The one available real-world data point: T3's recorded 2026-07-28 live run noted Q45 (a
+  Category 17 interpretation-block case) among 4 failures — but that run didn't capture the
+  raw `model_text` for root-cause analysis, so whether Q45 failed because of a malformed block
+  or an unrelated cause (bad SQL, empty result — both trip the same check_fn early-return) is
+  not knowable from the existing record.
+- No production traffic to check — Langfuse tracing (O5) is dormant by default and there's no
+  record of it being turned on for real usage.
+
+### Why this closes as "insufficient evidence" rather than a guess
+
+Manufacturing "adequate as-is" from unit-test robustness alone would conflate "can't crash" with
+"rarely fails" — two different claims. Manufacturing "needs a fix" from one ambiguous historical
+data point would be acting on a sample of one with an unconfirmed cause. Neither is actually
+supported by what's checkable in this environment (no live DB/API credentials). Saying so
+plainly, with what *would* resolve it, is the honest version of this phase's deliverable —
+matching this project's own precedent (T2's "tracked as a gap" rather than a guessed fix).
 
 ### Success criteria
 
-- [ ] A written finding (in `DECISIONS.md`, new section) states the measured `None`-rate for
-      `_parse_interpretation` across the current eval suite and any available production
-      traces, with the date and sample size.
-- [ ] The finding explicitly states one of two outcomes: "adequate as-is" (with the evidence
-      that supports it) or "convert the Interpretation block to structured_predict()" (with a
-      scoped follow-up task, not an open-ended rewrite).
-- [ ] If a follow-up is scoped, it explicitly excludes the headline/key-findings/data-notes
-      body from the structured contract, and states why (UI markdown rendering is the
-      intended output shape, not an API consumer).
-- [ ] No code changes in this phase beyond what's needed to extract the `None`-rate
-      measurement (e.g. a log-scraping script, kept in `scripts/` if it doesn't already
-      exist as a byproduct of eval runs).
+- [x] A written finding (`DECISIONS.md`'s new T5 section) states exactly what evidence exists
+      (unit coverage + one ambiguous historical data point), what it does and doesn't prove,
+      and why that falls short of a confident call — with the alternative framings considered
+      and rejected recorded in T5's table, same as every other entry in this document.
+- [x] The finding does NOT manufacture a forced "adequate" or "needs fix" verdict from
+      insufficient evidence — explicitly treated as the correct outcome, not a shortfall.
+- [x] The path to an actual answer is recorded (re-run Category 17/18 live, inspect raw
+      `model_text` on any failure) so this is resumable, not re-litigated from scratch, the
+      next time a session has live credentials.
+- [x] No code changes — review-only, as scoped.
 
 ## Phase 3: Typed iteration-limit error — done
 

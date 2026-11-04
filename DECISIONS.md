@@ -731,6 +731,40 @@ A related, unplanned finding from the first live run of Category 21: eval case Q
 
 ---
 
+### T5 — Structured answer contract: evidence gate, not a rewrite (inconclusive — more evidence needed)
+
+> **Files:** none changed — this is a review-only entry. Evidence inspected: `tests/eval/queries.py` Category 17/18 (Q44–Q47), `tests/test_query_loop.py`'s `_parse_interpretation` unit tests, T3's "Live results" line.
+
+**Question:** should `query/loop.py`'s answer — currently markdown prose, with one machine-parsed sub-part (`_parse_interpretation`'s DATA SOURCE/GAPS/RESEARCH QUESTIONS block) that degrades to `None` on anything malformed — be replaced with `undercover`-style Pydantic-validated structured output (its `Decision` model)? This entry does not assume the answer is yes; it looks for evidence before proposing any code change.
+
+**What was checked:**
+- `_parse_interpretation` has substantial unit coverage against synthetic malformed input: a missing block, a missing GAPS line, an unclosed block (handled via implicit end-of-string), dash vs. bullet-character bullets, and two defensive tests (`test_parse_interpretation_never_raises_on_arbitrary_text`, `test_parse_interpretation_resists_redos_on_adversarial_bullet_flood`) proving the parser cannot crash or hang regardless of input. This is strong evidence the parser itself is robust — but it answers "does the code handle a malformed block safely," not "how often does the model actually produce one when it shouldn't."
+- The only available real-world (not synthetic-fixture) data point is T3's one recorded live run (2026-07-28, gpt-5.1-codex-mini): "4 failures — Q16, Q25, Q45, Q47." Q45 is a Category 17 case (`_q45_interpretation_present_for_filter_query`) asserting `r.interpretation is not None` on a filter-query response. That is one failure out of 3 Category 17 cases in the one run this project has a record of.
+- **What that data point does NOT tell us:** whether Q45's failure was actually a malformed/missing interpretation block (the question this entry is about) or an unrelated failure mode that happens to trip the same check_fn's early-return path (`r.sql is None or r.row_count == 0` also returns `False`, so a SQL-generation miss or an empty result would look identical in the pass/fail report without inspecting the actual `model_text`). T3's own note attributes it to "the model's already-documented ~2-3% run-to-run variance" in passing, without a dedicated root-cause investigation — it was written about Category 21, with Q45 mentioned only as an aside.
+- No production traffic exists to check: `CANOPY_LANGFUSE_ENABLED` is unset by default (O5), and there is no record of it being turned on for real usage as of this entry.
+
+**Finding: evidence is insufficient for a confident call, and this entry does not manufacture one.** One ambiguous historical data point is not a measured miss rate. Fabricating either "adequate as-is" or "needs a fix" from it would be worse than saying plainly that the evidence doesn't support a decision yet — consistent with T2's own precedent of stating what an approach does and does not prove, rather than overclaiming.
+
+**What would actually answer this, in order of cost:**
+1. Re-run Category 17/18 live (`python scripts/run_eval.py`) and, on any `_q44`/`_q45`/`_q46` failure, inspect the raw `model_text` directly (not just the pass/fail bit) to determine whether the block was absent, malformed, or the failure was unrelated (bad SQL, empty result). This requires live DB + API credentials this session did not have.
+2. If turning on Langfuse tracing for real usage is already planned independent of this question, the `None`-rate could instead be measured from real traffic once that happens — but standing up tracing solely to answer this would be exactly the "building machinery ahead of measured need" U2 already warns against.
+
+**Decision:** no code change. If a future session has live credentials, step 1 above is cheap (one eval run plus manual inspection of ≤3 failures) and should be done before either closing this gap as adequate or scoping the narrow `structured_predict()` follow-up this entry's original plan described. Until then, this stays an open, explicitly-not-decided question rather than a silently-closed one.
+
+**Alternatives considered:**
+
+| Alternative | Why rejected |
+|---|---|
+| Convert the Interpretation block to `structured_predict()` now, proactively | No measured problem to fix — the existing parser already degrades safely, and the one ambiguous data point doesn't establish a real miss rate. Matches T1/U2's own stated preference against building ahead of evidence. |
+| Declare "adequate as-is" from the unit-test coverage alone | Unit tests prove the parser can't crash on malformed input; they say nothing about how often the model actually produces malformed input in practice. Conflating "safe to fail" with "rarely fails" would be an unsupported claim. |
+| Ignore the Q45 data point since it's only one run | It's the only real-world data available, and dismissing it rather than noting its ambiguity would also be overclaiming in the other direction. |
+
+> **Audit verdict — inconclusive, by design**
+>
+> This entry is complete as a review even though it reaches no action — the alternative was guessing, which this project's own prior entries (T2's explicit "tracked as a gap" rather than a guessed fix) treat as worse than an honest "not yet decidable." Revisit once live eval credentials are available in a session that can actually inspect a Q45-class failure's raw text.
+
+---
+
 ## 🎨 Interface & UX
 
 ---
