@@ -1,5 +1,5 @@
 """
-Manual live calibration for the numeric-faithfulness judge (canopy.eval.judge).
+Manual live calibration for the numeric-faithfulness judge (canopy.judge).
 
 Same purpose and structure as scripts/calibrate_judge.py (the guardrail-bypass
 judge's calibration script), kept as a separate file rather than merged into
@@ -46,7 +46,7 @@ try:
 except ImportError:
     pass
 
-from canopy.eval.judge import judge_faithfulness  # noqa: E402
+from canopy.judge import judge_faithfulness  # noqa: E402
 
 
 @dataclass(frozen=True)

@@ -21,12 +21,14 @@ from canopy.cache import lookup_cache, write_cache
 from canopy.config import (
     ModelConnection,
     get_active_connection,
+    get_guardrail_judge_mode,
     get_sensitive_columns,
     is_semantic_cache_enabled,
     other_active_connections,
 )
 from canopy.history import append_history
 from canopy.i18n import t
+from canopy.judge import judge_guardrail_response
 from canopy.models import get_llm
 from canopy.models.failures import is_retryable_model_error
 from canopy.observability import trace_query
@@ -526,6 +528,91 @@ async def _run_agent_with_fallback(
         return text, fallback
 
 
+# Broad, deliberately generous net (EN + ES) for "does this question or answer
+# touch a guardrail topic at all" — the cheap gate deciding whether to pay for
+# a judge call. False positives just cost one extra model call; a false
+# negative here means a genuine guardrail-bypass risk skips the judge
+# entirely, which is the one failure mode this gate exists to prevent. So it
+# errs wide on purpose, unlike a typical cost-optimizing classifier. See
+# DECISIONS.md's T6 section.
+_GUARDRAIL_TOPIC_TERMS = (
+    # Population trend / change
+    "trend", "grown", "grow", "shrunk", "shrink", "increas", "decreas",
+    "declin", "population",
+    "tendencia", "creci", "disminu", "poblaci",
+    # Conservation priority / resource allocation
+    "priorit", "recommend", "allocat", "resources for conservation",
+    "prioriz", "recomend", "asignac",
+    # Extinction risk / IUCN / conservation status
+    "extinct", "endanger", "threat", "iucn", "red list", "at risk",
+    "vulnerable", "conservation status",
+    "extinci", "amenaz", "peligro", "riesgo", "estado de conservaci",
+)
+
+
+def _mentions_guardrail_topic(text: str) -> bool:
+    """Cheap, generous substring check deciding whether to invoke the judge at all."""
+    lowered = text.lower()
+    return any(term in lowered for term in _GUARDRAIL_TOPIC_TERMS)
+
+
+def _apply_guardrail_gate(
+    question: str, model_text: str, connection_id: str, timing: dict
+) -> str:
+    """Judge a guardrail-topic response and, in enforce mode, replace it on a bad verdict.
+
+    Checked against both the question and the produced answer — a question
+    that doesn't look risky can still produce an answer that veers into
+    guardrail territory, and missing that would defeat the gate. Never
+    raises: a judge-infrastructure failure (the judge connection down, a
+    malformed structured-predict response) is logged and treated as
+    fail-open for *that call*, not fail-closed — blocking every
+    guardrail-topic query because the judge itself is unavailable would be
+    a worse outage than the gap this gate closes. A judge call that
+    actually completes and returns complied/partial_hedge is the only
+    thing that blocks, in enforce mode.
+    """
+    mode = get_guardrail_judge_mode()
+    if mode == "off":
+        return model_text
+    if not (_mentions_guardrail_topic(question) or _mentions_guardrail_topic(model_text)):
+        return model_text
+
+    timing["guardrail_checked"] = True
+    try:
+        verdict, info = judge_guardrail_response(
+            question, model_text, under_test_connection_id=connection_id
+        )
+    except Exception as exc:
+        _log.warning(
+            "guardrail judge call failed — passing response through unjudged: %s", exc
+        )
+        timing["guardrail_judge_error"] = True
+        return model_text
+
+    timing["guardrail_verdict"] = verdict.verdict
+    timing["guardrail_judge_connection_id"] = info.connection_id
+    timing["guardrail_judge_is_self_judge"] = info.is_self_judge
+
+    if verdict.verdict == "clean_decline":
+        return model_text
+
+    if mode == "shadow":
+        _log.warning(
+            "guardrail judge verdict=%s (shadow mode, not blocking) question=%r rationale=%r",
+            verdict.verdict, question[:80], verdict.rationale,
+        )
+        return model_text
+
+    # mode == "enforce"
+    _log.warning(
+        "guardrail judge verdict=%s — blocking response, question=%r rationale=%r",
+        verdict.verdict, question[:80], verdict.rationale,
+    )
+    timing["guardrail_blocked"] = True
+    return t("error_guardrail_blocked")
+
+
 def run_query(
     question: str,
     status_cb: Callable[[str], None] | None = None,
@@ -682,6 +769,14 @@ def run_query(
         timing["db_s"], timing["db_calls"],
         f" [fallback from {conn.id}]" if fallback_used else "",
     )
+
+    # Runtime guardrail gate — judges guardrail-topic responses before they
+    # ever reach a caller, and in enforce mode (the default) substitutes a
+    # fixed decline on a complied/partial_hedge verdict. Must run before
+    # write_cache below: a blocked response is what gets cached, so a repeat
+    # of the same question is never served the risky answer from cache
+    # either. See DECISIONS.md's T6 section.
+    model_text = _apply_guardrail_gate(question, model_text, answered_by.id, timing)
 
     result = LoopResult(
         question=question,

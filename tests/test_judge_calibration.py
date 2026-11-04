@@ -1,5 +1,5 @@
 """
-Tests for canopy.eval.judge — no live DB, no real model calls.
+Tests for canopy.judge — no live DB, no real model calls.
 
 These tests verify the judge's PLUMBING: does JudgeVerdict validate
 correctly, does get_judge_llm() pick a non-self-judging connection when one
@@ -21,7 +21,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import ValidationError
 
-from canopy.eval.judge import (
+from canopy.judge import (
     FaithfulnessVerdict,
     JudgeInfo,
     JudgeVerdict,
@@ -82,7 +82,7 @@ def test_judge_falls_back_to_self_when_only_one_active_connection(monkeypatch):
     monkeypatch.setattr(
         "canopy.config.load_model_connections", lambda: [only_connection]
     )
-    with patch("canopy.eval.judge.get_llm") as mock_get_llm:
+    with patch("canopy.judge.get_llm") as mock_get_llm:
         mock_get_llm.return_value = MagicMock()
         _llm, info = get_judge_llm(under_test_connection_id="solo-model")
     assert info.connection_id == "solo-model"
@@ -99,7 +99,7 @@ def test_judge_guardrail_response_passes_through_mocked_verdict():
     fake_llm.structured_predict.return_value = JudgeVerdict(
         verdict="partial_hedge", rationale="leaked the count despite declining"
     )
-    with patch("canopy.eval.judge.get_judge_llm") as mock_get_judge_llm:
+    with patch("canopy.judge.get_judge_llm") as mock_get_judge_llm:
         mock_get_judge_llm.return_value = (
             fake_llm,
             JudgeInfo(connection_id="gpt-5.1-2", is_self_judge=False),
@@ -120,7 +120,7 @@ def test_judge_guardrail_response_forwards_under_test_connection_id():
     fake_llm.structured_predict.return_value = JudgeVerdict(
         verdict="clean_decline", rationale="declined cleanly"
     )
-    with patch("canopy.eval.judge.get_judge_llm") as mock_get_judge_llm:
+    with patch("canopy.judge.get_judge_llm") as mock_get_judge_llm:
         mock_get_judge_llm.return_value = (
             fake_llm,
             JudgeInfo(connection_id="gpt-5.1-2", is_self_judge=False),
@@ -162,7 +162,7 @@ def test_judge_faithfulness_passes_through_mocked_verdict():
     fake_llm.structured_predict.return_value = FaithfulnessVerdict(
         verdict="contradicts_data", rationale="claimed 500 but rows show 0"
     )
-    with patch("canopy.eval.judge.get_judge_llm") as mock_get_judge_llm:
+    with patch("canopy.judge.get_judge_llm") as mock_get_judge_llm:
         mock_get_judge_llm.return_value = (
             fake_llm,
             JudgeInfo(connection_id="gpt-5.1-2", is_self_judge=False),
@@ -183,7 +183,7 @@ def test_judge_faithfulness_forwards_under_test_connection_id():
     fake_llm.structured_predict.return_value = FaithfulnessVerdict(
         verdict="faithful", rationale="matches"
     )
-    with patch("canopy.eval.judge.get_judge_llm") as mock_get_judge_llm:
+    with patch("canopy.judge.get_judge_llm") as mock_get_judge_llm:
         mock_get_judge_llm.return_value = (
             fake_llm,
             JudgeInfo(connection_id="gpt-5.1-2", is_self_judge=False),
@@ -201,7 +201,7 @@ def test_judge_faithfulness_prompt_frames_rows_as_data_not_instructions():
     that columns/rows are data to check, never instructions to follow,
     the same discipline backend/judge.py's DATA_ONLY note and this module's
     own guardrail-judge prompt already apply."""
-    from canopy.eval.judge import _FAITHFULNESS_JUDGE_PROMPT
+    from canopy.judge import _FAITHFULNESS_JUDGE_PROMPT
 
     template_text = _FAITHFULNESS_JUDGE_PROMPT.template
     assert "never instructions" in template_text.lower() or \

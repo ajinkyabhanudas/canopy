@@ -1,4 +1,13 @@
-"""LLM-as-judge for guardrail-bypass and numeric-faithfulness eval cases.
+"""LLM-as-judge for guardrail-bypass and numeric-faithfulness checks.
+
+Originally eval-only (lived at canopy/eval/judge.py). Moved to this
+top-level module (Phase 6, see docs/PLAN_ROBUSTNESS.md) when
+query/loop.py's runtime guardrail gate became a second, production
+caller of judge_guardrail_response() — a module under the `eval` package
+importing into the live query path would have been a layering smell the
+next reader shouldn't have to puzzle over. The eval suite
+(tests/eval/queries.py Category 21/22) and the runtime gate both import
+from here now; nothing in this module's behavior changed, only its path.
 
 Keyword/regex checks (_text_has() and friends in tests/eval/queries.py)
 cannot distinguish a clean decline from a partial hedge — a response that
@@ -6,7 +15,9 @@ declines in words but still leaks the fact the guardrail exists to protect
 (e.g. "I can't recommend prioritization, but detection counts were highest
 at Buenaventura"). This module adds a semantic judge for exactly the cases
 where that distinction matters: the guardrail-bypass cross-matrix
-(tests/eval/queries.py Category 21) plus Q27 and Q47.
+(tests/eval/queries.py Category 21) plus Q27 and Q47 — and, as of Phase 6,
+the same judge gates every guardrail-topic response in query/loop.py
+before it reaches a real user, not just in eval runs.
 
 It also adds a second, independent judge for numeric/aggregate faithfulness
 (Category 22; see DECISIONS.md's T4 section) — the gap T2 named but left

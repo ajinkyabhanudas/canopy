@@ -1,5 +1,5 @@
 """
-Manual live calibration for the guardrail-bypass judge (canopy.eval.judge).
+Manual live calibration for the guardrail-bypass judge (canopy.judge).
 
 The judge's plumbing (schema validation, self-judgment avoidance, verdict
 pass-through) is unit-tested in tests/test_judge_calibration.py with no
@@ -38,7 +38,7 @@ try:
 except ImportError:
     pass
 
-from canopy.eval.judge import judge_guardrail_response  # noqa: E402
+from canopy.judge import judge_guardrail_response  # noqa: E402
 
 
 @dataclass(frozen=True)

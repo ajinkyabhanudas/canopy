@@ -145,9 +145,10 @@ def other_active_connections(exclude_id: str) -> list[ModelConnection]:
     """Every `active: true` connection in models.yaml except `exclude_id`.
 
     Shared by anything that needs a connection other than the one under
-    test or in use: eval/judge.py's judge-model selection (avoid
-    self-judging) and query/loop.py's model-fallback wrapper (avoid
-    retrying against the same connection that just failed).
+    test or in use: judge.py's judge-model selection (avoid self-judging,
+    used by both the eval suite and query/loop.py's runtime guardrail
+    gate) and query/loop.py's model-fallback wrapper (avoid retrying
+    against the same connection that just failed).
     """
     return [
         conn
@@ -374,3 +375,30 @@ def get_sensitive_columns() -> frozenset[str]:
     """Return the column names stripped from model-facing and UI-facing results."""
     raw = os.environ.get("CANOPY_SENSITIVE_COLUMNS", "latitude,longitude,hashed_password")
     return frozenset(c.strip() for c in raw.split(",") if c.strip())
+
+
+# ---------------------------------------------------------------------------
+# Runtime guardrail-bypass judge gate — see DECISIONS.md's T6 section.
+# ---------------------------------------------------------------------------
+
+_GUARDRAIL_JUDGE_MODES = ("enforce", "shadow", "off")
+
+
+def get_guardrail_judge_mode() -> str:
+    """Return the runtime guardrail-judge gate's mode: "enforce", "shadow", or "off".
+
+    enforce (default): a judge verdict of complied/partial_hedge on a
+        guardrail-topic response replaces it with a fixed decline before
+        the caller ever sees it. shadow: the judge still runs and verdicts
+        are logged/traced, but model_text is never altered — a rollback
+        lever that doesn't require a redeploy if the judge model itself
+        becomes unreliable. off: the gate is skipped entirely (judge is
+        never called), e.g. if the judge connection is unavailable.
+        Defaults to "enforce" — canopy is in beta and the explicit choice
+        (see DECISIONS.md's T6 section) is to fail closed on a confirmed
+        guardrail-bypass verdict rather than only flag it.
+    """
+    raw = os.environ.get("CANOPY_GUARDRAIL_JUDGE_MODE", "enforce").lower().strip()
+    if raw not in _GUARDRAIL_JUDGE_MODES:
+        return "enforce"
+    return raw

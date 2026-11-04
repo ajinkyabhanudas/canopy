@@ -59,7 +59,7 @@ new T4 section.
 
 ### Build
 
-- `FaithfulnessVerdict` added to `src/canopy/eval/judge.py`: `Literal["faithful",
+- `FaithfulnessVerdict` added to `src/canopy/judge.py`: `Literal["faithful",
   "unsupported_claim", "contradicts_data"]` plus a rationale, same `BaseModel` + `Field` shape
   as `JudgeVerdict`.
 - `get_judge_llm()` reused unchanged; `judge_faithfulness(question, columns, rows, model_text,
@@ -335,6 +335,70 @@ safely fixable and documenting the rest.
 - [x] Every finding this phase could not safely fix is named in `LIMITATIONS.md`'s new
       "Operational & Security Tooling Gaps" table, not silently dropped.
 
+## Phase 6: Runtime guardrail-bypass judge gate — done (enforce-by-default, no shadow-mode soak)
+
+Promotes T3's eval-only `judge_guardrail_response()` into a live gate inside `run_query()`
+itself, closing the gap between "the eval suite measures Q27/Q47" and "production does
+nothing about them when they happen for a real user." Added in response to a direct question
+about whether canopy's own guardrail-bypass eval findings could be closed with a programmatic,
+LLM-judge-backed enforcement layer rather than left as a documented, accepted risk — the answer
+researched against production guardrail-framework practice (NeMo Guardrails, Guardrails AI,
+Llama Guard comparisons) was yes, and that the standard shape is a cheap always-on
+pre-classifier gating an LLM-as-judge reserved for flagged cases, not a judge call on every
+request. See `DECISIONS.md`'s T6 section for the full design and its named trade-offs.
+
+### Build
+
+- Moved `judge.py` from `src/canopy/eval/judge.py` to `src/canopy/judge.py` first — wiring a
+  production call site (`query/loop.py`) into a module under the `eval` package would have
+  been a layering smell the next reader shouldn't have to puzzle over. Mechanical move, five
+  import sites updated, no behavior change.
+- Added `_mentions_guardrail_topic()` to `query/loop.py` — a deliberately generous EN+ES
+  substring match against the same 4 guardrail topics Category 21/22 already enumerate,
+  checked against both the question and the produced `model_text`. Deciding whether to pay for
+  a judge call, not deciding guilt — erring toward extra judge calls is the safe direction,
+  since a false negative here means a real bypass risk skips the judge entirely.
+- Added `_apply_guardrail_gate()` — calls `judge_guardrail_response()` only when the topic gate
+  matches; in `enforce` mode (default) replaces the response with a fixed, code-authored
+  decline (`t("error_guardrail_blocked")`, localized EN/ES) on a `complied`/`partial_hedge`
+  verdict; `shadow` mode logs the verdict without altering the response; `off` skips the judge
+  entirely. A judge-infrastructure failure (not a bad verdict — the call itself erroring) fails
+  open and passes the original response through, logged via `timing["guardrail_judge_error"]`.
+- `run_query()` calls the gate after the model's answer is produced and before `write_cache()`/
+  `semantic_cache.write()`, so a blocked response is also what a repeat question gets served
+  from cache.
+- `get_guardrail_judge_mode()` added to `config.py` (O1-compliant — the one place
+  `CANOPY_GUARDRAIL_JUDGE_MODE` is read), defaulting to `"enforce"`; an unrecognized value also
+  falls back to `"enforce"` rather than silently defaulting to the weakest mode.
+- `LoopResult.timing` gains `guardrail_checked`, `guardrail_verdict`,
+  `guardrail_judge_connection_id`, `guardrail_judge_is_self_judge`, and (when applicable)
+  `guardrail_blocked` / `guardrail_judge_error` — observable in traces/logs the same way
+  `fallback_used` already is.
+
+### Success criteria
+
+- [x] `judge_guardrail_response()` is callable from `query/loop.py` without a layering smell —
+      moved out of the `eval` package first.
+- [x] A guardrail-topic question's response is judged before `run_query()` returns it; a
+      non-guardrail-topic question never triggers a judge call (verified by a mock-assert, not
+      just by inspection).
+- [x] `enforce` mode replaces a `complied`/`partial_hedge` verdict with the fixed decline text;
+      `clean_decline` passes the original response through unchanged.
+- [x] `shadow` mode logs the verdict and leaves the response unchanged on every verdict.
+- [x] `off` mode never calls the judge, even on a guardrail-topic question.
+- [x] A judge-call failure (not a bad verdict — an exception) fails open: the original response
+      passes through, and the failure is recorded in `timing`, not silently swallowed.
+- [x] The blocked/unblocked text is what gets cached — a repeat of a previously-bypassed
+      question doesn't re-serve the risky answer from cache.
+- [x] `LIMITATIONS.md`'s Accepted Model Risks section and the Q27/Q47 table rows are updated to
+      state what changed and what didn't (the gate blocks it; it doesn't fix the underlying
+      model tendency, and its own false-positive rate hasn't been measured live yet).
+- [x] `DECISIONS.md`'s T6 section documents the enforce-vs-shadow-mode-first trade-off
+      explicitly, including that this shipped without a soak period by deliberate beta-stage
+      decision — not silently.
+- [x] Full suite passes with no regressions (748 passed, up from 731 — 17 new tests in
+      `tests/test_guardrail_gate.py`), `ruff check` clean, `pyright` clean on every changed file.
+
 ## Sequencing, risks and review points
 
 - Phases 1-3 are independent of each other and of Phase 4 — none depends on another's output.
@@ -352,3 +416,12 @@ safely fixable and documenting the rest.
 - Review point after Phase 1: does the calibration set's pass rate justify making the judge a
   blocking eval check (not just informational)? That's a separate, later decision, not
   pre-committed here.
+- Phase 6 was added out of sequence, like Phase 4, in direct response to a question about
+  whether Q27/Q47 specifically could be closed with a programmatic judge-backed enforcement
+  layer rather than left as an accepted risk.
+- Phase 6's biggest named risk is the opposite direction from Phase 1's: here the judge is
+  blocking real user answers from day one, with no shadow-mode measurement of its
+  false-positive rate first — a deliberate beta-stage trade-off, not an oversight (see
+  `DECISIONS.md`'s T6 audit verdict). Review point: the first real report of a legitimate
+  answer getting blocked should trigger either a prompt refinement or a drop to
+  `CANOPY_GUARDRAIL_JUDGE_MODE=shadow` while the rate is measured, not a shrug.
