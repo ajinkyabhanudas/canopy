@@ -73,9 +73,70 @@ SQL (shown in "Database query" tab):
 
 **Before deploying:** the default model has one known, accepted limitation —
 under certain indirectly-worded questions it can be persuaded to answer in a
-way it should decline. There's no fix for this today. See
+way it should decline. A second, independent AI now checks for exactly this
+before an answer reaches you and replaces it with a safe explanation if it
+finds one (see the diagram below) — but that check's own real-world accuracy
+hasn't been measured against live traffic yet. See
 [LIMITATIONS.md's Accepted Model Risks section](LIMITATIONS.md#accepted-model-risks)
 before deciding whether the default configuration is right for your use.
+
+## How a question becomes an answer
+
+This diagram shows every step a question goes through, including the safety
+checks along the way — you don't need to know anything technical to follow it.
+The shield-marked steps (🛡️) are checks that exist specifically to catch a
+mistake or a risky answer before you ever see it. Full detail behind each
+decision in this system is in [DECISIONS.md](DECISIONS.md); open gaps that
+remain are tracked honestly in [LIMITATIONS.md](LIMITATIONS.md), not hidden.
+
+```mermaid
+flowchart TD
+    Start(["🙋 You ask a question<br/>in English or Spanish"])
+    Start --> LangGate{"🛡️ Is this a language<br/>and a type of question<br/>canopy supports?"}
+    LangGate -- "No" --> Decline1["Politely explains why,<br/>asks you to rephrase"]
+    LangGate -- "Yes" --> CacheCheck{"Have we answered this exact<br/>question recently?"}
+
+    CacheCheck -- "Yes" --> Instant["⚡ Answer shown instantly —<br/>no new AI or database call needed"]
+    CacheCheck -- "No" --> WriteSQL["🤖 AI drafts a database query<br/>to find the answer"]
+
+    WriteSQL --> SQLGuard{"🛡️ Is the query read-only?<br/>(SELECT only — nothing<br/>can ever be changed or deleted)"}
+    SQLGuard -- "No — blocked" --> Reject["Query is rejected before it ever<br/>reaches the real database"]
+    SQLGuard -- "Yes" --> RunDB["📊 Query runs against the real,<br/>live monitoring database"]
+
+    RunDB --> Strip["🛡️ Sensitive fields are stripped<br/>before anything leaves the database<br/>(exact GPS coordinates, user accounts)"]
+    Strip --> WriteAnswer["🤖 AI writes a plain-language<br/>summary of what the data shows"]
+
+    WriteAnswer --> TopicCheck{"Does the question or the answer<br/>touch a sensitive judgment call?<br/>(population trend, conservation<br/>priority, extinction risk)"}
+    TopicCheck -- "No" --> Show["✅ Answer shown to you,<br/>with the data and SQL<br/>available to check yourself"]
+    TopicCheck -- "Yes" --> SecondCheck{"🛡️ A second, independent AI reviews:<br/>did the first answer correctly<br/>decline to make that judgment call?"}
+
+    SecondCheck -- "It declined correctly" --> Show
+    SecondCheck -- "It answered when it<br/>should have declined" --> Blocked["🛡️ Replaced with a fixed, pre-written<br/>explanation instead — the risky<br/>answer is never shown to you"]
+    Blocked --> Show
+
+    style LangGate fill:#1f6f4a,color:#fff
+    style SQLGuard fill:#1f6f4a,color:#fff
+    style Strip fill:#1f6f4a,color:#fff
+    style SecondCheck fill:#1f6f4a,color:#fff
+    style Blocked fill:#8a3b2b,color:#fff
+    style Reject fill:#8a3b2b,color:#fff
+    style Decline1 fill:#8a3b2b,color:#fff
+    style Show fill:#15803d,color:#fff
+    style Instant fill:#15803d,color:#fff
+```
+
+**A few things worth knowing about what's not in the picture above, to keep it readable:**
+
+- If the primary AI model is unavailable (an outage, a timeout), canopy automatically
+  retries once with a backup model before giving up — you'd only notice a short delay
+  and a status message, not a failure.
+- If a question would take the AI too many steps to answer reliably, canopy says so
+  plainly and suggests breaking it into smaller questions, rather than guessing.
+- If you mistype a species or site name, canopy suggests the closest real matches —
+  this works even when the AI itself doesn't catch the typo.
+- Every check above is backed by an automated test, and the second-AI review (the
+  bottom 🛡️) is logged and traceable — which model reviewed it, what it decided, and
+  why — never a silent pass/fail.
 
 ## Requirements
 
