@@ -10,9 +10,13 @@ import asyncio
 import concurrent.futures
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from canopy.config import ModelConnection
 from canopy.i18n import t
+from canopy.models.azure_responses_llm import ResponsesAPIError
 from canopy.query.executor import QueryResult
-from canopy.query.loop import _build_sql_tool, _run_agent
+from canopy.query.loop import _build_sql_tool, _run_agent, _run_agent_with_fallback
 
 
 def _run(coro):
@@ -569,3 +573,185 @@ def test_run_agent_no_status_cb_still_drains_events():
         mock_fa_cls.return_value = _mock_agent_run("final answer", events=events)
         result = _run(_run_agent("q", None, state, "c", "m"))
     assert result == "final answer"
+
+
+# ---------------------------------------------------------------------------
+# _run_agent_with_fallback — one bounded retry on a classified-retryable error
+# ---------------------------------------------------------------------------
+
+
+def _connection(conn_id: str, active: bool = True) -> ModelConnection:
+    return ModelConnection(
+        id=conn_id, backend="azure", api_key="x", models=[f"{conn_id}-model"],
+        endpoint="https://example.test", api_style="openai-responses", active=active,
+    )
+
+
+async def _raise_then_succeed(error: Exception, text: str):
+    calls: list[str] = []
+
+    async def _run_agent_side_effect(
+        question, status_cb, state, conn_id, active_model, result_cb=None
+    ):
+        calls.append(conn_id)
+        if len(calls) == 1:
+            raise error
+        return text
+
+    return _run_agent_side_effect, calls
+
+
+def test_fallback_retries_on_retryable_error_with_another_active_connection(monkeypatch):
+    primary = _connection("primary")
+    backup = _connection("backup")
+    monkeypatch.setattr(
+        "canopy.config.load_model_connections", lambda: [primary, backup]
+    )
+    side_effect, calls = _run(_raise_then_succeed(
+        ResponsesAPIError("outage", retryable=True), "answer from backup"
+    ))
+    with patch("canopy.query.loop._run_agent", side_effect=side_effect):
+        text, answered_by = _run(
+            _run_agent_with_fallback("q", None, _make_state(), primary)
+        )
+    assert text == "answer from backup"
+    assert answered_by.id == "backup"
+    assert calls == ["primary", "backup"]
+
+
+def test_fallback_not_attempted_on_non_retryable_error(monkeypatch):
+    primary = _connection("primary")
+    backup = _connection("backup")
+    monkeypatch.setattr(
+        "canopy.config.load_model_connections", lambda: [primary, backup]
+    )
+
+    async def _always_fails(question, status_cb, state, conn_id, active_model, result_cb=None):
+        raise ValueError("malformed decision")
+
+    with patch("canopy.query.loop._run_agent", side_effect=_always_fails):
+        with pytest.raises(ValueError, match="malformed decision"):
+            _run(_run_agent_with_fallback("q", None, _make_state(), primary))
+
+
+def test_fallback_raises_original_error_when_no_other_active_connection(monkeypatch):
+    primary = _connection("primary")
+    monkeypatch.setattr("canopy.config.load_model_connections", lambda: [primary])
+
+    async def _always_fails(question, status_cb, state, conn_id, active_model, result_cb=None):
+        raise ResponsesAPIError("outage", retryable=True)
+
+    with patch("canopy.query.loop._run_agent", side_effect=_always_fails):
+        with pytest.raises(ResponsesAPIError):
+            _run(_run_agent_with_fallback("q", None, _make_state(), primary))
+
+
+def test_fallback_does_not_retry_an_inactive_connection(monkeypatch):
+    primary = _connection("primary")
+    inactive = _connection("inactive", active=False)
+    monkeypatch.setattr(
+        "canopy.config.load_model_connections", lambda: [primary, inactive]
+    )
+
+    async def _always_fails(question, status_cb, state, conn_id, active_model, result_cb=None):
+        raise ResponsesAPIError("outage", retryable=True)
+
+    with patch("canopy.query.loop._run_agent", side_effect=_always_fails):
+        with pytest.raises(ResponsesAPIError):
+            _run(_run_agent_with_fallback("q", None, _make_state(), primary))
+
+
+def test_fallback_emits_status_message():
+    primary = _connection("primary")
+    backup = _connection("backup")
+    with patch("canopy.config.load_model_connections", return_value=[primary, backup]):
+        side_effect, _calls = _run(_raise_then_succeed(
+            ResponsesAPIError("outage", retryable=True), "ok"
+        ))
+        calls: list[str] = []
+        with patch("canopy.query.loop._run_agent", side_effect=side_effect):
+            _run(_run_agent_with_fallback(
+                "q", lambda msg: calls.append(msg), _make_state(), primary
+            ))
+    assert any("backup" in c.lower() for c in calls)
+
+
+def test_fallback_succeeds_without_retry_returns_primary_connection():
+    primary = _connection("primary")
+
+    async def _succeeds(question, status_cb, state, conn_id, active_model, result_cb=None):
+        return "first-try answer"
+
+    with patch("canopy.query.loop._run_agent", side_effect=_succeeds):
+        text, answered_by = _run(
+            _run_agent_with_fallback("q", None, _make_state(), primary)
+        )
+    assert text == "first-try answer"
+    assert answered_by.id == "primary"
+
+
+# ---------------------------------------------------------------------------
+# _run_agent — MAX_ITERATIONS translated to IterationLimitError
+# ---------------------------------------------------------------------------
+
+
+class _RaisingHandler(_FakeHandler):
+    """A _FakeHandler whose await raises instead of returning a result.
+
+    __await__ must be overridden at the class level, not the instance level
+    — `await obj` resolves special methods via type(obj), so assigning
+    `instance.__await__ = ...` has no effect on the await protocol.
+    """
+
+    def __init__(self, error: Exception, events: list | None = None):
+        super().__init__("unused", events)
+        self._error = error
+
+    def __await__(self):
+        error = self._error
+
+        async def _get():
+            raise error
+
+        return _get().__await__()
+
+
+def test_run_agent_translates_max_iterations_workflow_error():
+    """The real llama_index FunctionAgent raises WorkflowRuntimeError (not a
+    RuntimeError) with message "Max iterations of N reached!...", confirmed
+    directly against the installed library. _run_agent must translate that
+    specific, confirmed case into IterationLimitError so app.py can show the
+    user-actionable "question too complex" message instead of the generic
+    error path."""
+    from workflows.errors import WorkflowRuntimeError
+
+    from canopy.query.loop import IterationLimitError
+
+    state = _make_state()
+    error = WorkflowRuntimeError(
+        "Max iterations of 5 reached! Either something went wrong, or you can "
+        "increase the max iterations..."
+    )
+    mock_agent = MagicMock()
+    mock_agent.run.return_value = _RaisingHandler(error)
+    with patch("canopy.query.loop.FunctionAgent", return_value=mock_agent), \
+         patch("canopy.query.loop.get_llm", return_value=MagicMock()):
+        with pytest.raises(IterationLimitError, match="Max iterations of 5"):
+            _run(_run_agent("q", None, state, "c", "m"))
+
+
+def test_run_agent_does_not_translate_unrelated_workflow_error():
+    """A WorkflowRuntimeError for an unrelated internal failure must NOT be
+    mistaken for the iteration-limit case — it should propagate as-is so
+    app.py's generic handler logs it loudly instead of showing a misleading
+    "question too complex" message."""
+    from workflows.errors import WorkflowRuntimeError
+
+    state = _make_state()
+    error = WorkflowRuntimeError("Step some_step does not exist")
+    mock_agent = MagicMock()
+    mock_agent.run.return_value = _RaisingHandler(error)
+    with patch("canopy.query.loop.FunctionAgent", return_value=mock_agent), \
+         patch("canopy.query.loop.get_llm", return_value=MagicMock()):
+        with pytest.raises(WorkflowRuntimeError, match="does not exist"):
+            _run(_run_agent("q", None, state, "c", "m"))

@@ -19,6 +19,7 @@
 | ⚠️ **Caveat** | Sound in principle; a specific condition or gap limits it |
 | 🔄 **Revisit** | Correct now; a named trigger should prompt review |
 | ❌ **Gap** | Known weakness without a current fix — technical debt |
+| 🔍 **Pending** | Evidence was deliberately gathered and is not yet sufficient to decide; not a gap in the system, a gap in what's been checked |
 
 ---
 
@@ -42,7 +43,7 @@
 |---|---|---|---|
 | A1 | Agentic loop safety | `MAX_ITERATIONS = 5` hard cap | 🔄 Revisit |
 | A2 | Tool surface | Single `execute_sql` tool only | ✅ Sound |
-| A3 | Model abstraction | Vendor-neutral `ModelClient` ABC | ✅ Sound |
+| A3 | Model abstraction | Vendor-neutral via LlamaIndex `FunctionCallingLLM` (a hand-rolled `ModelClient` ABC was the v1 approach, since replaced) | ✅ Sound |
 | A4 | Concurrency model | Worker thread + queue, not async | ✅ Sound |
 | A5 | Data immutability | `frozen=True` dataclasses throughout | ✅ Sound |
 
@@ -62,6 +63,8 @@
 | T1 | Adversarial eval design | Separate suite, 100% threshold, SQLGuardError = PASS | ✅ Sound |
 | T2 | Faithfulness testing | Verbatim DB value in model_text; vacuous pass when precondition unverifiable | ⚠️ Caveat |
 | T3 | Guardrail-bypass judge evaluation | Hand-rolled 3-way LLM judge on structured_predict(); framework comparison rejected Ragas/DeepEval/promptfoo/openai-evals | ✅ Sound |
+| T4 | Numeric-faithfulness judge | Second judge (`FaithfulnessVerdict`), additive to the verbatim checks; closes T2's tracked gap | ⚠️ Caveat (live calibration not yet run) |
+| T5 | Structured answer contract | Reviewed `undercover`-style Pydantic output for the answer body against available evidence | 🔍 Pending |
 
 ### 🎨 Interface & UX
 
@@ -77,13 +80,14 @@
 |---|---|---|---|
 | M1 | Primary model tier | Azure AI Foundry (gpt-5.1-codex-mini + gpt-5.1-2); Claude Sonnet inactive | ⚠️ Caveat |
 | M2 | Backup backend after Azure access loss | NVIDIA integrate API (`moonshotai/kimi-k3`), new `openai-standard` api_style | ✅ Sound |
+| M3 | Automatic model fallback | One bounded retry against another active connection on a classified-transient failure | 🔄 Revisit (live validation not yet run) |
 
 ### ⚙️ Operations
 
 | # | Decision | Chosen approach | Verdict |
 |---|---|---|---|
 | O1 | Configuration access | `config.py` owns all env vars; frozen dataclasses | ✅ Sound |
-| O2 | Database connections | Per-query connection, no pooling | 🔄 Revisit |
+| O2 | Database connections | `ThreadedConnectionPool`, implemented ahead of the documented >20-concurrent trigger (originally per-query, no pooling) | ✅ Sound (closed) |
 | O3 | Container security | Non-root user `canopy`; persistent `/data` volume | ✅ Sound |
 | O4 | Model/schema state verification | Git history + this document, no separate CHANGELOG | ✅ Sound |
 | O5 | Langfuse tracing | Built dormant ahead of production traffic; `CANOPY_LANGFUSE_ENABLED` default off | ✅ Sound |
@@ -91,6 +95,7 @@
 | O7 | `docker_run.sh` env parsing | Fixed silent drop of a `.env`'s last line when unterminated | ✅ Sound |
 | O8 | `codecov/patch` gate | Made informational after confirming the remaining gap is `build_app()`'s e2e-only wiring | ✅ Sound |
 | O9 | Scaling upgrade: containerization + benchmark harness | `docker-compose.yml` (app + Redis), `run_scaling_benchmark.py` — additive to the existing single-container deploy | ✅ Sound |
+| O10 | Dependency vulnerability scanning in CI | `pip-audit`, informational (`continue-on-error`) — a real transitive `pillow` CVE exists with no installable fix under gradio's current pin | ⚠️ Caveat |
 
 ---
 
@@ -157,7 +162,7 @@
 
 ### S3 — Coordinate privacy
 
-> **Files:** `src/canopy/query/loop.py` — `_SENSITIVE_COLUMNS`, `_strip_sensitive_columns()`, `_format_result()`
+> **Files:** `src/canopy/config.py` — `get_sensitive_columns()` · `src/canopy/query/loop.py` — `_strip_sensitive_columns()`, `_format_result()` · `src/canopy/semantic_cache.py` — `sql_touches_sensitive_column()`
 
 **Decision:** `latitude` and `longitude` are removed from query results before they are formatted into the model's context, even if the generated SQL explicitly requests them. **As of 2026-08-13 they are also removed from the user-facing Results tab** — see the "Scope widened" note in the audit verdict below for why this reversed the original narrower decision.
 
@@ -165,13 +170,20 @@
 
 **Implementation:**
 ```python
-_SENSITIVE_COLUMNS = frozenset({"latitude", "longitude", "hashed_password"})  # env-overridable
-# _strip_sensitive_columns() is applied once in execute_sql's closure, to the
+# config.py
+def get_sensitive_columns() -> frozenset[str]:  # env-overridable via CANOPY_SENSITIVE_COLUMNS
+    raw = os.environ.get("CANOPY_SENSITIVE_COLUMNS", "latitude,longitude,hashed_password")
+    return frozenset(c.strip() for c in raw.split(",") if c.strip())
+
+# query/loop.py
+# _strip_sensitive_columns() calls get_sensitive_columns() live (not cached
+# at import) and is applied once in execute_sql's closure, to the
 # QueryResult stored in state["last_query_result"] — which feeds BOTH the
 # model-facing text (_format_result) and LoopResult.rows/.columns (the UI's
 # "Full data table" tab). is_empty_result/find_candidates/effective_count run
 # on the RAW result first, since they need the unstripped column shape (e.g.
 # distinguishing a single-column COUNT(*) aggregate from a real 0-row result).
+# semantic_cache.py's sql_touches_sensitive_column() reads the same function.
 ```
 
 **Alternatives considered:**
@@ -184,7 +196,7 @@ _SENSITIVE_COLUMNS = frozenset({"latitude", "longitude", "hashed_password"})  # 
 
 **Consequences:**
 - The model can never reason over precise coordinates, even if it generates SQL that includes them.
-- `_SENSITIVE_COLUMNS` is now driven by the `CANOPY_SENSITIVE_COLUMNS` env var (comma-separated). The current defaults are `latitude,longitude,hashed_password`. Adding a new sensitive column is a config change — not a code deploy.
+- `get_sensitive_columns()` is driven by the `CANOPY_SENSITIVE_COLUMNS` env var (comma-separated). The current defaults are `latitude,longitude,hashed_password`. Adding a new sensitive column is a config change — not a code deploy — and now reaches every consumer (`query/loop.py`'s strip, `semantic_cache.py`'s guardrail gate) since both read the same function.
 
 > **Audit verdict — ✅ Sound** *(updated 2026-08-13)*
 >
@@ -198,6 +210,8 @@ _SENSITIVE_COLUMNS = frozenset({"latitude", "longitude", "hashed_password"})  # 
 > Fixed by extracting `_strip_sensitive_columns()` and applying it once to the stored result, so the model-facing text and the UI table are filtered from the same source. Regression test: `test_build_sql_tool_strips_sensitive_columns_from_stored_result_too`.
 >
 > **Consequence of the reversal:** a researcher who genuinely needs coordinates can no longer get them through Canopy's UI and must query the database directly. Accepted — that is a rare, deliberate operation, and routing it through direct DB access is the more appropriate path for it than a shared-link web tool.
+>
+> **Second gap of the same shape, found and fixed in the Phase 5 code-standards review (`docs/PLAN_ROBUSTNESS.md`):** `semantic_cache.py`'s write-time guardrail gate (`sql_touches_sensitive_column`, Gate 3 — blocks caching any SQL that touches a sensitive column, so a one-time near-miss can't become a standing, replayable cache entry) had its own hardcoded `_SENSITIVE_COLUMNS = frozenset({"latitude", "longitude", "hashed_password"})`, independent of `CANOPY_SENSITIVE_COLUMNS` entirely. An operator adding a column via the env var would have it correctly stripped from results (`query/loop.py` already honored the override) while this gate kept allowing SQL touching that column into the semantic cache — the same "two consumers, one drifted" pattern as the original 2026-08-13 UI gap. Fixed by reading `config.get_sensitive_columns()` live instead of a local copy; this was also the opportunity to notice `query/loop.py`'s own `_SENSITIVE_COLUMNS` violated O1 (computed via a local `os.environ.get` call, bound once at import time rather than living in `config.py`) — both now go through one function, `config.get_sensitive_columns()`, called live on every use rather than cached at import.
 
 ---
 
@@ -297,7 +311,7 @@ There is no explicit rejection status in the current dataset. Detections not app
 | Claude Opus 4.8 | ~$0.15 | ~$0.75 |
 
 **Consequences:**
-- A malformed or genuinely unanswerable question raises `RuntimeError` after 5 attempts.
+- A malformed or genuinely unanswerable question raises `IterationLimitError` (a `RuntimeError` subclass — see the correction below) after 5 attempts.
 - The UI shows a human-readable error; the exception is logged.
 - The limit is not configurable without a code change.
 
@@ -306,6 +320,8 @@ There is no explicit rejection status in the current dataset. Detections not app
 > **Challenge:** The number 5 has no empirical basis. It was chosen without measurement.
 >
 > **Resolved (Step 4):** `loop.py` now emits `loop_iterations=N question=...` at INFO level and includes `iterations` in the `timing` dict on every `LoopResult`. The measurement mechanism is in place. **Revisit trigger:** after 30+ real-world queries, inspect the distribution — if P99 ≤ 3, lower `MAX_ITERATIONS` to 4; if any query hits 5 and raises `RuntimeError`, raise it to 6.
+>
+> **Correction (robustness review, Phase 3):** this decision's own "raises a `RuntimeError`" claim was never actually true. `FunctionAgent` (via `llama_index.core.agent.workflow.base_agent.parse_agent_output`) raises `workflows.errors.WorkflowRuntimeError` at the limit — not a `RuntimeError` at all, and with the message `"Max iterations of N reached!..."`, not the `"...maximum iterations..."` text `app.py`'s catch block checked for. Confirmed directly against the installed library (both the source and a live `await`). The practical effect: every real iteration-limit failure fell through to the generic error path (`error_generic_response`, logged as an unexpected failure) instead of the intended, user-actionable `error_iterations` message — silently, since `tests/test_handler_loop_exhausted_message` mocked `run_query` to raise the same incorrect shape the check expected, so the test passed while validating nothing real. Fixed: `query/loop.py` now defines `IterationLimitError(RuntimeError)` and catches `WorkflowRuntimeError` narrowly — only when its message starts with the confirmed `"Max iterations of"` prefix — translating just that case; any other `WorkflowRuntimeError` (the type covers many unrelated internal workflow failures) propagates unchanged so it still reaches the generic handler with full logging. `app.py` now matches on `IterationLimitError` instead of string-sniffing exception text, and the test now raises what `run_query()` actually raises.
 
 ---
 
@@ -696,6 +712,73 @@ A related, unplanned finding from the first live run of Category 21: eval case Q
 
 ---
 
+### T4 — Numeric-faithfulness judge (closing T2's tracked gap)
+
+> **Files:** `src/canopy/eval/judge.py` (`FaithfulnessVerdict`, `judge_faithfulness`) · `tests/eval/queries.py` Category 22 (Q62–Q65) · `tests/test_judge_calibration.py` · `scripts/calibrate_faithfulness_judge.py`
+
+**Decision:** T2 named a gap and explicitly left it open: `_count_value_in_text`'s verbatim check cannot tell "approximately 35,000" from a hallucination when the real value is 35,741, and (per its own note on Q49) a multi-row breakdown response can get `rows[0][0]` right while fabricating or dropping the rest with nothing catching it. A second judge, `FaithfulnessVerdict` (`faithful` / `unsupported_claim` / `contradicts_data`, plus a rationale — the same 3-way-categorical reasoning T3 used for `JudgeVerdict`, not a binary faithful/unfaithful that would collapse "the data doesn't support this" and "the data actively contradicts this" into one bucket), closes it. Built the same way as the guardrail judge: `structured_predict()` via `get_judge_llm()`, reusing its self-judgment avoidance rather than adding a second selection path.
+
+**Why a separate verdict type instead of extending `JudgeVerdict`:** the two judges answer structurally different questions (did the response uphold a behavioral guardrail vs. is a factual claim supported by a query result) with different category sets. Forcing both into one `Literal` would mean either judge could return a category meaningless for its own question. `EvalCase.judge_check`'s type was changed from the concrete `JudgeVerdict` to `Verdict = JudgeVerdict | FaithfulnessVerdict` (`canopy/eval/judge.py`) to accept either — a `Protocol` with `verdict: str`/`rationale: str` was tried first and rejected: pydantic's `Literal`-typed fields are invariant under Protocol structural matching, so pyright rejected both concrete models against a `str`-typed Protocol attribute despite being correct at runtime. A plain `Union` has no such issue.
+
+**Additive, not a replacement:** Category 22 (Q62–Q65) asks the same semantic questions as Q21/Q22/Q23/Q49 (total count, site count, pre-2000 empty result, multi-row breakdown) in distinct wording (`test_all_questions_are_unique` requires distinct text across `EVAL_CASES`, and the judge doesn't need identical wording to exercise the same failure mode) and judges the result alongside the original questions' existing deterministic checks, which are unchanged. The deterministic checks stay the fast, free first pass for the common case (exact figure cited verbatim); the judge is only asked to earn its keep on the cases they structurally can't resolve.
+
+**Prompt safety:** the judge is shown live query result rows as data — a species or site name could in principle be adversarially crafted to look like an instruction, the same class of risk `backend/judge.py`'s `DATA_ONLY` disclaimer addresses in `undercover`. `_FAITHFULNESS_JUDGE_PROMPT` states explicitly that columns/rows are data to check the response against, never instructions to follow; `test_judge_faithfulness_prompt_frames_rows_as_data_not_instructions` asserts the disclaimer text is actually present in the template, not just intended.
+
+**Consequences:**
+- `EVAL_CASES` grows from 61 to 65; `test_eval_cases_has_exactly_65_entries` updated accordingly.
+- `scripts/calibrate_faithfulness_judge.py` — a 7-case hand-labeled set (3 faithful including a reasonable-rounding case, 3 contradicts_data including a dropped-row multi-row case, 1 unsupported_claim) — exists as a parallel file to `scripts/calibrate_judge.py`, kept separate so each judge's calibration history stays independently auditable rather than interleaved in one script's output.
+- **Not yet run.** This was written and unit-tested (plumbing only, no live calls) in an environment without API credentials available to this session. Run it before trusting Category 22 as more than an informational signal, the same bar T3 held before trusting its own judge — do not skip this on the assumption that passing unit tests imply the real judge classifies real cases correctly; they only prove the code around the live call is wired correctly.
+- **Correction caught while writing this entry:** `run_eval.py` does not treat judge-backed cases as informational — `case.judge_check` is reported alongside the pass/fail line, but `ok` (from `case.check_fn`, which Category 22 derives as `verdict == "faithful"`) still contributes to `passed`/`failed_labels` and the headline `pct` exactly like every keyword-based case, the same as Category 21 before it. Category 22 is therefore live-countable toward the suite's pass rate the moment it's run, not quarantined — meaning an uncalibrated judge giving a wrong verdict looks identical to a real regression in the report. `run_eval.py` itself is a manual script (requires live DB + API keys; not part of CI), so neither Category 21 nor 22 gates automated CI either way — but *within* a manual run's own numbers, this judge needs its calibration run (see below) before its failures should be read as real.
+- This judge call is an additional live API call per Category 22 case (times `--repeat`, if used) — confirm the configured judge model and note its cost before running the full suite, same practice as every other judge-call-cost note in this document.
+
+**Alternatives considered:**
+
+| Alternative | Why rejected |
+|---|---|
+| A rounding tolerance on the existing regex check (e.g. accept within 5% of the real value) | Handles numeric rounding but not multi-clause claims ("more detections at Site A than Site B") or genuinely unsupported inferences — the judge generalizes to both; a regex tolerance only patches one sub-case T2 identified. |
+| Extend `JudgeVerdict`'s `Literal` to include faithfulness categories | Conflates two different judgments into one schema; either judge could then return a verdict meaningless for its own question (e.g. a guardrail case returning `contradicts_data`). |
+| Replace `_count_value_in_text`/`_all_row_values_in_text` outright | They're free, deterministic, and correct for the common case (exact figure cited). Removing them would make every faithfulness check a live, non-deterministic API call for no benefit on the cases they already handle correctly. |
+
+> **Audit verdict — pending live calibration**
+>
+> Plumbing is unit-tested (schema validation, self-judgment avoidance reuse, verdict pass-through, the data-disclaimer's presence in the prompt template) with no live calls, following T3's own test-first-then-calibrate sequence. The live calibration run T3 required before trusting its judge (6/6 against a hand-labeled set including one deliberately ambiguous case) has a parallel 7-case set written here but **has not been executed** — this session had no live model credentials available. Record the live run's agreement rate and date here, in T3's own style, before relying on Category 22 for anything beyond an informational eval signal.
+
+---
+
+### T5 — Structured answer contract: evidence gate, not a rewrite (inconclusive — more evidence needed)
+
+> **Files:** none changed — this is a review-only entry. Evidence inspected: `tests/eval/queries.py` Category 17/18 (Q44–Q47), `tests/test_query_loop.py`'s `_parse_interpretation` unit tests, T3's "Live results" line.
+
+**Question:** should `query/loop.py`'s answer — currently markdown prose, with one machine-parsed sub-part (`_parse_interpretation`'s DATA SOURCE/GAPS/RESEARCH QUESTIONS block) that degrades to `None` on anything malformed — be replaced with `undercover`-style Pydantic-validated structured output (its `Decision` model)? This entry does not assume the answer is yes; it looks for evidence before proposing any code change.
+
+**What was checked:**
+- `_parse_interpretation` has substantial unit coverage against synthetic malformed input: a missing block, a missing GAPS line, an unclosed block (handled via implicit end-of-string), dash vs. bullet-character bullets, and two defensive tests (`test_parse_interpretation_never_raises_on_arbitrary_text`, `test_parse_interpretation_resists_redos_on_adversarial_bullet_flood`) proving the parser cannot crash or hang regardless of input. This is strong evidence the parser itself is robust — but it answers "does the code handle a malformed block safely," not "how often does the model actually produce one when it shouldn't."
+- The only available real-world (not synthetic-fixture) data point is T3's one recorded live run (2026-07-28, gpt-5.1-codex-mini): "4 failures — Q16, Q25, Q45, Q47." Q45 is a Category 17 case (`_q45_interpretation_present_for_filter_query`) asserting `r.interpretation is not None` on a filter-query response. That is one failure out of 3 Category 17 cases in the one run this project has a record of.
+- **What that data point does NOT tell us:** whether Q45's failure was actually a malformed/missing interpretation block (the question this entry is about) or an unrelated failure mode that happens to trip the same check_fn's early-return path (`r.sql is None or r.row_count == 0` also returns `False`, so a SQL-generation miss or an empty result would look identical in the pass/fail report without inspecting the actual `model_text`). T3's own note attributes it to "the model's already-documented ~2-3% run-to-run variance" in passing, without a dedicated root-cause investigation — it was written about Category 21, with Q45 mentioned only as an aside.
+- No production traffic exists to check: `CANOPY_LANGFUSE_ENABLED` is unset by default (O5), and there is no record of it being turned on for real usage as of this entry.
+
+**Finding: evidence is insufficient for a confident call, and this entry does not manufacture one.** One ambiguous historical data point is not a measured miss rate. Fabricating either "adequate as-is" or "needs a fix" from it would be worse than saying plainly that the evidence doesn't support a decision yet — consistent with T2's own precedent of stating what an approach does and does not prove, rather than overclaiming.
+
+**What would actually answer this, in order of cost:**
+1. Re-run Category 17/18 live (`python scripts/run_eval.py`) and, on any `_q44`/`_q45`/`_q46` failure, inspect the raw `model_text` directly (not just the pass/fail bit) to determine whether the block was absent, malformed, or the failure was unrelated (bad SQL, empty result). This requires live DB + API credentials this session did not have.
+2. If turning on Langfuse tracing for real usage is already planned independent of this question, the `None`-rate could instead be measured from real traffic once that happens — but standing up tracing solely to answer this would be exactly the "building machinery ahead of measured need" U2 already warns against.
+
+**Decision:** no code change. If a future session has live credentials, step 1 above is cheap (one eval run plus manual inspection of ≤3 failures) and should be done before either closing this gap as adequate or scoping the narrow `structured_predict()` follow-up this entry's original plan described. Until then, this stays an open, explicitly-not-decided question rather than a silently-closed one.
+
+**Alternatives considered:**
+
+| Alternative | Why rejected |
+|---|---|
+| Convert the Interpretation block to `structured_predict()` now, proactively | No measured problem to fix — the existing parser already degrades safely, and the one ambiguous data point doesn't establish a real miss rate. Matches T1/U2's own stated preference against building ahead of evidence. |
+| Declare "adequate as-is" from the unit-test coverage alone | Unit tests prove the parser can't crash on malformed input; they say nothing about how often the model actually produces malformed input in practice. Conflating "safe to fail" with "rarely fails" would be an unsupported claim. |
+| Ignore the Q45 data point since it's only one run | It's the only real-world data available, and dismissing it rather than noting its ambiguity would also be overclaiming in the other direction. |
+
+> **Audit verdict — inconclusive, by design**
+>
+> This entry is complete as a review even though it reaches no action — the alternative was guessing, which this project's own prior entries (T2's explicit "tracked as a gap" rather than a guessed fix) treat as worse than an honest "not yet decidable." Revisit once live eval credentials are available in a session that can actually inspect a Q45-class failure's raw text.
+
+---
+
 ## 🎨 Interface & UX
 
 ---
@@ -1019,6 +1102,42 @@ The eval case A09 submits a French question (`"Combien d'espèces ont été dét
 
 ---
 
+### M3 — Automatic model fallback on a classified-transient failure
+
+> **Files:** `src/canopy/models/failures.py` · `src/canopy/models/azure_responses_llm.py` (`ResponsesAPIError`) · `src/canopy/config.py` (`other_active_connections`) · `src/canopy/query/loop.py` (`_run_agent_with_fallback`)
+
+**Decision:** `run_query()` now retries once, automatically, against another `active: true` `models.yaml` connection when the primary connection's model call fails with a classified-transient error (a 5xx, a network error, a timeout, an `openai` SDK connection/rate-limit/internal-server error). A non-retryable error (bad SQL, a content-filter decline, a malformed question, a 4xx) propagates immediately — retrying those on a different connection would just repeat the same failure for no benefit. Exactly one fallback attempt against one alternate connection; this is not a cascading retry-until-it-works loop.
+
+**Why:** M2 above is the motivating incident — when Azure access was revoked mid-session, every query broke until a human manually edited `models.yaml` and redeployed. There was no code path that noticed the failure and tried a different configured connection. This closes that gap for the specific failure class it actually affects (transient/outage errors), without pretending canopy can self-heal a genuine account-provisioning problem (M2's actual root cause needed a human to rotate a key regardless).
+
+**Classification, not a blanket try/except:** `is_retryable_model_error()` only retries errors that look like outage symptoms. `AzureResponsesLLM` previously raised a bare `RuntimeError` with no structure for its three failure paths (HTTP error, network error, timeout); it now raises `ResponsesAPIError(message, retryable=...)`, carrying the classification at the point the real HTTP status is known (5xx → retryable, other HTTP errors → not — the content-filter 400 case never reaches this path at all, since `_post()` already turns it into a synthetic refusal response). The `openai`-SDK-backed connections (`openai-compat`, `openai-standard`) are classified against the SDK's own typed exceptions (`APIConnectionError`, `APITimeoutError`, `RateLimitError`, `InternalServerError`, and any other `APIStatusError` with a 5xx status).
+
+**A bug found and fixed along the way:** `_run_agent()` accepted a `conn_id` parameter but called `get_llm()` with no arguments, silently ignoring it — so `run_query(connection_override=...)` (the mechanism `scripts/run_benchmark.py` uses to switch connections per sweep run without env var mutation) never actually changed which model answered; it only affected the `conn` object used for labeling/timing. This had no behavioral effect in the single-connection case (where `connection_override` is unset and the ignored parameter happens to equal `MODEL_BACKEND`'s own resolution), which is why it went uncaught — `test_query_loop_agent.py`'s mocks patch `get_llm` with a blanket `return_value`, so a call-argument bug was invisible to them. Required fixing for fallback to be able to target a specific alternate connection at all; also means `scripts/run_benchmark.py`'s per-connection sweep is now correct for the first time, not just labeled correctly. Flagging here since the "Benchmark connection-switching...unreliable" row in `LIMITATIONS.md`'s gap table was previously marked closed on the strength of the labeling fix alone, without this.
+
+**Why reuse `other_active_connections()` for both this and the judge:** `eval/judge.py`'s `get_judge_llm()` already picks "any other active connection" to avoid self-judgment (T3). The fallback picker needs the identical selection — "any other active connection, excluding this one" — so the logic was extracted into `config.other_active_connections()` and both call sites now share it, rather than keeping two copies that could drift.
+
+**What this does not do:** it does not retry mid-conversation at model-call granularity the way `undercover`'s `ModelFallbackMiddleware` (a LangChain/LangGraph primitive) does inside a single graph node — LlamaIndex's `FunctionAgent` doesn't expose that boundary; `agent.run(question)` is a black box over however many internal tool-calling turns it takes. The fallback here is coarser: if the whole agent run fails with a retryable error, the whole question is retried once against a different connection and LLM, from scratch. For canopy's single-shot, stateless query loop (no partial state worth preserving), this is an equivalent outcome reached the only way the framework allows, not a weaker version of `undercover`'s approach.
+
+**Consequences:**
+- `timing["model"]` / `timing["connection_id"]` (surfaced in the UI footer and sent to `trace_query`) reflect whichever connection actually answered, not necessarily the one the query started with; `timing["fallback_used"]` and `timing["primary_connection_id"]` record when and from where a fallback happened.
+- The cache and semantic-cache write keys are unchanged — still keyed by the originally-requested connection/model, not the connection that actually answered. A cached answer produced via fallback is served back under the primary connection's key on a repeat question; this is intentional (the cache's contract is "an answer for this configured backend," and a transient outage is exactly the kind of thing that shouldn't poison the cache key space with a second identity for the same logical query).
+- No fallback is possible with only one `active: true` connection configured (the common case today, per `models.yaml`'s comments) — the original error propagates unchanged, same as before this change.
+- One extra model call's worth of latency and cost on the (expected to be rare) retryable-failure path only; the non-retryable, no-fallback-possible, and succeeds-first-try paths are all unchanged in cost.
+
+**Alternatives considered:**
+
+| Alternative | Why rejected |
+|---|---|
+| Adopt LangChain/LangGraph for `ModelFallbackMiddleware` specifically | The capability (retry on a configured alternate) doesn't require the framework — `models.yaml`'s existing connection registry and the three already-debugged `FunctionCallingLLM` subclasses (M1/M2/S7) are sufficient substrate. A framework swap would re-risk already-solved wire-format quirks for no additional capability. |
+| Retry against every `active` connection in sequence until one succeeds | Unbounded worst-case latency/cost on a correlated outage (e.g. all Azure connections down together); one bounded fallback attempt is the same shape M2's actual incident needed (a second, independently-hosted connection), not an arbitrary chain. |
+| Blanket `except Exception: retry` | Would retry non-retryable failures (bad SQL, content-filter declines) that fail identically on any connection — pure wasted latency and cost with no chance of a different outcome. |
+
+> **Audit verdict — pending live validation**
+>
+> Unit-tested against a mocked `_run_agent` (retryable error → fallback connection answers; non-retryable error → no fallback attempt; no alternate active connection → original error propagates; an `active: false` connection is never selected). Not yet exercised against a real provider outage — `models.yaml` currently has two active connections, so the fallback path is reachable, but a live validation (deliberately pointing the primary's endpoint somewhere unreachable and confirming a real query still completes via the backup) has not been run. Record that run here once performed, same as M2's and T3's own "live results" entries.
+
+---
+
 ### S6 — User data guardrail
 
 **Decision:** The `users` table is referenced in the schema context (so the model understands FK relationships) but protected by a hard constraint in `_GUARDRAILS`: the model is explicitly forbidden from querying or revealing usernames, roles, or `hashed_password`. Six adversarial eval cases (A11–A16) verify this boundary, including a direct SQL injection attempt with an admin authority claim.
@@ -1208,6 +1327,35 @@ Confirmed by diff-scoped coverage reports on two separate PRs: after adding real
 > **Audit verdict — ✅ Sound**
 >
 > Both additions are opt-in / additive — the existing single-container deploy path (Section 1 of DEPLOYMENT.md) is unchanged and still the documented default. `make compose-up`/`make scaling-benchmark` are new, parallel entry points, not replacements.
+
+---
+
+### O10 — Dependency vulnerability scanning in CI
+
+> **Files:** `.github/workflows/ci.yml`
+
+**Decision:** Added a `pip-audit` step to the `check` job, informational (`|| true`, matching O8's `continue-on-error` precedent for codecov) rather than blocking.
+
+**Why informational, not blocking:** running `pip-audit` against the resolved dependency set during this review (Phase 5 of `docs/PLAN_ROBUSTNESS.md`) found 39 known CVEs in `pillow` 12.3.0 (transitive via `gradio` and `llama-index-core`), fixed only in `pillow` 13.0+. Confirmed directly — not assumed — that the fix isn't installable today: `gradio` 6.31.0 pins `pillow<13.0`, so `pip install "pillow>=13.0"` produces a `pip check` conflict, not a clean upgrade. Making the scan blocking on day one would fail CI on every PR for a pre-existing transitive issue this review didn't verify is safe to resolve (bumping gradio itself is untested here — no live UI/browser check was possible in this environment). The same reasoning O8 already applied to `codecov/patch` (a real signal, structurally not yet actionable, made informational rather than either ignored or force-blocked) applies here.
+
+**What this doesn't do:** it doesn't fix the `pillow` CVEs, and it doesn't add secret-scanning (`detect-secrets`/`gitleaks` or similar) — neither existed in CI before this entry, and this review only verified the dependency-scan gap, not generated and validated a secrets baseline (a `detect-secrets` baseline requires a one-time full-history scan and manual triage of findings, which is real, separate work this review didn't do and shouldn't claim to have done).
+
+**Consequences:**
+- Every PR's CI run now surfaces known dependency CVEs in the logs, even though none currently fail the build.
+- Revisit trigger: once `gradio` raises its `pillow` ceiling (or canopy upgrades `gradio` and separately verifies the UI still works), bump `pillow` and make this step blocking.
+- Secret-scanning in CI remains unaddressed — tracked as a named gap (see `LIMITATIONS.md`), not silently assumed covered by this entry.
+
+**Alternatives considered:**
+
+| Alternative | Why rejected |
+|---|---|
+| Block CI on any `pip-audit` finding immediately | Would fail every PR today on a pre-existing transitive issue with no safe, verified fix available in this review — all-stop with no path to green isn't the goal. |
+| Pin `pillow` directly to force a resolution attempt | Already tested: `pip install "pillow>=13.0"` conflicts with `gradio`'s own pin. Forcing it without testing the UI afterward would be an unverified change to a rendering-critical dependency. |
+| Do nothing (no scan at all) | Leaves a real class of vulnerability invisible. An informational signal is strictly better than silence, same logic as O8. |
+
+> **Audit verdict — ✅ Sound (informational by design, not yet closed)**
+>
+> The finding is real (confirmed via an actual `pip-audit` run, not assumed), the non-blocking choice is justified by a confirmed constraint (gradio's pin), and the gap this doesn't close (secret-scanning) is named rather than implied-covered. Revisit once the gradio/pillow constraint lifts.
 
 ---
 

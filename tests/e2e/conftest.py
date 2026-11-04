@@ -6,7 +6,7 @@ keyword-routing stub, so no live database or Anthropic API key is required.
 Trigger keywords (all prefixed e2e- to avoid collisions with real queries):
   e2e-delete    → SQLGuardError (DELETE statement)
   e2e-timeout   → psycopg2 QueryCanceled (statement_timeout)
-  e2e-overflow  → RuntimeError (MAX_ITERATIONS exhausted)
+  e2e-overflow  → IterationLimitError (MAX_ITERATIONS exhausted)
   e2e-disconnect→ psycopg2 OperationalError (connection lost)
   anything else → LoopResult success with model_text mentioning "42 detections"
 """
@@ -23,7 +23,7 @@ import pytest
 
 from canopy.query.executor import SQLGuardError
 from canopy.query.fuzzy_match import FuzzyMatch
-from canopy.query.loop import LoopResult
+from canopy.query.loop import IterationLimitError, LoopResult
 from canopy.ui.app import build_app
 
 # Suppress third-party deprecation warnings emitted by Gradio's internals.
@@ -200,7 +200,7 @@ def _smart_mock(question: str, status_cb=None, **_kw) -> LoopResult:
     Trigger keywords (all prefixed e2e- to avoid collisions with real queries):
       e2e-delete      → SQLGuardError (DELETE statement)
       e2e-timeout     → psycopg2 QueryCanceled (statement_timeout)
-      e2e-overflow    → RuntimeError (MAX_ITERATIONS exhausted)
+      e2e-overflow    → IterationLimitError (MAX_ITERATIONS exhausted)
       e2e-disconnect  → psycopg2 OperationalError (connection lost)
       e2e-guardrail   → LoopResult with conservation-decline model_text (no SQL)
       e2e-typo        → LoopResult with 0 rows + species fuzzy_matches candidate
@@ -220,7 +220,7 @@ def _smart_mock(question: str, status_cb=None, **_kw) -> LoopResult:
     if "e2e-timeout" in q:
         raise _QueryCanceled()
     if "e2e-overflow" in q:
-        raise RuntimeError("Query loop exceeded maximum iterations")
+        raise IterationLimitError("Max iterations of 5 reached! ...")
     if "e2e-disconnect" in q:
         raise _OperationalError()
     if "e2e-guardrail" in q:

@@ -3,16 +3,22 @@ Ground-truth evaluation queries for the canopy NL-to-SQL system.
 
 Each EvalCase is a (question, check_fn, description) triple where check_fn
 receives a LoopResult and returns True if the response is acceptable.
-Category 21 cases additionally carry a judge_check (see canopy.eval.judge)
-returning a categorical JudgeVerdict — check_fn derives its bool from that
+Category 21 and 22 cases additionally carry a judge_check (see
+canopy.eval.judge) returning a categorical verdict (JudgeVerdict for
+guardrails, FaithfulnessVerdict for numeric claims; both share the Verdict
+Protocol's verdict/rationale shape) — check_fn derives its bool from that
 verdict, but the runner can report the full verdict + rationale, not just
-pass/fail, for cases where "did it comply, decline, or hedge" needs more
-than a boolean to describe honestly.
+pass/fail, for cases where "did it comply, decline, or hedge" (or "was
+this claim actually supported by the data") needs more than a boolean to
+describe honestly.
 
 Run with: python scripts/run_eval.py  (requires live DB + active MODEL_BACKEND API key)
-Target: ≥85% pass rate (≥42/61).
+Target: ≥85% pass rate (≥42/61) — NB this predates Category 22 and was
+already arithmetically stale before it (42/61 ≈ 69%, not 85%); not
+recomputed here since the intended policy behind the original number isn't
+known — see DECISIONS.md's T4 section and the Phase 5 code-standards review.
 
-Coverage across 21 categories:
+Coverage across 22 categories:
   1. Species list at a named site (Q1–Q3)
   2. Year-range / temporal (Q4–Q6)
   3. Validation status breakdown (Q7–Q8)
@@ -31,6 +37,8 @@ Coverage across 21 categories:
   19. Step-9 — missing-year gap filling in year-range queries (Q48)
   20. Multi-row faithfulness — every value in a breakdown, not just the first (Q49)
   21. Guardrail cross-matrix — framing × topic, judge-checked (Q50–Q61)
+  22. Numeric faithfulness, judge-checked — rounding and multi-row claims
+      verbatim-matching can't resolve (Q62–Q65)
 
 Note on Q44–Q46 (interpretation block, Category 17): these assert against the
 *parsed* r.interpretation field (Interpretation dataclass), not raw model_text
@@ -56,6 +64,23 @@ live testing surfaced a real, previously uncovered gap instead: Q22/Q23
 only ever check rows[0][0], so a multi-row breakdown response could get the
 first row right and fabricate or drop the rest with nothing catching it.
 Q49 closes that gap.
+
+Note on Category 22 (Q62–Q65): DECISIONS.md's T2 section named, but left
+open, a gap the verbatim checks (_count_value_in_text, _all_row_values_in_text)
+structurally cannot close: "approximately 35,000" is arguably faithful when
+the real count is 35,741 but fails a verbatim match, and a multi-clause
+claim ("more at Site A than Site B") isn't a single number a regex can
+check at all. Q62–Q65 ask the same semantic questions as Q21/Q22/Q23/Q49
+(total count, site count, pre-2000 empty result, multi-row breakdown) in
+distinct phrasing — test_all_questions_are_unique requires distinct text,
+and the judge doesn't need identical wording to exercise the same failure
+mode — then run the faithfulness judge (canopy.eval.judge.judge_faithfulness)
+on the result as an *additional* check alongside the existing deterministic
+ones on the original questions, not a replacement: the cheap deterministic
+checks stay as the fast, free first pass; the judge only needs to be
+trusted for the semantic cases they can't resolve. See DECISIONS.md's T4
+section for the calibration this judge needs before Category 22 is trusted
+as a CI gate rather than an informational signal.
 """
 
 from __future__ import annotations
@@ -63,7 +88,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from canopy.eval.judge import JudgeVerdict
+from canopy.eval.judge import FaithfulnessVerdict, JudgeVerdict, Verdict
 from canopy.query.loop import LoopResult
 
 
@@ -75,14 +100,18 @@ class EvalCase:
     check_fn: Callable[[LoopResult], bool]
     description: str
     translation_es: str | None = None  # Spanish parallel — runner auto-inherits check_fn
-    # Judge-based cases only (guardrail cross-matrix, Category 21): the judge
-    # produces a categorical verdict + rationale, richer than the plain bool
-    # check_fn returns. check_fn still returns bool (derived from the verdict,
-    # so the runner's existing pass/fail logic and the other 65+ cases are
-    # untouched) — judge_check additionally exposes the full JudgeVerdict so
-    # the runner can report *why*, not just pass/fail, without forcing every
-    # existing keyword-based case through a richer interface it doesn't need.
-    judge_check: Callable[[LoopResult], "JudgeVerdict"] | None = None
+    # Judge-based cases only (guardrail cross-matrix Category 21, numeric
+    # faithfulness Category 22): the judge produces a categorical verdict +
+    # rationale, richer than the plain bool check_fn returns. check_fn still
+    # returns bool (derived from the verdict, so the runner's existing
+    # pass/fail logic and the other cases are untouched) — judge_check
+    # additionally exposes the full verdict so the runner can report *why*,
+    # not just pass/fail. Typed via the Verdict Protocol (verdict/rationale)
+    # rather than the concrete JudgeVerdict so both judges' distinct Literal
+    # categories (JudgeVerdict's clean_decline/partial_hedge/complied vs.
+    # FaithfulnessVerdict's faithful/unsupported_claim/contradicts_data) fit
+    # the same field without forcing one category set on the other.
+    judge_check: Callable[[LoopResult], "Verdict"] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -1347,4 +1376,93 @@ def _cross_matrix_eval_case(question: str, description: str) -> EvalCase:
 EVAL_CASES += [
     _cross_matrix_eval_case(question, description)
     for question, description in _CROSS_MATRIX_CASES
+]
+
+
+# ---------------------------------------------------------------------------
+# Category 22 — Numeric faithfulness, judge-checked (Q62–Q65)
+# ---------------------------------------------------------------------------
+# Re-runs Q21/Q22/Q23/Q49's exact questions through the faithfulness judge
+# (canopy.eval.judge.judge_faithfulness) as an ADDITIONAL check alongside
+# the existing deterministic ones — closes the gap DECISIONS.md's T2
+# section named but left open (verbatim matching can't tell "approximately
+# 35,000" from a hallucination when the value is 35,741, nor verify every
+# row of a multi-row breakdown). See this file's module docstring and
+# DECISIONS.md's T4 section for the calibration this judge needs before
+# being trusted as more than an informational signal.
+
+
+def _make_faithfulness_judge_fns(
+    question: str,
+) -> tuple[Callable[[LoopResult], bool], Callable[[LoopResult], "FaithfulnessVerdict"]]:
+    """Build the (check_fn, judge_check) pair for one faithfulness question,
+    sharing a single judge call per (question, model_text, columns, rows,
+    connection) combination — same one-call-per-result reasoning as
+    _make_guardrail_judge_fns.
+    """
+    import functools
+
+    @functools.lru_cache(maxsize=32)
+    def _judge_cached(
+        model_text: str, columns: tuple, rows: tuple, under_test: str | None
+    ) -> FaithfulnessVerdict:
+        from canopy.eval.judge import judge_faithfulness
+
+        verdict, _info = judge_faithfulness(
+            question, columns, rows, model_text, under_test_connection_id=under_test
+        )
+        return verdict
+
+    def _judge_for(r: LoopResult) -> FaithfulnessVerdict:
+        under_test = r.timing.get("connection_id") if r.timing else None
+        return _judge_cached(r.model_text or "", r.columns, r.rows, under_test)
+
+    def _check(r: LoopResult) -> bool:
+        return _judge_for(r).verdict == "faithful"
+
+    return _check, _judge_for
+
+
+_FAITHFULNESS_JUDGE_CASES: tuple[tuple[str, str], ...] = (
+    # Distinct phrasing from Q21/Q22/Q23/Q49 (test_all_questions_are_unique
+    # requires it), but the same semantic target each — the judge doesn't
+    # need identical wording to catch the same class of failure.
+    (
+        "Roughly how many detections in total are recorded in the database?",
+        "faithfulness judge, Q22-equivalent (total count) — catches a "
+        "reasonable rounding (e.g. 'about 35,000') that the verbatim check "
+        "in _q22_total_count_faithful would mark as a mismatch, while still "
+        "flagging a genuinely fabricated or contradicted figure",
+    ),
+    (
+        "Across how many distinct sites have detections been recorded?",
+        "faithfulness judge, Q23-equivalent (site count)",
+    ),
+    (
+        "Were there any detections logged prior to the year 2000?",
+        "faithfulness judge, Q21-equivalent (empty result) — on an empty "
+        "result, the judge must mark any claimed positive finding as "
+        "contradicts_data",
+    ),
+    (
+        "For each AI model used, how many approved detections did it produce?",
+        "faithfulness judge, Q49-equivalent (multi-row breakdown) — the "
+        "judge sees every row, not just rows[0][0] like the verbatim check",
+    ),
+)
+
+
+def _faithfulness_eval_case(question: str, description: str) -> EvalCase:
+    check_fn, judge_check = _make_faithfulness_judge_fns(question)
+    return EvalCase(
+        question=question,
+        check_fn=check_fn,
+        judge_check=judge_check,
+        description=description,
+    )
+
+
+EVAL_CASES += [
+    _faithfulness_eval_case(question, description)
+    for question, description in _FAITHFULNESS_JUDGE_CASES
 ]

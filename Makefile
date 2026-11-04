@@ -1,4 +1,4 @@
-.PHONY: help test lint check build run smoke ui eval eval-gt eval-es eval-adv benchmark scaling-benchmark clean playwright-install e2e screenshots compose-up compose-down
+.PHONY: help test lint check audit build run smoke ui eval eval-gt eval-es eval-adv benchmark scaling-benchmark clean playwright-install e2e screenshots compose-up compose-down
 
 # Default target
 help:
@@ -9,6 +9,7 @@ help:
 	@echo "  make lint              Lint src/ and tests/ with ruff"
 	@echo "  make test              Run unit tests (no DB or API key needed)"
 	@echo "  make check             lint + test"
+	@echo "  make audit             Dependency vulnerability scan (pip-audit, informational — see DECISIONS.md O10)"
 	@echo "  make ui                Start the app locally (needs .env)"
 	@echo ""
 	@echo "  Docker"
@@ -48,6 +49,9 @@ test:
 	pytest tests/ -q --ignore=tests/e2e/ -m "not live_db"
 
 check: lint test
+
+audit:
+	pip install -q pip-audit && pip-audit || true
 
 ui:
 	python scripts/run_ui.py

@@ -47,7 +47,7 @@ _EXPECTED_COLUMNS = frozenset({
     ("detections", "management_unit"),
     ("detections", "landscape"),
     ("detections", "model_id"),
-    # Sensitive columns stripped by _SENSITIVE_COLUMNS in loop.py —
+    # Sensitive columns stripped via config.get_sensitive_columns() —
     # must exist in DB for the strip to have any effect.
     ("detections", "latitude"),
     ("detections", "longitude"),
@@ -99,9 +99,9 @@ def test_documented_columns_exist():
 
     missing = _EXPECTED_COLUMNS - live_columns
     assert not missing, (
-        "Columns documented in schema.py or _SENSITIVE_COLUMNS missing from live DB:\n"
+        "Columns documented in schema.py or get_sensitive_columns() missing from live DB:\n"
         + "\n".join(f"  {t}.{c}" for t, c in sorted(missing))
-        + "\nUpdate schema.py or loop._SENSITIVE_COLUMNS to match the current database."
+        + "\nUpdate schema.py or config.get_sensitive_columns() to match the current database."
     )
 
 

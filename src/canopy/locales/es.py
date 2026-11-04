@@ -34,6 +34,9 @@ STRINGS: dict[str, str] = {
     "status_understanding": "Interpretando su pregunta…",
     "status_refining":      "Refinando la búsqueda…",
     "status_writing_sql_retry":  "Probando un enfoque diferente (intento {n})…",
+    "status_retrying_fallback":  (
+        "El modelo principal no está disponible — reintentando con un modelo de respaldo…"
+    ),
     # Ver la nota en en.py: las filas ya están visibles en la pestaña
     # "Tabla completa" durante toda esta fase.
     "status_composing_answer":   (

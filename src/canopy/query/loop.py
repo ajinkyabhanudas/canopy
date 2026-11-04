@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import logging
-import os
 import re
 import time
 from collections.abc import Callable
@@ -15,13 +14,21 @@ from langdetect import DetectorFactory, LangDetectException
 from langdetect import detect as _lang_detect
 from llama_index.core.agent.workflow import FunctionAgent
 from llama_index.core.tools import FunctionTool
+from workflows.errors import WorkflowRuntimeError
 
 from canopy import semantic_cache
 from canopy.cache import lookup_cache, write_cache
-from canopy.config import get_active_connection, is_semantic_cache_enabled
+from canopy.config import (
+    ModelConnection,
+    get_active_connection,
+    get_sensitive_columns,
+    is_semantic_cache_enabled,
+    other_active_connections,
+)
 from canopy.history import append_history
 from canopy.i18n import t
 from canopy.models import get_llm
+from canopy.models.failures import is_retryable_model_error
 from canopy.observability import trace_query
 from canopy.query.executor import QueryResult, execute_query
 from canopy.query.fuzzy_match import (
@@ -41,6 +48,27 @@ _ROW_DISPLAY_LIMIT = 200
 
 # langdetect is unreliable on very short strings; skip detection below this length
 _MIN_LANG_DETECT_LEN = 30
+
+# The exact prefix FunctionAgent's own step (llama_index.core.agent.workflow
+# .base_agent.parse_agent_output) uses when MAX_ITERATIONS is hit — confirmed
+# directly against the installed library's source, not assumed. Matched
+# case-sensitively and narrowly (a fixed prefix, not a general substring)
+# so an unrelated WorkflowRuntimeError (the same exception type covers many
+# internal workflow failures — step errors, context errors, validation
+# errors) is never misclassified as "question too complex".
+_MAX_ITERATIONS_PREFIX = "Max iterations of"
+
+
+class IterationLimitError(RuntimeError):
+    """The agent did not produce a final answer within MAX_ITERATIONS steps.
+
+    Raised instead of letting the library's own WorkflowRuntimeError (a
+    generic type covering many unrelated internal workflow failures) reach
+    callers — app.py needs to distinguish "this question needed too many
+    steps" (show error_iterations, a user-actionable message) from any other
+    internal failure (log loud, show the generic error). A RuntimeError
+    subclass, matching run_query()'s existing documented contract.
+    """
 
 
 class UnsupportedLanguageError(ValueError):
@@ -85,14 +113,6 @@ def is_unsupported_language(question: str) -> bool:
 # literal text with no formatting at all).
 _BLOCK_RE = re.compile(r"^---$(.*?)(?:^---$|\Z)", re.MULTILINE | re.DOTALL)
 _BULLET_RE = re.compile(r"^\s*[•\-]\s*(.+)$")
-
-
-def _load_sensitive_columns() -> frozenset[str]:
-    raw = os.environ.get("CANOPY_SENSITIVE_COLUMNS", "latitude,longitude,hashed_password")
-    return frozenset(c.strip() for c in raw.split(",") if c.strip())
-
-
-_SENSITIVE_COLUMNS = _load_sensitive_columns()
 
 
 @dataclass(frozen=True)
@@ -251,8 +271,15 @@ def _strip_sensitive_columns(result: QueryResult) -> QueryResult:
     select latitude/longitude despite the prompt instruction, the raw
     table would have shown it even though the LLM's own text wouldn't
     mention it. Fixed so both consumers share one stripped result.
+
+    Reads config.get_sensitive_columns() live on every call rather than
+    once at import time (the module-level frozenset this replaced bound
+    CANOPY_SENSITIVE_COLUMNS at first import, so a test or a runtime env
+    change needed a manual re-read and monkeypatch to take effect — see
+    the now-simplified test_sensitive_columns_env_override_end_to_end).
     """
-    safe_idx = [i for i, c in enumerate(result.columns) if c not in _SENSITIVE_COLUMNS]
+    sensitive = get_sensitive_columns()
+    safe_idx = [i for i, c in enumerate(result.columns) if c not in sensitive]
     if len(safe_idx) == len(result.columns):
         return result
     safe_cols = tuple(result.columns[i] for i in safe_idx)
@@ -380,7 +407,7 @@ async def _run_agent(
     astream_chat docstring), so AgentStream.delta is always empty here —
     only event *boundaries* are available, not live token output.
     """
-    llm = get_llm()
+    llm = get_llm(connection_id=conn_id)
     system_prompt = build_system_prompt()
     sql_tool = _build_sql_tool(status_cb, state, result_cb)
 
@@ -399,34 +426,47 @@ async def _run_agent(
     handler = agent.run(question)
 
     sql_attempts = 0
-    async for ev in handler.stream_events():
-        ev_name = type(ev).__name__
-        if ev_name == "ToolCall":
-            sql_attempts += 1
-            # First attempt: status_understanding (already fired) covers this
-            # lead-in, and status_searching_db fires a beat later from
-            # execute_sql itself — a third message here would be redundant.
-            # Retries are the real gap this closes: previously the UI sat on
-            # a stale "Found 0 — writing your answer…" for the entire silent
-            # LLM turn between one execute_sql call and the next.
-            #
-            # Confirmed live (2026-08-13): LlamaIndex writes ToolCall to the
-            # stream before invoking the tool, so in true execution order
-            # this message precedes status_searching_db — but this async
-            # generator and execute_sql's synchronous status_cb call share
-            # one event loop, so on a retry both can land in the same tick
-            # with either arriving first. Not worth forcing a strict order
-            # for a sub-second difference the user can't perceive either way.
-            if status_cb and sql_attempts > 1:
-                status_cb(t("status_writing_sql_retry", n=sql_attempts))
-        elif (
-            status_cb
-            and ev_name == "AgentOutput"
-            and not getattr(ev, "tool_calls", None)
-        ):
-            status_cb(t("status_composing_answer"))
+    try:
+        async for ev in handler.stream_events():
+            ev_name = type(ev).__name__
+            if ev_name == "ToolCall":
+                sql_attempts += 1
+                # First attempt: status_understanding (already fired) covers this
+                # lead-in, and status_searching_db fires a beat later from
+                # execute_sql itself — a third message here would be redundant.
+                # Retries are the real gap this closes: previously the UI sat on
+                # a stale "Found 0 — writing your answer…" for the entire silent
+                # LLM turn between one execute_sql call and the next.
+                #
+                # Confirmed live (2026-08-13): LlamaIndex writes ToolCall to the
+                # stream before invoking the tool, so in true execution order
+                # this message precedes status_searching_db — but this async
+                # generator and execute_sql's synchronous status_cb call share
+                # one event loop, so on a retry both can land in the same tick
+                # with either arriving first. Not worth forcing a strict order
+                # for a sub-second difference the user can't perceive either way.
+                if status_cb and sql_attempts > 1:
+                    status_cb(t("status_writing_sql_retry", n=sql_attempts))
+            elif (
+                status_cb
+                and ev_name == "AgentOutput"
+                and not getattr(ev, "tool_calls", None)
+            ):
+                status_cb(t("status_composing_answer"))
 
-    response = await handler
+        response = await handler
+    except WorkflowRuntimeError as error:
+        # Confirmed directly against the installed llama-index-core: the
+        # library raises this generic type (not a RuntimeError) for many
+        # distinct internal failures, including MAX_ITERATIONS — identified
+        # only by this message prefix (base_agent.py's parse_agent_output).
+        # Only that specific, confirmed case is translated; anything else
+        # propagates as the original WorkflowRuntimeError so it still reaches
+        # app.py's generic handler with full logging, not a misleading
+        # "question too complex" message.
+        if str(error).startswith(_MAX_ITERATIONS_PREFIX):
+            raise IterationLimitError(str(error)) from error
+        raise
     state["llm_times"].append(time.perf_counter() - t_llm)
     state["iterations"] = sql_attempts
 
@@ -437,6 +477,53 @@ async def _run_agent(
         question[:60],
     )
     return text
+
+
+async def _run_agent_with_fallback(
+    question: str,
+    status_cb: Callable[[str], None] | None,
+    state: dict,
+    conn: ModelConnection,
+    result_cb: Callable[[QueryResult, str], None] | None = None,
+) -> tuple[str, ModelConnection]:
+    """Run the agent against `conn`; on a classified-transient failure, retry
+    the whole question once against another configured connection.
+
+    Bounded to exactly one fallback attempt against one alternate connection
+    (not a cascade through every connection in models.yaml) — this is a
+    reliability measure for a provider outage (see DECISIONS.md's M2 section,
+    where losing Azure access required a manual models.yaml edit and
+    redeploy), not a general retry-until-it-works loop. A non-retryable
+    error (bad SQL, a content-filter decline, a malformed question) would
+    fail identically on any connection, so it propagates immediately without
+    burning a second model call.
+
+    Returns the model's final text and the connection that actually produced
+    it, so the caller can report which model answered rather than always
+    reporting the primary.
+    """
+    active_model = conn.models[0] if conn.models else conn.id
+    try:
+        text = await _run_agent(question, status_cb, state, conn.id, active_model, result_cb)
+        return text, conn
+    except Exception as error:
+        if not is_retryable_model_error(error):
+            raise
+        alternates = other_active_connections(conn.id)
+        if not alternates:
+            raise
+        fallback = alternates[0]
+        _log.warning(
+            "model call failed on connection=%s (%s); retrying once on connection=%s",
+            conn.id, type(error).__name__, fallback.id,
+        )
+        if status_cb:
+            status_cb(t("status_retrying_fallback"))
+        fallback_model = fallback.models[0] if fallback.models else fallback.id
+        text = await _run_agent(
+            question, status_cb, state, fallback.id, fallback_model, result_cb
+        )
+        return text, fallback
 
 
 def run_query(
@@ -476,7 +563,8 @@ def run_query(
         result, and the model's final plain-language response.
 
     Raises:
-        RuntimeError: If the model exceeds MAX_ITERATIONS.
+        IterationLimitError: If the model exceeds MAX_ITERATIONS (a RuntimeError
+            subclass).
         SQLGuardError: If the model generates a non-SELECT SQL statement.
         UnsupportedLanguageError: If question is not in English or Spanish.
     """
@@ -560,13 +648,15 @@ def run_query(
     }
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
-        model_text = _pool.submit(
+        model_text, answered_by = _pool.submit(
             asyncio.run,
-            _run_agent(question, status_cb, state, conn.id, active_model, result_cb),
+            _run_agent_with_fallback(question, status_cb, state, conn, result_cb),
         ).result()
 
     last_query_result: QueryResult | None = state["last_query_result"]
     total_s = time.perf_counter() - t_total
+    answered_model = answered_by.models[0] if answered_by.models else answered_by.id
+    fallback_used = answered_by.id != conn.id
 
     timing = {
         "total_s": round(total_s, 2),
@@ -575,16 +665,22 @@ def run_query(
         "db_s": round(sum(state["db_times"]), 3),
         "db_calls": len(state["db_times"]),
         "iterations": state.get("iterations", len(state["llm_times"])),
-        "connection_id": conn.id,
-        "model": active_model,
+        # Reflects whichever connection actually answered, not necessarily the
+        # one `run_query` started with — see _run_agent_with_fallback.
+        "connection_id": answered_by.id,
+        "model": answered_model,
+        "fallback_used": fallback_used,
     }
+    if fallback_used:
+        timing["primary_connection_id"] = conn.id
     _log.info(
         "run_query complete — backend=%s model=%s rows=%d total=%.1fs"
-        " (llm %.1fs × %d, db %.3fs × %d)",
-        conn.id, active_model,
+        " (llm %.1fs × %d, db %.3fs × %d)%s",
+        answered_by.id, answered_model,
         last_query_result.row_count if last_query_result else 0,
         total_s, timing["llm_s"], timing["llm_calls"],
         timing["db_s"], timing["db_calls"],
+        f" [fallback from {conn.id}]" if fallback_used else "",
     )
 
     result = LoopResult(

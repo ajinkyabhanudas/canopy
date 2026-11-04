@@ -31,6 +31,15 @@ jobs:
       - name: Test
         run: pytest tests/ -q --ignore=tests/e2e/ --cov=src/canopy --cov-report=xml
 
+      - name: Dependency vulnerability scan (informational)
+        # Not blocking: pillow (transitive via gradio/llama-index-core) has
+        # known CVEs fixed only in 13.0+, but gradio 6.x pins pillow<13.0 —
+        # the fix isn't installable without a gradio upgrade this review
+        # didn't verify is safe. Same "real signal, not yet a gate" posture
+        # as codecov/patch (see DECISIONS.md's O8 section). Revisit blocking
+        # this once gradio raises its pillow ceiling or canopy upgrades it.
+        run: pip install pip-audit && pip-audit || true
+
       - name: Upload coverage
         uses: codecov/codecov-action@v5
         with:

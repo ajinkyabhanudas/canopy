@@ -617,10 +617,23 @@ def test_handler_db_connection_error_message(monkeypatch):
 
 
 def test_handler_loop_exhausted_message(monkeypatch):
-    """RuntimeError from MAX_ITERATIONS → specific complexity message."""
+    """IterationLimitError from MAX_ITERATIONS → specific complexity message.
+
+    Previously this test (and the app.py check it exercises) assumed
+    run_query() raises a bare RuntimeError with "maximum iterations" in its
+    text. The real library (llama_index's FunctionAgent) raises
+    WorkflowRuntimeError — not a RuntimeError at all — with the message
+    "Max iterations of N reached!...", confirmed directly against the
+    installed package. That mismatch meant the real failure was never
+    caught by this path; it fell through to the generic error message. Fixed
+    in query/loop.py (IterationLimitError, a RuntimeError subclass, raised
+    only for that confirmed message prefix) and this test now raises what
+    run_query() actually raises today."""
+
+    from canopy.query.loop import IterationLimitError
 
     def _exhaust(q, status_cb=None, **_kw):
-        raise RuntimeError("Query loop exceeded maximum iterations")
+        raise IterationLimitError("Max iterations of 5 reached! Either something went wrong...")
 
     monkeypatch.setattr(ui_mod, "run_query", _exhaust)
     _, _, response, _, _, _, status, _, *__ = _run("very complex question")

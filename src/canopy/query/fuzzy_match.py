@@ -18,18 +18,17 @@ distinct values per column).
 from __future__ import annotations
 
 import logging
-import os
 import re
 import threading
 import time
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 
+from canopy.config import get_fuzzy_cache_ttl_seconds
 from canopy.query.executor import QueryResult, execute_query
 
 _log = logging.getLogger("canopy.fuzzy_match")
 
-_DEFAULT_TTL_SECONDS = 6 * 60 * 60  # 6h — column value lists change rarely
 _MAX_CANDIDATES = 3
 _DEFAULT_THRESHOLD = 0.72  # difflib SequenceMatcher.ratio() scale (0.0-1.0)
 
@@ -161,7 +160,7 @@ FUZZY_COLUMNS: dict[str, _ColumnSpec] = {
 
 
 def _ttl_seconds() -> int:
-    return int(os.environ.get("CANOPY_FUZZY_CACHE_TTL_SECONDS", _DEFAULT_TTL_SECONDS))
+    return get_fuzzy_cache_ttl_seconds()
 
 
 class _ValueCache:
